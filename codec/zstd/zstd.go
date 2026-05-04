@@ -15,6 +15,30 @@ import (
 	kpzstd "github.com/klauspost/compress/zstd"
 )
 
+// scratchPool reuses []byte scratch space across Encode/Decode calls. The
+// klauspost EncodeAll/DecodeAll functions append to the dst argument and
+// return the (possibly grown) slice; we hand them a pooled scratch slice
+// and copy the final bytes into a fresh, right-sized buffer so the scratch
+// can return to the pool unobserved by the caller.
+var scratchPool = sync.Pool{
+	New: func() any {
+		// Start at 16 KiB; klauspost will grow on demand.
+		b := make([]byte, 0, 16*1024)
+		return &b
+	},
+}
+
+// putScratch returns a scratch slice to the pool, capped to a sane upper
+// bound so we don't pin huge buffers indefinitely.
+func putScratch(p *[]byte) {
+	const maxKeep = 1 << 20 // 1 MiB
+	if cap(*p) > maxKeep {
+		return
+	}
+	*p = (*p)[:0]
+	scratchPool.Put(p)
+}
+
 // Codec is the v3 "zstd" bytes→bytes codec.
 //
 // Encoders and decoders from klauspost/compress/zstd are safe for concurrent
@@ -97,25 +121,51 @@ func (c *Codec) init() {
 
 // EncodeBB compresses in and returns a freshly allocated buffer of zstd
 // frame bytes.
+//
+// A pooled scratch slice is handed to EncodeAll as the dst argument; the
+// final bytes are copied into a caller-owned slice so the scratch space
+// can return to scratchPool.
 func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
 	c.init()
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
-	return c.enc.EncodeAll(in, nil), nil
+	scratchP := scratchPool.Get().(*[]byte)
+	scratch := (*scratchP)[:0]
+	encoded := c.enc.EncodeAll(in, scratch)
+	out := make([]byte, len(encoded))
+	copy(out, encoded)
+	// Hand the (possibly grown) scratch buffer back to the pool.
+	*scratchP = encoded
+	putScratch(scratchP)
+	return out, nil
 }
 
 // DecodeBB decompresses one or more concatenated zstd frames in `in` and
 // returns the resulting bytes.
+//
+// A pooled scratch slice is handed to DecodeAll as the dst argument; the
+// final bytes are copied into a caller-owned slice so the scratch space
+// can return to scratchPool.
 func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 	c.init()
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
-	out, err := c.dec.DecodeAll(in, nil)
+	scratchP := scratchPool.Get().(*[]byte)
+	scratch := (*scratchP)[:0]
+	decoded, err := c.dec.DecodeAll(in, scratch)
 	if err != nil {
+		// decoded may still be partially populated; return the (possibly
+		// grown) backing slice to the pool.
+		*scratchP = decoded
+		putScratch(scratchP)
 		return nil, fmt.Errorf("zstd codec: decode: %w", err)
 	}
+	out := make([]byte, len(decoded))
+	copy(out, decoded)
+	*scratchP = decoded
+	putScratch(scratchP)
 	return out, nil
 }
 

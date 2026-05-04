@@ -73,6 +73,38 @@ var writerPools sync.Map // map[int]*sync.Pool
 // readerPool holds reusable *gzip.Reader values; readers are level-agnostic.
 var readerPool = sync.Pool{}
 
+// bufferPool holds reusable *bytes.Buffer instances used as scratch space
+// inside Encode/Decode. The buffer's backing array is the only allocation
+// the codec needs to do per call besides the (caller-owned) returned slice.
+// Pre-grown to 16 KiB on first acquisition to amortize the cost of small
+// chunks; larger inputs grow on demand and the buffer keeps its capacity
+// when returned to the pool.
+var bufferPool = sync.Pool{
+	New: func() any {
+		buf := new(bytes.Buffer)
+		buf.Grow(16 * 1024)
+		return buf
+	},
+}
+
+// putBuffer returns a buffer to the pool. It resets length but keeps cap.
+// Buffers that have grown beyond a sane bound are dropped on the floor to
+// avoid pinning huge allocations indefinitely.
+func putBuffer(buf *bytes.Buffer) {
+	const maxKeep = 1 << 20 // 1 MiB
+	if buf.Cap() > maxKeep {
+		return
+	}
+	buf.Reset()
+	bufferPool.Put(buf)
+}
+
+// readerScratchPool reuses *bytes.Reader instances used to wrap the input
+// slice for the gzip Reader. Each Reset rebinds it to a different slice.
+var readerScratchPool = sync.Pool{
+	New: func() any { return bytes.NewReader(nil) },
+}
+
 // getWriter returns a *gzip.Writer at the requested level, writing to w.
 func getWriter(w io.Writer, level int) (*stdgzip.Writer, error) {
 	pAny, ok := writerPools.Load(level)
@@ -100,59 +132,106 @@ func putWriter(gw *stdgzip.Writer, level int) {
 }
 
 // EncodeBB gzip-compresses in and returns a new buffer.
+//
+// The intermediate scratch buffer is sourced from bufferPool and the final
+// result is copied into a fresh slice owned by the caller. This keeps the
+// pooled buffer free for reuse on the next call.
 func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
-	var buf bytes.Buffer
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
 	// Pre-grow the buffer; gzip output is rarely larger than the input plus
 	// a small header, so this avoids most reallocations on typical data.
-	buf.Grow(len(in)/2 + 64)
+	if grow := len(in)/2 + 64; grow > buf.Cap() {
+		buf.Grow(grow - buf.Cap())
+	}
 
-	gw, err := getWriter(&buf, c.Level)
+	gw, err := getWriter(buf, c.Level)
 	if err != nil {
+		putBuffer(buf)
 		return nil, fmt.Errorf("gzip codec: new writer: %w", err)
 	}
 	if _, err := gw.Write(in); err != nil {
 		// Discard the writer on error; its internal state is suspect.
+		putBuffer(buf)
 		return nil, fmt.Errorf("gzip codec: write: %w", err)
 	}
 	if err := gw.Close(); err != nil {
+		putBuffer(buf)
 		return nil, fmt.Errorf("gzip codec: close: %w", err)
 	}
 	putWriter(gw, c.Level)
-	return buf.Bytes(), nil
+
+	// Copy out so the pooled buffer can be reused. The result is a fresh
+	// caller-owned slice; we don't use bufpool here because the caller
+	// doesn't return EncodeBB output to the pool, and bufpool's overhead
+	// per Get/Put is comparable to a single make for these sizes.
+	src := buf.Bytes()
+	out := make([]byte, len(src))
+	copy(out, src)
+	putBuffer(buf)
+	return out, nil
 }
 
 // DecodeBB gzip-decompresses in and returns a new buffer.
+//
+// The intermediate scratch buffer is sourced from bufferPool and the final
+// result is copied into a fresh slice owned by the caller.
 func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
-	br := bytes.NewReader(in)
+	br := readerScratchPool.Get().(*bytes.Reader)
+	br.Reset(in)
 
 	var gr *stdgzip.Reader
 	if v := readerPool.Get(); v != nil {
 		gr = v.(*stdgzip.Reader)
 		if err := gr.Reset(br); err != nil {
 			// Don't return the reader to the pool: Reset failure means it is
-			// not in a clean state.
+			// not in a clean state. Still return the bytes.Reader.
+			br.Reset(nil)
+			readerScratchPool.Put(br)
 			return nil, fmt.Errorf("gzip codec: reset reader: %w", err)
 		}
 	} else {
 		var err error
 		gr, err = stdgzip.NewReader(br)
 		if err != nil {
+			br.Reset(nil)
+			readerScratchPool.Put(br)
 			return nil, fmt.Errorf("gzip codec: new reader: %w", err)
 		}
 	}
 
-	var out bytes.Buffer
-	out.Grow(len(in) * 2)
-	if _, err := io.Copy(&out, gr); err != nil {
+	out := bufferPool.Get().(*bytes.Buffer)
+	out.Reset()
+	if grow := len(in) * 2; grow > out.Cap() {
+		out.Grow(grow - out.Cap())
+	}
+	if _, err := io.Copy(out, gr); err != nil {
 		// Close best-effort; the reader is not safe to reuse.
 		_ = gr.Close()
+		putBuffer(out)
+		br.Reset(nil)
+		readerScratchPool.Put(br)
 		return nil, fmt.Errorf("gzip codec: read: %w", err)
 	}
 	if err := gr.Close(); err != nil {
+		putBuffer(out)
+		br.Reset(nil)
+		readerScratchPool.Put(br)
 		return nil, fmt.Errorf("gzip codec: close reader: %w", err)
 	}
 	readerPool.Put(gr)
-	return out.Bytes(), nil
+
+	// Copy into a caller-owned, right-sized slice so the scratch buffer
+	// can return to the pool. A plain make is cheaper than bufpool here:
+	// the caller doesn't return DecodeBB output to the pool, and bufpool
+	// rounds up to a power of two which would over-allocate.
+	src := out.Bytes()
+	result := make([]byte, len(src))
+	copy(result, src)
+	putBuffer(out)
+	br.Reset(nil)
+	readerScratchPool.Put(br)
+	return result, nil
 }
 
 func init() {
