@@ -9,11 +9,19 @@ package crc32c
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 
 	"github.com/rkm/zarr-go/codec"
 )
+
+// ErrChecksumMismatch is returned by DecodeBB when the stored CRC32C trailer
+// does not match the recomputed checksum of the body. It is wrapped in a
+// formatted error that also reports the expected and observed digests, so
+// callers can use errors.Is to detect corruption while still surfacing the
+// detailed message to operators.
+var ErrChecksumMismatch = errors.New("crc32c: checksum mismatch")
 
 // castagnoli is the CRC32C polynomial table. Hardware-accelerated on amd64
 // and arm64 via the standard library.
@@ -61,7 +69,7 @@ func (*Codec) DecodeBB(in []byte) ([]byte, error) {
 	expected := binary.LittleEndian.Uint32(in[split:])
 	got := crc32.Checksum(body, castagnoli)
 	if got != expected {
-		return nil, fmt.Errorf("crc32c mismatch: expected %x, got %x", expected, got)
+		return nil, fmt.Errorf("%w: expected %x, got %x", ErrChecksumMismatch, expected, got)
 	}
 	out := make([]byte, len(body))
 	copy(out, body)

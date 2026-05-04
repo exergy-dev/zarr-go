@@ -5,3 +5,9 @@
 /coverage.*
 testdata/corpus/
 .envrc
+
+# Python venvs and caches under testdata/gen
+testdata/gen/.venv/
+testdata/gen/.venv-*/
+**/__pycache__/
+*.pyc

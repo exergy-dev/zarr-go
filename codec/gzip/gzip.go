@@ -21,6 +21,7 @@ import (
 
 	kpgzip "github.com/klauspost/compress/gzip"
 	"github.com/rkm/zarr-go/codec"
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 // Codec is the v3 "gzip" bytes→bytes codec.
@@ -206,13 +207,27 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 	if grow := len(in) * 2; grow > out.Cap() {
 		out.Grow(grow - out.Cap())
 	}
-	if _, err := io.Copy(out, gr); err != nil {
+	maxDec := declimit.Max()
+	var rdr io.Reader = gr
+	if maxDec > 0 {
+		// LimitReader returns EOF after maxDec+1 bytes; if we end up with
+		// more bytes than the cap we know the source overflowed.
+		rdr = io.LimitReader(gr, maxDec+1)
+	}
+	if _, err := io.Copy(out, rdr); err != nil {
 		// Close best-effort; the reader is not safe to reuse.
 		_ = gr.Close()
 		putBuffer(out)
 		br.Reset(nil)
 		readerScratchPool.Put(br)
 		return nil, fmt.Errorf("gzip codec: read: %w", err)
+	}
+	if maxDec > 0 && int64(out.Len()) > maxDec {
+		_ = gr.Close()
+		putBuffer(out)
+		br.Reset(nil)
+		readerScratchPool.Put(br)
+		return nil, fmt.Errorf("gzip codec: decompressed output exceeds %d bytes (set internal/declimit.SetMax to raise)", maxDec)
 	}
 	if err := gr.Close(); err != nil {
 		putBuffer(out)

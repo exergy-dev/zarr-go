@@ -8,6 +8,7 @@ import (
 	"fmt"
 	stdfs "io/fs"
 	"os"
+	"sync"
 
 	"github.com/rkm/zarr-go/store"
 	"golang.org/x/sys/unix"
@@ -68,10 +69,13 @@ func (s *Store) GetMmap(ctx context.Context, key string) ([]byte, func(), error)
 		_ = f.Close()
 		return nil, noopRelease, fmt.Errorf("fs.GetMmap: mmap %q: %w", path, err)
 	}
-	release := func() {
+	// Wrap the unmap+close pair so a buggy double-call from the engine
+	// cannot Munmap freed pages or Close a closed fd — both are silent UB
+	// on Linux otherwise.
+	release := sync.OnceFunc(func() {
 		_ = unix.Munmap(data)
 		_ = f.Close()
-	}
+	})
 	return data, release, nil
 }
 

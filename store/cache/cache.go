@@ -153,6 +153,9 @@ func (s *Store) evictLocked() {
 // Get returns the value at key, consulting the cache first. Concurrent misses
 // for the same key are coalesced into a single underlying Get.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if v, ok := s.lookup(key); ok {
 		return v, nil
 	}

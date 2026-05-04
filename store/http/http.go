@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -153,6 +154,12 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	}
 	if n < 0 {
 		return nil, fmt.Errorf("http store: GetRange: negative length %d", n)
+	}
+	// Guard the Range header against int64 overflow: bytes=off-(off+n-1)
+	// must be representable. Anything that would overflow is far past any
+	// real object size, so cap n to whatever fits.
+	if n > 0 && off > 0 && off > math.MaxInt64-(n-1) {
+		n = math.MaxInt64 - off + 1
 	}
 	u, err := s.resolve(key)
 	if err != nil {

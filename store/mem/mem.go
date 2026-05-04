@@ -44,9 +44,12 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return out, nil
 }
 
-// GetRange returns n bytes starting at off from the value at key. n is clamped
-// to the remaining length. Negative off, or off greater than the value length,
-// returns an error.
+// GetRange returns n bytes starting at off from the value at key. The result
+// is clamped to whatever bytes lie at or after off; if off >= len(value), an
+// empty slice is returned (not an error). Negative off or n is rejected.
+//
+// The empty-on-off-past-EOF semantics match the cloud backends (s3/gcs/azblob)
+// and the fs backend, so codec range-reads see uniform behavior across stores.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -64,11 +67,11 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		return nil, store.ErrKeyNotFound
 	}
 	length := int64(len(v))
-	if off > length {
-		return nil, fmt.Errorf("mem: GetRange: offset %d beyond length %d", off, length)
+	if off >= length || n == 0 {
+		return []byte{}, nil
 	}
 	end := off + n
-	if end > length {
+	if end > length || end < off { // clamp + overflow guard
 		end = length
 	}
 	out := make([]byte, end-off)

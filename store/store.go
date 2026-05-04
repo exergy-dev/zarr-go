@@ -16,6 +16,23 @@ import (
 // is missing. It wraps os.ErrNotExist so errors.Is(err, os.ErrNotExist) works.
 var ErrKeyNotFound = errKeyNotFound{}
 
+// ErrAlreadyExists is returned by higher-level helpers (e.g. CreateArray /
+// CreateGroup) when an atomic SetIfNotExists fails because the target key
+// already exists. Backends do not return this directly — they signal the
+// race by returning (false, nil) from SetIfNotExists; the engine wraps that
+// into ErrAlreadyExists at the API surface.
+//
+// Wraps os.ErrExist so errors.Is(err, os.ErrExist) works for callers that
+// already handle that family.
+var ErrAlreadyExists = errAlreadyExists{}
+
+type errAlreadyExists struct{}
+
+func (errAlreadyExists) Error() string { return "key already exists" }
+func (errAlreadyExists) Is(target error) bool {
+	return target == os.ErrExist || target == fs.ErrExist
+}
+
 type errKeyNotFound struct{}
 
 func (errKeyNotFound) Error() string { return "key not found" }

@@ -22,6 +22,7 @@ type createOptions struct {
 	keyEncName string // "default" or "v2"
 	keySep     string
 	openOpts   arrayOptions
+	overwrite  bool
 }
 
 func defaultCreateOptions() createOptions {
@@ -66,6 +67,36 @@ func WithDimensionNames(names []string) CreateOption {
 	return func(o *createOptions) {
 		o.dimNames = append([]string(nil), names...)
 	}
+}
+
+// WithOverwrite makes CreateArray / CreateGroup unconditionally overwrite
+// any existing zarr.json at the target path. Without it, concurrent creates
+// use SetIfNotExists and the loser receives store.ErrAlreadyExists.
+func WithOverwrite() CreateOption {
+	return func(o *createOptions) {
+		o.overwrite = true
+	}
+}
+
+// writeMetaAtomic writes a freshly-marshaled zarr.json under key. With
+// overwrite=false (the default for Create*) it goes through SetIfNotExists
+// so concurrent producers can race safely; the loser surfaces as
+// store.ErrAlreadyExists. kind/path are folded into the conflict error.
+func writeMetaAtomic(ctx context.Context, ws store.WritableStore, key string, raw []byte, overwrite bool, kind, path string) error {
+	if overwrite {
+		if err := ws.Set(ctx, key, raw); err != nil {
+			return fmt.Errorf("write zarr.json: %w", err)
+		}
+		return nil
+	}
+	ok, err := ws.SetIfNotExists(ctx, key, raw)
+	if err != nil {
+		return fmt.Errorf("write zarr.json: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("create %s at %q: %w", kind, path, store.ErrAlreadyExists)
+	}
+	return nil
 }
 
 // CreateArray creates a new v3 array under path with the given shape and chunk
@@ -139,9 +170,8 @@ func CreateArray[T Numeric](
 	if err != nil {
 		return nil, err
 	}
-	key := joinKey(path, "zarr.json")
-	if err := ws.Set(ctx, key, raw); err != nil {
-		return nil, fmt.Errorf("write zarr.json: %w", err)
+	if err := writeMetaAtomic(ctx, ws, joinKey(path, "zarr.json"), raw, co.overwrite, "array", path); err != nil {
+		return nil, err
 	}
 
 	a := &Array[T]{
@@ -159,26 +189,32 @@ func CreateArray[T Numeric](
 }
 
 // CreateGroup creates a new v3 group under path. The store must implement
-// store.WritableStore.
-func CreateGroup(ctx context.Context, s store.Store, path string, attrs map[string]any) (*Group, error) {
+// store.WritableStore. By default this is an atomic create: if a zarr.json
+// already exists at the target the call returns store.ErrAlreadyExists.
+// Pass WithOverwrite(true) to clobber an existing entry.
+func CreateGroup(ctx context.Context, s store.Store, path string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
 	ws, ok := s.(store.WritableStore)
 	if !ok {
 		return nil, fmt.Errorf("store does not support writes")
+	}
+	co := defaultCreateOptions()
+	for _, opt := range opts {
+		opt(&co)
 	}
 	gm := &metadata.GroupMeta{ZarrFormat: 3, NodeType: "group", Attributes: attrs}
 	raw, err := metadata.MarshalGroup(gm)
 	if err != nil {
 		return nil, err
 	}
-	if err := ws.Set(ctx, joinKey(path, "zarr.json"), raw); err != nil {
+	if err := writeMetaAtomic(ctx, ws, joinKey(path, "zarr.json"), raw, co.overwrite, "group", path); err != nil {
 		return nil, err
 	}
 	return &Group{store: s, path: path, meta: gm, opts: defaultOptions()}, nil
 }
 
 // CreateGroup adds a sub-group named name under g.
-func (g *Group) CreateGroup(ctx context.Context, name string, attrs map[string]any) (*Group, error) {
-	return CreateGroup(ctx, g.store, joinKey(g.path, name), attrs)
+func (g *Group) CreateGroup(ctx context.Context, name string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
+	return CreateGroup(ctx, g.store, joinKey(g.path, name), attrs, opts...)
 }
 
 // errReadOnly is returned by writes against non-writable stores.

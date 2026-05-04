@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/rkm/zarr-go/codec"
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 type Codec struct {
@@ -87,9 +88,17 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 		_ = r.Close()
 		readerPool.Put(r)
 	}()
-	out, err := io.ReadAll(r)
+	maxDec := declimit.Max()
+	var rdr io.Reader = r
+	if maxDec > 0 {
+		rdr = io.LimitReader(r, maxDec+1)
+	}
+	out, err := io.ReadAll(rdr)
 	if err != nil {
 		return nil, fmt.Errorf("zlib codec: read: %w", err)
+	}
+	if maxDec > 0 && int64(len(out)) > maxDec {
+		return nil, fmt.Errorf("zlib codec: decompressed output exceeds %d bytes", maxDec)
 	}
 	return out, nil
 }

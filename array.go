@@ -59,6 +59,16 @@ func isRawCopyFastPipeline(p *codec.Pipeline) bool {
 }
 
 // Array is the typed view of a Zarr array. Construct via OpenArray[T].
+//
+// Concurrency: Array[T].Read is internally concurrent (it dispatches per-chunk
+// fetch+decode goroutines bounded by WithConcurrency / WithIOConcurrency) and
+// is safe to call from multiple goroutines on the same Array.
+//
+// Array[T].Write performs read-modify-write on each touched chunk and does
+// NOT take a chunk-level lock. Concurrent Writes that touch the same chunk
+// can lose updates; concurrent Read+Write may observe a torn intermediate
+// state. Callers that need either pattern must serialize at the application
+// layer (one goroutine writing per array, or a per-chunk mutex).
 type Array[T Numeric] struct {
 	store    store.Store
 	mmap     store.MmapStore // non-nil iff store implements MmapStore
@@ -346,7 +356,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 
 	// Use the AB codec's DecodePartial; thread the store as the fetcher.
 	fetcher := newStoreFetcher(a.store)
-	if err := pd.DecodePartial(ctx, fetcher, key, actual, a.meta.DataType, region, out); err != nil {
+	if err := pd.DecodePartial(ctx, fetcher, key, actual, a.meta.DataType, region, out, a.fill); err != nil {
 		// Translate "key not found" to the same sentinel as the full path
 		// so the caller skips the chunk and leaves the fill value in place.
 		if errors.Is(err, store.ErrKeyNotFound) {
@@ -490,6 +500,7 @@ func (a *Array[T]) decodeAndCopy(
 		Shape: chunkShape, // safe to share; codec doesn't mutate
 		Dtype: a.meta.DataType,
 		Data:  pooled[:0],
+		Fill:  a.fill,
 	}
 	if err := a.pipeline.Decode(raw, &chunk); err != nil {
 		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
@@ -590,7 +601,7 @@ func (a *Array[T]) writeOneChunk(
 		switch {
 		case err == nil:
 			// Decode existing into chunkBuf.
-			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Data: chunkBuf[:0]}
+			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Data: chunkBuf[:0], Fill: a.fill}
 			if err := a.pipeline.Decode(existing, &ck); err != nil {
 				return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
 			}
@@ -643,6 +654,7 @@ func (a *Array[T]) writeOneChunk(
 		Shape: append([]int64(nil), chunkShape...),
 		Dtype: a.meta.DataType,
 		Data:  chunkBuf,
+		Fill:  a.fill,
 	})
 	if err != nil {
 		return fmt.Errorf("encode chunk %v: %w", []int64(coord), err)
@@ -669,6 +681,13 @@ func fillChunk(buf, fill []byte, elemSize int) {
 
 // Stream yields decoded chunks intersecting sel without assembling the full
 // output buffer.
+//
+// The Data slice in each yielded Chunk[T] aliases an internal decode buffer
+// owned by the iterator. It is valid for the lifetime of the body of the
+// for-range loop only; callers that need to retain the bytes across
+// iterations must copy the slice. The iterator allocates a fresh buffer per
+// chunk so consecutive yields don't overlap, but reuse may begin once the
+// loop body returns true.
 func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T], error] {
 	return func(yield func(Chunk[T], error) bool) {
 		if err := sel.Validate(a.meta.Shape); err != nil {
@@ -709,7 +728,7 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 				yield(Chunk[T]{Coord: []int64(coord)}, err)
 				return
 			}
-			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType}
+			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Fill: a.fill}
 			if err := a.pipeline.Decode(raw, &ck); err != nil {
 				yield(Chunk[T]{Coord: []int64(coord)}, &DecodeError{
 					Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err,

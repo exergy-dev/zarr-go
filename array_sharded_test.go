@@ -3,12 +3,72 @@ package zarr_test
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/rkm/zarr-go"
 	"github.com/rkm/zarr-go/codec"
 	"github.com/rkm/zarr-go/store/mem"
 )
+
+// TestSharded_NaNFillRoundTrip checks that a sharded array with
+// fill_value=NaN round-trips NaN through absent inner chunks.
+func TestSharded_NaNFillRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	shape := []int64{8, 8}
+	chunks := []int64{8, 8}
+	a, err := zarr.CreateArray[float32](ctx, s, "arr", shape, chunks,
+		zarr.WithFillValue(json.RawMessage(`"NaN"`)),
+		zarr.WithCodecs(
+			codec.Spec{Name: "sharding_indexed", Configuration: json.RawMessage(`{
+				"chunk_shape": [2, 2],
+				"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+				"index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}, {"name": "crc32c"}]
+			}`)},
+		))
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+
+	// Write an 8x8 buffer where one inner chunk's worth (top-left 2x2) is
+	// already-fill NaN; the rest is real data.
+	src := make([]float32, shape[0]*shape[1])
+	for i := range src {
+		src[i] = float32(i + 1)
+	}
+	for r := 0; r < 2; r++ {
+		for c := 0; c < 2; c++ {
+			src[r*int(shape[1])+c] = float32(math.NaN())
+		}
+	}
+	if err := a.Write(ctx, zarr.All(shape), src); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Re-open and read. The top-left 2x2 must read back as NaN; everything
+	// else must match src.
+	b, err := zarr.OpenArray[float32](ctx, s, "arr")
+	if err != nil {
+		t.Fatalf("OpenArray: %v", err)
+	}
+	got := make([]float32, shape[0]*shape[1])
+	if err := b.Read(ctx, zarr.All(shape), got); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for i := range src {
+		r, c := i/int(shape[1]), i%int(shape[1])
+		if r < 2 && c < 2 {
+			if !math.IsNaN(float64(got[i])) {
+				t.Fatalf("[%d,%d]: got %v, want NaN (fill round-trip broken)", r, c, got[i])
+			}
+			continue
+		}
+		if got[i] != src[i] {
+			t.Fatalf("[%d,%d]: got %v want %v", r, c, got[i], src[i])
+		}
+	}
+}
 
 // TestSharded_PartialReadEngine verifies the engine's partial-decode wiring:
 // a sharded array is created, populated, then a sub-region read is issued.

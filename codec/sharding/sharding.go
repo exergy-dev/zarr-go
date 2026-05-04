@@ -41,10 +41,10 @@ type Codec struct {
 }
 
 type configJSON struct {
-	ChunkShape    []int64       `json:"chunk_shape"`
-	Codecs        []codec.Spec  `json:"codecs"`
-	IndexCodecs   []codec.Spec  `json:"index_codecs,omitempty"`
-	IndexLocation *string       `json:"index_location,omitempty"`
+	ChunkShape    []int64      `json:"chunk_shape"`
+	Codecs        []codec.Spec `json:"codecs"`
+	IndexCodecs   []codec.Spec `json:"index_codecs,omitempty"`
+	IndexLocation *string      `json:"index_location,omitempty"`
 }
 
 // Name returns the v3 codec name.
@@ -382,17 +382,51 @@ func isZero(b []byte) bool {
 	return true
 }
 
+// writeFill replicates fill (one element's bytes) across dst in place. With
+// fill nil/empty dst is zeroed. Doubling-copy keeps the inner loop log(n)
+// rather than n/esz, and avoids an n-byte scratch allocation.
+func writeFill(dst, fill []byte) {
+	if len(fill) == 0 || isZero(fill) {
+		clear(dst)
+		return
+	}
+	if len(dst) < len(fill) {
+		return
+	}
+	copy(dst[:len(fill)], fill)
+	for filled := len(fill); filled < len(dst); filled *= 2 {
+		copy(dst[filled:], dst[:filled])
+	}
+}
+
+// matchesFill reports whether b is equal to fill replicated to len(b) bytes.
+// Empty/nil fill is treated as all-zeros.
+func matchesFill(b, fill []byte) bool {
+	if len(fill) == 0 {
+		return isZero(b)
+	}
+	if len(b)%len(fill) != 0 {
+		return false
+	}
+	for i := 0; i < len(b); i += len(fill) {
+		for j := 0; j < len(fill); j++ {
+			if b[i+j] != fill[j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // DecodeAB decodes a shard buffer into out.Data (which is sized to the outer
-// shard shape). Missing inner chunks leave their region zero-filled.
+// shard shape). Inner chunks marked absent in the index are pre-filled with
+// out.Fill (or zero when out.Fill is nil), matching the array's fill_value.
 func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	if out == nil {
 		return fmt.Errorf("sharding_indexed: nil output chunk")
 	}
 	if c.inner == nil || c.index == nil {
 		return fmt.Errorf("sharding_indexed: codec not configured")
-	}
-	if c.IndexLocation != IndexEnd {
-		return fmt.Errorf("sharding_indexed: index_location=start not supported")
 	}
 	esz := elemSize(out.Dtype)
 	if esz == 0 {
@@ -412,8 +446,17 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	if int64(len(in)) < idxLen {
 		return fmt.Errorf("sharding_indexed: shard too short: %d < index trailer %d", len(in), idxLen)
 	}
-	idxStart := int64(len(in)) - idxLen
-	entries, err := c.decodeIndex(in[idxStart:], n)
+	// Locate the index payload according to the configured layout.
+	var idxBytes []byte
+	switch c.IndexLocation {
+	case IndexEnd:
+		idxBytes = in[int64(len(in))-idxLen:]
+	case IndexStart:
+		idxBytes = in[:idxLen]
+	default:
+		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.IndexLocation)
+	}
+	entries, err := c.decodeIndex(idxBytes, n)
 	if err != nil {
 		return err
 	}
@@ -422,20 +465,24 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	totalBytes := totalElems * int64(esz)
 	if int64(cap(out.Data)) >= totalBytes {
 		out.Data = out.Data[:totalBytes]
-		// Zero it out: missing chunks read as fill (zero here).
-		for i := range out.Data {
-			out.Data[i] = 0
-		}
 	} else {
 		out.Data = make([]byte, totalBytes)
 	}
+	// Pre-fill the entire output with the array's fill value so any missing
+	// inner chunks read back as fill (the spec contract). Empty/nil fill
+	// degenerates to zero-fill via writeFill.
+	fill := out.Fill
+	if len(fill) != esz {
+		fill = nil
+	}
+	writeFill(out.Data, fill)
 
 	coord := make([]int64, len(grid))
 	for i := int64(0); i < n; i++ {
 		off := entries[2*i]
 		ln := entries[2*i+1]
 		if off == emptyMarker && ln == emptyMarker {
-			// Empty inner chunk: leave zeros.
+			// Absent inner chunk: out.Data is already pre-filled with fill.
 			if !nextCoord(coord, grid) && i != n-1 {
 				return fmt.Errorf("sharding_indexed: ran out of grid coords")
 			}
@@ -449,6 +496,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 		innerChunk := codec.ArrayChunk{
 			Shape: innerShape,
 			Dtype: out.Dtype,
+			Fill:  out.Fill,
 		}
 		if err := c.inner.Decode(in[off:off+ln], &innerChunk); err != nil {
 			return fmt.Errorf("sharding_indexed: decode inner chunk %d: %w", i, err)
@@ -468,16 +516,16 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 
 // EncodeAB encodes an outer shard chunk into the on-wire shard byte buffer.
 //
-// Inner chunks whose element bytes are all zero are written as empty (sentinel)
-// entries in the index, matching the common Zarr convention that fill-value
-// regions are not stored. Callers that need different fill semantics should
-// pre-fill the buffer with their fill value before encoding.
+// Inner chunks whose element bytes equal in.Fill (replicated across the inner
+// chunk) are written as empty (sentinel) entries in the index, matching the
+// Zarr convention that fill-value regions are not stored. When in.Fill is nil
+// the codec falls back to "all-zero means absent".
+//
+// IndexLocation controls whether the index trailer sits before (IndexStart)
+// or after (IndexEnd, default) the body of inner-chunk bytes.
 func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	if c.inner == nil || c.index == nil {
 		return nil, fmt.Errorf("sharding_indexed: codec not configured")
-	}
-	if c.IndexLocation != IndexEnd {
-		return nil, fmt.Errorf("sharding_indexed: index_location=start not supported")
 	}
 	esz := elemSize(in.Dtype)
 	if esz == 0 {
@@ -495,14 +543,34 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 			len(in.Data), expected)
 	}
 
+	// Pre-compute the index encoded size so we can lay out body offsets in
+	// the IndexStart layout. The trailer length is deterministic for fixed n.
+	idxLen, err := c.indexEncodedSize(n)
+	if err != nil {
+		return nil, fmt.Errorf("sharding_indexed: compute index size: %w", err)
+	}
+	var bodyOffset int64
+	if c.IndexLocation == IndexStart {
+		bodyOffset = idxLen
+	}
+
 	entries := make([]uint64, n*2)
-	var body []byte
+	// Pre-size body to the raw element count: encoded inner chunks are
+	// usually ≤ raw size for compressed pipelines and = raw size for the
+	// bytes-only path, so this avoids the O(log n) reallocations that an
+	// uncapped append would incur for large shards.
+	body := make([]byte, 0, len(in.Data))
+
+	fill := in.Fill
+	if fill != nil && len(fill) != esz {
+		return nil, fmt.Errorf("sharding_indexed: fill size %d != element size %d", len(fill), esz)
+	}
 
 	coord := make([]int64, len(grid))
 	for i := int64(0); i < n; i++ {
 		innerShape := innerShapeAt(coord, c.ChunkShape, in.Shape)
 		innerBytes := extractRegion(in.Data, in.Shape, coord, c.ChunkShape, innerShape, esz)
-		if isZero(innerBytes) {
+		if matchesFill(innerBytes, fill) {
 			entries[2*i] = emptyMarker
 			entries[2*i+1] = emptyMarker
 		} else {
@@ -510,12 +578,13 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 				Shape: innerShape,
 				Dtype: in.Dtype,
 				Data:  innerBytes,
+				Fill:  fill,
 			}
 			encoded, err := c.encodeInner(innerChunk)
 			if err != nil {
 				return nil, fmt.Errorf("sharding_indexed: encode inner chunk %d: %w", i, err)
 			}
-			entries[2*i] = uint64(len(body))
+			entries[2*i] = uint64(bodyOffset + int64(len(body)))
 			entries[2*i+1] = uint64(len(encoded))
 			body = append(body, encoded...)
 		}
@@ -528,9 +597,20 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if int64(len(indexBytes)) != idxLen {
+		// Should be impossible — encodeIndex is deterministic for fixed n.
+		return nil, fmt.Errorf("sharding_indexed: index payload size %d != expected %d",
+			len(indexBytes), idxLen)
+	}
 	out := make([]byte, 0, len(body)+len(indexBytes))
-	out = append(out, body...)
-	out = append(out, indexBytes...)
+	switch c.IndexLocation {
+	case IndexStart:
+		out = append(out, indexBytes...)
+		out = append(out, body...)
+	default: // IndexEnd
+		out = append(out, body...)
+		out = append(out, indexBytes...)
+	}
 	return out, nil
 }
 

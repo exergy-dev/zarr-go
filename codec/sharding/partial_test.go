@@ -18,10 +18,10 @@ import (
 // sharding.SuffixRangeFetcher so the codec exercises the suffix-range path
 // (the dominant cloud codepath).
 type countingFetcher struct {
-	key   string
-	blob  []byte
-	gets  int64 // GetRange calls
-	suff  int64 // GetSuffix calls
+	key  string
+	blob []byte
+	gets int64 // GetRange calls
+	suff int64 // GetSuffix calls
 }
 
 func (f *countingFetcher) GetRange(_ context.Context, key string, off, n int64) ([]byte, error) {
@@ -114,7 +114,7 @@ func TestDecodePartialFetchCount(t *testing.T) {
 	regionBytes := 4 * 4 * 4
 	out := make([]byte, regionBytes)
 	f := &countingFetcher{key: "shard", blob: encoded}
-	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region, out); err != nil {
+	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region, out, nil); err != nil {
 		t.Fatalf("DecodePartial: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestDecodePartialFallback(t *testing.T) {
 	regionBytes := 4 * 4 * 4
 	out := make([]byte, regionBytes)
 	f := &rangeOnlyFetcher{key: "shard", blob: encoded}
-	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region, out); err != nil {
+	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region, out, nil); err != nil {
 		t.Fatalf("DecodePartial: %v", err)
 	}
 
@@ -257,7 +257,7 @@ func TestDecodePartialEdgeCases(t *testing.T) {
 	// Case 1: region is the entire shard.
 	out := make([]byte, dim*dim*4)
 	region := []codec.DimRange{{Start: 0, Stop: dim, Step: 1}, {Start: 0, Stop: dim, Step: 1}}
-	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region, out); err != nil {
+	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region, out, nil); err != nil {
 		t.Fatalf("full-region DecodePartial: %v", err)
 	}
 	if !bytes.Equal(out, int32Bytes(vals)) {
@@ -267,7 +267,7 @@ func TestDecodePartialEdgeCases(t *testing.T) {
 	// Case 2: region intersects only the empty inner chunk -> all zeros.
 	out2 := make([]byte, 2*2*4)
 	region2 := []codec.DimRange{{Start: 0, Stop: 2, Step: 1}, {Start: 2, Stop: 4, Step: 1}}
-	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region2, out2); err != nil {
+	if err := pd.DecodePartial(context.Background(), f, "shard", []int64{dim, dim}, "int32", region2, out2, nil); err != nil {
 		t.Fatalf("empty-region DecodePartial: %v", err)
 	}
 	for _, b := range out2 {

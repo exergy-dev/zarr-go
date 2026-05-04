@@ -90,8 +90,8 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 func TestGetPresentAndAbsent(t *testing.T) {
 	t.Parallel()
 	data := map[string][]byte{
-		"zarr.json":       []byte(`{"zarr_format":3}`),
-		"chunks/c/0/0":    []byte("chunk-bytes"),
+		"zarr.json":    []byte(`{"zarr_format":3}`),
+		"chunks/c/0/0": []byte("chunk-bytes"),
 	}
 	s, _ := newTestStore(t, data, nil, [2]string{})
 

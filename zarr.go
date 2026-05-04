@@ -86,10 +86,11 @@ func openV2(ctx context.Context, s store.Store, path string, o arrayOptions) (No
 		if err != nil {
 			return nil, err
 		}
-		// Optional .zattrs merge.
-		if attrs, aerr := s.Get(ctx, joinKey(path, ".zattrs")); aerr == nil {
-			am.Attributes = parseAttrs(attrs)
+		attrs, err := loadAttrs(ctx, s, path)
+		if err != nil {
+			return nil, err
 		}
+		am.Attributes = attrs
 		return openArrayDynamic(s, path, am, o)
 	} else if !errors.Is(err, store.ErrKeyNotFound) {
 		return nil, fmt.Errorf("read .zarray at %q: %w", path, err)
@@ -99,9 +100,11 @@ func openV2(ctx context.Context, s store.Store, path string, o arrayOptions) (No
 		if err != nil {
 			return nil, err
 		}
-		if attrs, aerr := s.Get(ctx, joinKey(path, ".zattrs")); aerr == nil {
-			gm.Attributes = parseAttrs(attrs)
+		attrs, err := loadAttrs(ctx, s, path)
+		if err != nil {
+			return nil, err
 		}
+		gm.Attributes = attrs
 		return &Group{store: s, path: path, meta: gm, opts: o}, nil
 	} else if !errors.Is(err, store.ErrKeyNotFound) {
 		return nil, fmt.Errorf("read .zgroup at %q: %w", path, err)
@@ -127,9 +130,11 @@ func loadArrayMeta(ctx context.Context, s store.Store, path string) (*metadata.A
 		if derr != nil {
 			return nil, derr
 		}
-		if attrs, aerr := s.Get(ctx, joinKey(path, ".zattrs")); aerr == nil {
-			am.Attributes = parseAttrs(attrs)
+		attrs, lerr := loadAttrs(ctx, s, path)
+		if lerr != nil {
+			return nil, lerr
 		}
+		am.Attributes = attrs
 		return am, nil
 	} else if !errors.Is(err, store.ErrKeyNotFound) {
 		return nil, fmt.Errorf("read .zarray at %q: %w", path, err)
@@ -137,12 +142,22 @@ func loadArrayMeta(ctx context.Context, s store.Store, path string) (*metadata.A
 	return nil, fmt.Errorf("no v2 or v3 array metadata found at %q", path)
 }
 
-func parseAttrs(raw []byte) map[string]any {
+// loadAttrs fetches and parses the optional .zattrs sidecar at path. A
+// missing file returns (nil, nil); any other read or parse error is
+// surfaced with path context.
+func loadAttrs(ctx context.Context, s store.Store, path string) (map[string]any, error) {
+	raw, err := s.Get(ctx, joinKey(path, ".zattrs"))
+	if errors.Is(err, store.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read .zattrs at %q: %w", path, err)
+	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
+		return nil, fmt.Errorf("parse .zattrs at %q: %w", path, err)
 	}
-	return out
+	return out, nil
 }
 
 // OpenArray opens the array at path and asserts its dtype matches T. Detects

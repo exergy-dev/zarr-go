@@ -89,9 +89,13 @@ func TestGetRange(t *testing.T) {
 	if _, err := s.GetRange(ctx, "k", -1, 1); err == nil {
 		t.Fatal("expected error for negative offset")
 	}
-	// off > length.
-	if _, err := s.GetRange(ctx, "k", 11, 1); err == nil {
-		t.Fatal("expected error for offset beyond length")
+	// off > length: empty slice, no error (matches fs/s3/gcs/azblob).
+	past, err := s.GetRange(ctx, "k", 11, 1)
+	if err != nil {
+		t.Fatalf("GetRange past EOF: %v", err)
+	}
+	if len(past) != 0 {
+		t.Fatalf("GetRange past EOF = %q, want empty", past)
 	}
 	// Missing key.
 	if _, err := s.GetRange(ctx, "missing", 0, 1); !errors.Is(err, store.ErrKeyNotFound) {

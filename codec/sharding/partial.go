@@ -39,6 +39,10 @@ import (
 const coalesceGapBytes int64 = 4 * 1024 * 1024
 
 // DecodePartial implements codec.PartialDecoder.
+//
+// fill, when non-nil, is one element's worth of native-LE bytes representing
+// the array's fill value; outBuf is pre-filled with it before decoding so any
+// region overlapping an absent inner chunk reads back as fill.
 func (c *Codec) DecodePartial(
 	ctx context.Context,
 	fetcher codec.RangeFetcher,
@@ -47,12 +51,13 @@ func (c *Codec) DecodePartial(
 	dtype string,
 	region []codec.DimRange,
 	outBuf []byte,
+	fill []byte,
 ) error {
 	if c.inner == nil || c.index == nil {
 		return fmt.Errorf("sharding_indexed: codec not configured")
 	}
-	if c.IndexLocation != IndexEnd {
-		return fmt.Errorf("sharding_indexed: index_location=start not supported")
+	if c.IndexLocation != IndexEnd && c.IndexLocation != IndexStart {
+		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.IndexLocation)
 	}
 	if len(region) != len(fullShape) {
 		return fmt.Errorf("sharding_indexed: region rank %d != chunk rank %d", len(region), len(fullShape))
@@ -79,10 +84,13 @@ func (c *Codec) DecodePartial(
 	if int64(len(outBuf)) != expectedOut {
 		return fmt.Errorf("sharding_indexed: outBuf size %d != expected %d", len(outBuf), expectedOut)
 	}
-	// Zero outBuf so that absent inner chunks (sentinel) read as fill (zero).
-	for i := range outBuf {
-		outBuf[i] = 0
+	// Pre-fill outBuf with fill so any region overlapping an absent inner
+	// chunk reads as the array's fill_value (not zero). Empty/nil fill
+	// degenerates to zero-fill via writeFill.
+	if len(fill) != esz {
+		fill = nil
 	}
+	writeFill(outBuf, fill)
 	if elementCount(regionShape) == 0 {
 		return nil
 	}
@@ -93,42 +101,44 @@ func (c *Codec) DecodePartial(
 	}
 	n := numInner(grid)
 
-	// 1) Fetch the index trailer.
-	//
-	// The trailer length is a deterministic function of the inner-chunk
-	// count and the index pipeline (computed by indexEncodedSize). To read
-	// it we need the trailer's offset = shardLen - idxLen. The
-	// codec.RangeFetcher interface doesn't expose blob length, so we prefer
-	// SuffixRangeFetcher (cloud stores can serve `Range: bytes=-N` natively
-	// and the engine adapter exposes it for local stores via cached length).
-	// If no suffix API is available we fall back to fetching the whole shard
-	// in one GetRange (large-N, clamped by the backend). That loses the
-	// bandwidth win but preserves correctness and the memory/CPU wins.
+	// 1) Fetch the index payload at the configured location.
 	idxLen, err := c.indexEncodedSize(n)
 	if err != nil {
 		return fmt.Errorf("sharding_indexed: compute index size: %w", err)
 	}
 
 	var indexBytes []byte
-	if sf, ok := fetcher.(SuffixRangeFetcher); ok {
-		indexBytes, err = sf.GetSuffix(ctx, key, idxLen)
+	if c.IndexLocation == IndexEnd {
+		if sf, ok := fetcher.(SuffixRangeFetcher); ok {
+			indexBytes, err = sf.GetSuffix(ctx, key, idxLen)
+			if err != nil {
+				return fmt.Errorf("sharding_indexed: fetch index trailer: %w", err)
+			}
+			if int64(len(indexBytes)) != idxLen {
+				return fmt.Errorf("sharding_indexed: index trailer short: got %d want %d", len(indexBytes), idxLen)
+			}
+		} else {
+			whole, err := fetcher.GetRange(ctx, key, 0, maxRangeBytes)
+			if err != nil {
+				return fmt.Errorf("sharding_indexed: fetch shard: %w", err)
+			}
+			shardLen := int64(len(whole))
+			if shardLen < idxLen {
+				return fmt.Errorf("sharding_indexed: shard too short: %d < %d", shardLen, idxLen)
+			}
+			indexBytes = whole[shardLen-idxLen:]
+			fetcher = &slicedFetcher{key: key, base: whole}
+		}
+	} else { // IndexStart
+		// The index sits at offset 0; one positional range read is enough.
+		head, err := fetcher.GetRange(ctx, key, 0, idxLen)
 		if err != nil {
-			return fmt.Errorf("sharding_indexed: fetch index trailer: %w", err)
+			return fmt.Errorf("sharding_indexed: fetch index header: %w", err)
 		}
-		if int64(len(indexBytes)) != idxLen {
-			return fmt.Errorf("sharding_indexed: index trailer short: got %d want %d", len(indexBytes), idxLen)
+		if int64(len(head)) != idxLen {
+			return fmt.Errorf("sharding_indexed: index header short: got %d want %d", len(head), idxLen)
 		}
-	} else {
-		whole, err := fetcher.GetRange(ctx, key, 0, maxRangeBytes)
-		if err != nil {
-			return fmt.Errorf("sharding_indexed: fetch shard: %w", err)
-		}
-		shardLen := int64(len(whole))
-		if shardLen < idxLen {
-			return fmt.Errorf("sharding_indexed: shard too short: %d < %d", shardLen, idxLen)
-		}
-		indexBytes = whole[shardLen-idxLen:]
-		fetcher = &slicedFetcher{key: key, base: whole}
+		indexBytes = head
 	}
 
 	entries, err := c.decodeIndex(indexBytes, n)

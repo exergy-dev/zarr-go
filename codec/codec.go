@@ -27,10 +27,17 @@ var ErrRequiresCGO = errors.New("codec requires cgo build")
 // ArrayChunk is the in-memory representation of one chunk during decode/encode.
 // Data is the typed element buffer in row-major order; its byte length must
 // equal product(Shape) * Dtype.Size().
+//
+// Fill, when non-nil, is one element's worth of native-LE bytes representing
+// the array's fill value. Codecs that need fill-aware semantics (notably
+// sharding_indexed, which represents missing inner chunks) should consult it.
+// Codecs that don't care MAY ignore it. Length, when non-zero, must equal
+// the dtype's element size.
 type ArrayChunk struct {
 	Shape []int64
 	Dtype string // canonical v3 dtype name (e.g., "float32")
 	Data  []byte
+	Fill  []byte
 }
 
 // Codec is the common interface; every codec is one of the three kinds below.
@@ -96,6 +103,10 @@ type DimRange struct {
 // chunk-local sub-region to decode (Step must be 1 along every dim). outBuf
 // must be pre-sized to product(region lengths) * elementSize(dtype) and is
 // populated in row-major order matching the region shape.
+//
+// fill, when non-nil, is one element's worth of native-LE bytes representing
+// the array's fill value. Sharded codecs use it to fill regions corresponding
+// to missing inner chunks; codecs that don't care MAY ignore it.
 type PartialDecoder interface {
 	DecodePartial(
 		ctx context.Context,
@@ -105,6 +116,7 @@ type PartialDecoder interface {
 		dtype string,
 		region []DimRange,
 		outBuf []byte,
+		fill []byte,
 	) error
 }
 
@@ -200,7 +212,7 @@ func BuildPipeline(specs []Spec) (*Pipeline, error) {
 func (p *Pipeline) Encode(in ArrayChunk) ([]byte, error) {
 	cur := in
 	for _, c := range p.AA {
-		next := ArrayChunk{Shape: cur.Shape, Dtype: cur.Dtype}
+		next := ArrayChunk{Shape: cur.Shape, Dtype: cur.Dtype, Fill: cur.Fill}
 		if err := c.EncodeAA(cur, &next); err != nil {
 			return nil, fmt.Errorf("codec %q: %w", c.Name(), err)
 		}
@@ -237,7 +249,7 @@ func (p *Pipeline) Decode(in []byte, out *ArrayChunk) error {
 	}
 	// array->array in reverse
 	for i := len(p.AA) - 1; i >= 0; i-- {
-		tmp := ArrayChunk{Shape: out.Shape, Dtype: out.Dtype}
+		tmp := ArrayChunk{Shape: out.Shape, Dtype: out.Dtype, Fill: out.Fill}
 		if err := p.AA[i].DecodeAA(*out, &tmp); err != nil {
 			return fmt.Errorf("codec %q: %w", p.AA[i].Name(), err)
 		}

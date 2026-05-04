@@ -13,6 +13,8 @@ import (
 	"sync"
 
 	kpzstd "github.com/klauspost/compress/zstd"
+
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 // scratchPool reuses []byte scratch space across Encode/Decode calls. The
@@ -162,10 +164,14 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 		putScratch(scratchP)
 		return nil, fmt.Errorf("zstd codec: decode: %w", err)
 	}
+	if maxDec := declimit.Max(); maxDec > 0 && int64(len(decoded)) > maxDec {
+		*scratchP = decoded
+		putScratch(scratchP)
+		return nil, fmt.Errorf("zstd codec: decompressed output exceeds %d bytes", maxDec)
+	}
 	out := make([]byte, len(decoded))
 	copy(out, decoded)
 	*scratchP = decoded
 	putScratch(scratchP)
 	return out, nil
 }
-
