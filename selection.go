@@ -126,6 +126,15 @@ func ChunkSelection(arrayShape, chunkShape []int64, sel Selection, coord ChunkCo
 	rank := len(arrayShape)
 	chunkSrc = make([]DimRange, rank)
 	outDst = make([]DimRange, rank)
+	chunkSelectionInto(arrayShape, chunkShape, sel, coord, chunkSrc, outDst)
+	return chunkSrc, outDst
+}
+
+// chunkSelectionInto fills caller-supplied chunkSrc and outDst slices (each of
+// len rank) with the chunk-local source range and output destination range for
+// the chunk at coord. This avoids allocating new slices per chunk.
+func chunkSelectionInto(arrayShape, chunkShape []int64, sel Selection, coord ChunkCoord, chunkSrc, outDst []DimRange) {
+	rank := len(arrayShape)
 	for i := 0; i < rank; i++ {
 		r := sel.Ranges[i]
 		chunkOrigin := coord[i] * chunkShape[i]
@@ -150,5 +159,4 @@ func ChunkSelection(arrayShape, chunkShape []int64, sel Selection, coord ChunkCo
 		outStop := outStart + chunkSrc[i].Length()
 		outDst[i] = DimRange{Start: outStart, Stop: outStop, Step: 1}
 	}
-	return chunkSrc, outDst
 }

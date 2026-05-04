@@ -50,6 +50,23 @@ func (a *Array[T]) Chunks() []int64 {
 // Dtype returns the array's element type.
 func (a *Array[T]) Dtype() Dtype { return a.dtype }
 
+// maxStackRank is the maximum array rank for which per-chunk scratch buffers
+// are kept on the stack (as fixed-size arrays) instead of heap-allocated
+// per-chunk slices. Real-world Zarr arrays are almost always rank <= 8;
+// higher ranks fall back to heap allocation, which is correct but slower.
+const maxStackRank = 8
+
+// chunkScratch holds fixed-size scratch arrays used per chunk during Read.
+// When rank <= maxStackRank, slicing these arrays avoids heap allocation
+// because the whole struct lives on the calling goroutine's stack.
+type chunkScratch struct {
+	chunkSrc     [maxStackRank]DimRange
+	outDst       [maxStackRank]DimRange
+	chunkStrides [maxStackRank]int64
+	regionLen    [maxStackRank]int64
+	idx          [maxStackRank]int64
+}
+
 // Read materializes the selection into dst. dst must hold sel.NumElements()
 // elements; layout is row-major (C order).
 func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
@@ -75,17 +92,31 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 	}
 	outStrides := rowMajorStrides(outShape)
 
-	work := make([]ChunkCoord, 0)
-	for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
-		work = append(work, c.Clone())
+	// Collect chunk coords. For rank <= maxStackRank, store coords as
+	// fixed-size arrays to avoid one []int64 allocation per chunk
+	// (ChunkCoord.Clone). For higher ranks, fall back to heap-allocated
+	// ChunkCoord clones.
+	var workFixed [][maxStackRank]int64
+	var workHeap []ChunkCoord
+	if rank <= maxStackRank {
+		for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
+			var fc [maxStackRank]int64
+			copy(fc[:rank], c)
+			workFixed = append(workFixed, fc)
+		}
+	} else {
+		for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
+			workHeap = append(workHeap, c.Clone())
+		}
 	}
-	if len(work) == 0 {
+	nwork := len(workFixed) + len(workHeap)
+	if nwork == 0 {
 		return nil
 	}
 
 	conc := a.opts.concurrency
-	if conc > len(work) {
-		conc = len(work)
+	if conc > nwork {
+		conc = nwork
 	}
 	if conc < 1 {
 		conc = 1
@@ -105,11 +136,10 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 		firstErrMu.Unlock()
 	}
 
-	for _, c := range work {
-		coord := c
+	launch := func(coord ChunkCoord) {
 		select {
 		case <-cctx.Done():
-			break
+			return
 		case sem <- struct{}{}:
 		}
 		wg.Add(1)
@@ -130,6 +160,16 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 			}
 		}()
 	}
+
+	for i := range workFixed {
+		// &workFixed[i] is stable for the lifetime of this Read call;
+		// the goroutine retains the slice header but the underlying
+		// array lives in workFixed's backing storage.
+		launch(ChunkCoord(workFixed[i][:rank]))
+	}
+	for _, c := range workHeap {
+		launch(c)
+	}
 	wg.Wait()
 	if firstErr != nil {
 		return firstErr
@@ -146,7 +186,26 @@ func (a *Array[T]) decodeAndCopy(
 	chunkShape, outShape, outStrides []int64,
 	dst []T,
 ) error {
-	chunkSrc, outDst := ChunkSelection(a.meta.Shape, chunkShape, sel, coord)
+	rank := len(chunkShape)
+	var scratch chunkScratch
+	var (
+		srcSlice, dstSlice                     []DimRange
+		stridesSlice, regionLenSlice, idxSlice []int64
+	)
+	if rank <= maxStackRank {
+		srcSlice = scratch.chunkSrc[:rank]
+		dstSlice = scratch.outDst[:rank]
+		stridesSlice = scratch.chunkStrides[:rank]
+		regionLenSlice = scratch.regionLen[:rank]
+		idxSlice = scratch.idx[:rank]
+	} else {
+		srcSlice = make([]DimRange, rank)
+		dstSlice = make([]DimRange, rank)
+		stridesSlice = make([]int64, rank)
+		regionLenSlice = make([]int64, rank)
+		idxSlice = make([]int64, rank)
+	}
+	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, srcSlice, dstSlice)
 	elemSize := int(unsafe.Sizeof(*new(T)))
 	chunkBytes := elemSize
 	for _, d := range chunkShape {
@@ -164,9 +223,10 @@ func (a *Array[T]) decodeAndCopy(
 	}
 
 	copyChunkRegion[T](
-		chunk.Data, chunkShape, chunkSrc,
-		dst, outShape, outStrides, outDst,
+		chunk.Data, chunkShape, srcSlice,
+		dst, outShape, outStrides, dstSlice,
 		elemSize,
+		stridesSlice, regionLenSlice, idxSlice,
 	)
 	return nil
 }
@@ -394,16 +454,22 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 
 // rowMajorStrides returns element strides (not byte strides) in row-major order.
 func rowMajorStrides(shape []int64) []int64 {
-	rank := len(shape)
-	s := make([]int64, rank)
-	if rank == 0 {
-		return s
-	}
-	s[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		s[i] = s[i+1] * shape[i+1]
-	}
+	s := make([]int64, len(shape))
+	rowMajorStridesInto(shape, s)
 	return s
+}
+
+// rowMajorStridesInto fills out (len rank) with the row-major element strides
+// for shape. Caller-allocated variant of rowMajorStrides.
+func rowMajorStridesInto(shape, out []int64) {
+	rank := len(shape)
+	if rank == 0 {
+		return
+	}
+	out[rank-1] = 1
+	for i := rank - 2; i >= 0; i-- {
+		out[i] = out[i+1] * shape[i+1]
+	}
 }
 
 // hasNonZeroFill reports whether any byte in fill is non-zero.
@@ -444,12 +510,13 @@ func copyChunkRegion[T Numeric](
 	chunkBytes []byte, chunkShape []int64, chunkSrc []DimRange,
 	dst []T, outShape, outStrides []int64, outDst []DimRange,
 	elemSize int,
+	chunkStrides, regionLen, idx []int64,
 ) {
 	rank := len(chunkShape)
-	chunkStrides := rowMajorStrides(chunkShape)
-	regionLen := make([]int64, rank)
-	for i := range regionLen {
+	rowMajorStridesInto(chunkShape, chunkStrides)
+	for i := 0; i < rank; i++ {
 		regionLen[i] = outDst[i].Stop - outDst[i].Start
+		idx[i] = 0
 	}
 	total := int64(1)
 	for _, n := range regionLen {
@@ -521,7 +588,11 @@ func copyChunkRegion[T Numeric](
 			innerDstBase += outDst[d].Start * outStrides[d]
 		}
 
-		idx := make([]int64, outerRank)
+		// Reuse caller-supplied idx (sliced to outerRank).
+		outerIdx := idx[:outerRank]
+		for d := 0; d < outerRank; d++ {
+			outerIdx[d] = 0
+		}
 		// Total iterations over the outer dims.
 		outerTotal := int64(1)
 		for d := 0; d < outerRank; d++ {
@@ -530,26 +601,26 @@ func copyChunkRegion[T Numeric](
 		for k := int64(0); k < outerTotal; k++ {
 			var srcEl, dstEl int64
 			for d := 0; d < outerRank; d++ {
-				srcEl += (chunkSrc[d].Start + idx[d]) * chunkStrides[d]
-				dstEl += (outDst[d].Start + idx[d]) * outStrides[d]
+				srcEl += (chunkSrc[d].Start + outerIdx[d]) * chunkStrides[d]
+				dstEl += (outDst[d].Start + outerIdx[d]) * outStrides[d]
 			}
 			srcOff := (srcEl + innerSrcBase) * int64(elemSize)
 			dstOff := (dstEl + innerDstBase) * int64(elemSize)
 			copy(dstBytes[dstOff:dstOff+innerBytes], chunkBytes[srcOff:srcOff+innerBytes])
-			// Increment idx row-major (last outer dim fastest).
+			// Increment outerIdx row-major (last outer dim fastest).
 			for d := outerRank - 1; d >= 0; d-- {
-				idx[d]++
-				if idx[d] < regionLen[d] {
+				outerIdx[d]++
+				if outerIdx[d] < regionLen[d] {
 					break
 				}
-				idx[d] = 0
+				outerIdx[d] = 0
 			}
 		}
 		return
 	}
 
 	// Fallback: stride > 1 in some dim — element-by-element copy.
-	idx := make([]int64, rank)
+	// idx already zeroed at function entry.
 	for k := int64(0); k < total; k++ {
 		// Map idx → source element offset, dest element offset.
 		var srcEl, dstEl int64
