@@ -71,6 +71,43 @@ type RangeFetcher interface {
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 }
 
+// DimRange describes a half-open range [Start, Stop) along one dimension,
+// optionally with a positive Step. It mirrors the engine's selection.DimRange
+// but is duplicated here so the codec package has no dependency on the engine.
+//
+// Within a PartialDecoder, the region is expressed in chunk-local coordinates
+// (i.e., relative to the outer chunk's origin, not the array origin) and the
+// produced output is the dense, row-major buffer of the selected sub-region
+// with Step==1 along every dim. Stepped selections must be expanded by the
+// caller before invoking PartialDecoder.
+type DimRange struct {
+	Start, Stop, Step int64
+}
+
+// PartialDecoder is implemented by ArrayToBytesCodec implementations that
+// can decode a sub-region of an outer chunk without materializing the full
+// chunk. The engine probes for it on the AB codec; if present and the read
+// is partial (and there are no BB codecs on top of the AB codec), the engine
+// calls DecodePartial in place of fetching the whole chunk + Decode.
+//
+// The codec uses fetcher to issue range reads against the underlying store
+// (key identifies the outer chunk blob). fullShape is the outer chunk's
+// shape (already clipped to the array bounds at edge chunks). region is the
+// chunk-local sub-region to decode (Step must be 1 along every dim). outBuf
+// must be pre-sized to product(region lengths) * elementSize(dtype) and is
+// populated in row-major order matching the region shape.
+type PartialDecoder interface {
+	DecodePartial(
+		ctx context.Context,
+		fetcher RangeFetcher,
+		key string,
+		fullShape []int64,
+		dtype string,
+		region []DimRange,
+		outBuf []byte,
+	) error
+}
+
 // Spec describes one codec entry as it appears in v3 metadata.
 type Spec struct {
 	Name          string          `json:"name"`

@@ -21,6 +21,22 @@ var hostLittleEndian = func() bool {
 	return *(*byte)(unsafe.Pointer(&x)) == 1
 }()
 
+// pipelinePartialDecoder returns a non-nil PartialDecoder when the AB codec
+// implements the optional codec.PartialDecoder interface AND no BB codecs sit
+// on top of it (BB on top of sharding doesn't make sense — sharding is
+// always the outermost AB). Otherwise returns nil. Result is cached on
+// Array at open time so the per-chunk hot path needs no type assertion.
+func pipelinePartialDecoder(p *codec.Pipeline) (codec.PartialDecoder, bool) {
+	if p == nil || p.AB == nil || len(p.BB) != 0 {
+		return nil, false
+	}
+	pd, ok := p.AB.(codec.PartialDecoder)
+	if !ok {
+		return nil, false
+	}
+	return pd, true
+}
+
 // isRawCopyFastPipeline reports whether the pipeline is exactly
 // [bytes(<host endian>)] with no AA or BB codecs. In that case Pipeline.Decode
 // degenerates to copy(out, in) and can be skipped — the raw chunk bytes are
@@ -52,6 +68,13 @@ type Array[T Numeric] struct {
 	dtype    Dtype
 	fill     []byte // fill value bytes, native LE, sizeof(T)
 	opts     arrayOptions
+	// partialDecoder is non-nil when the pipeline's AB codec implements
+	// codec.PartialDecoder AND no BB codecs sit on top of it. Cached here
+	// (computed once at open) so per-chunk reads avoid a type assertion.
+	// hasPartial mirrors `partialDecoder != nil` as a single byte; the hot
+	// path checks this byte instead of the 2-word interface compare.
+	partialDecoder codec.PartialDecoder
+	hasPartial     bool
 	// rawCopyFast is set when the codec pipeline is exactly [bytes(<host endian>)]
 	// with no AA or BB codecs, so the on-wire chunk bytes can be consumed
 	// directly without invoking Pipeline.Decode.
@@ -180,14 +203,20 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			key := metadata.ChunkKey(a.path, a.meta.ChunkKeyEnc, []int64(coord))
+			if a.hasPartial {
+				if err := a.partialDecodeAndCopy(cctx, a.partialDecoder, coord, key, sel, chunkShape, outShape, outStrides, dst); err != nil {
+					if errors.Is(err, store.ErrKeyNotFound) {
+						return
+					}
+					setErr(err)
+				}
+				return
+			}
 			var (
 				raw     []byte
 				release func()
 				err     error
 			)
-			// Use mmap fast path when the store supports it. For compressed
-			// pipelines mmap'd bytes still feed Decode and are released
-			// after decodeAndCopy returns, avoiding the read-into-heap copy.
 			if a.mmap != nil {
 				raw, release, err = a.mmap.GetMmap(cctx, key)
 			} else {
@@ -200,7 +229,6 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 				setErr(fmt.Errorf("fetch chunk %v: %w", []int64(coord), err))
 				return
 			}
-			// Defer release so it runs after decodeAndCopy is fully done with raw.
 			if release != nil {
 				defer release()
 			}
@@ -224,6 +252,188 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 		return firstErr
 	}
 	return nil
+}
+
+// chunkActualShape returns the (possibly clipped) extent of the chunk at
+// coord, i.e. the chunk's shape after clipping against the array bounds at
+// edge chunks.
+func (a *Array[T]) chunkActualShape(coord ChunkCoord, chunkShape []int64, out []int64) {
+	for i, cs := range chunkShape {
+		origin := coord[i] * cs
+		end := origin + cs
+		if end > a.meta.Shape[i] {
+			end = a.meta.Shape[i]
+		}
+		out[i] = end - origin
+	}
+}
+
+// partialDecodeAndCopy issues a partial-decode request for the requested
+// sub-region of the chunk at coord and copies the result into dst.
+//
+// If the per-chunk source range degenerates to "the entire (clipped) chunk"
+// or any dim has step != 1, this falls back to the full-fetch path so the
+// pipeline.Decode path is still exercised correctly.
+func (a *Array[T]) partialDecodeAndCopy(
+	ctx context.Context,
+	pd codec.PartialDecoder,
+	coord ChunkCoord,
+	key string,
+	sel Selection,
+	chunkShape, outShape, outStrides []int64,
+	dst []T,
+) error {
+	rank := len(chunkShape)
+	var scratch chunkScratch
+	var (
+		srcSlice, dstSlice                     []DimRange
+		stridesSlice, regionLenSlice, idxSlice []int64
+	)
+	if rank <= maxStackRank {
+		srcSlice = scratch.chunkSrc[:rank]
+		dstSlice = scratch.outDst[:rank]
+		stridesSlice = scratch.chunkStrides[:rank]
+		regionLenSlice = scratch.regionLen[:rank]
+		idxSlice = scratch.idx[:rank]
+	} else {
+		srcSlice = make([]DimRange, rank)
+		dstSlice = make([]DimRange, rank)
+		stridesSlice = make([]int64, rank)
+		regionLenSlice = make([]int64, rank)
+		idxSlice = make([]int64, rank)
+	}
+	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, srcSlice, dstSlice)
+
+	// Partial decode requires step==1; bail to the full path if any dim is stepped.
+	actual := make([]int64, rank)
+	a.chunkActualShape(coord, chunkShape, actual)
+	isFull := true
+	for d := 0; d < rank; d++ {
+		if srcSlice[d].Step != 1 {
+			// Stepped: full fetch + decode handles striding correctly.
+			raw, err := a.store.Get(ctx, key)
+			if err != nil {
+				return err
+			}
+			return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, outStrides, dst)
+		}
+		if srcSlice[d].Start != 0 || srcSlice[d].Stop != actual[d] {
+			isFull = false
+		}
+	}
+	if isFull {
+		// Whole-chunk read — partial would just degenerate, do the regular path.
+		raw, err := a.store.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, outStrides, dst)
+	}
+
+	elemSize := int(unsafe.Sizeof(*new(T)))
+	regionShape := make([]int64, rank)
+	region := make([]codec.DimRange, rank)
+	regionElems := int64(1)
+	for d := 0; d < rank; d++ {
+		region[d] = codec.DimRange{Start: srcSlice[d].Start, Stop: srcSlice[d].Stop, Step: 1}
+		regionShape[d] = srcSlice[d].Stop - srcSlice[d].Start
+		regionElems *= regionShape[d]
+	}
+	regionBytes := regionElems * int64(elemSize)
+	pooled := bufpool.Get(int(regionBytes))
+	defer bufpool.Put(pooled)
+	out := pooled[:regionBytes]
+
+	// Use the AB codec's DecodePartial; thread the store as the fetcher.
+	fetcher := newStoreFetcher(a.store)
+	if err := pd.DecodePartial(ctx, fetcher, key, actual, a.meta.DataType, region, out); err != nil {
+		// Translate "key not found" to the same sentinel as the full path
+		// so the caller skips the chunk and leaves the fill value in place.
+		if errors.Is(err, store.ErrKeyNotFound) {
+			return err
+		}
+		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
+	}
+
+	// Copy the dense region buffer into dst at the dstSlice positions.
+	// The region buffer has shape regionShape (in chunk-local source coords),
+	// dst has shape outShape with strides outStrides, and the region maps
+	// 1:1 onto dstSlice (Step==1 along every dim).
+	//
+	// We can express this via copyChunkRegion by treating the region buffer
+	// as if it were the chunk and using DimRange{0, regionShape[d], 1} for
+	// chunkSrc.
+	srcAll := scratch.chunkSrc[:rank]
+	for d := 0; d < rank; d++ {
+		srcAll[d] = DimRange{Start: 0, Stop: regionShape[d], Step: 1}
+	}
+	copyChunkRegion[T](
+		out, regionShape, srcAll,
+		dst, outShape, outStrides, dstSlice,
+		elemSize,
+		stridesSlice, regionLenSlice, idxSlice,
+	)
+	return nil
+}
+
+// storeFetcher adapts a store.Store to codec.RangeFetcher (and, when the
+// underlying store has the methods, codec.sharding.SuffixRangeFetcher). The
+// adapter caches the blob length on first GetRange so subsequent suffix
+// requests can be served by a single positional GetRange — important for
+// backends that don't expose a native suffix-range API.
+type storeFetcher struct {
+	s   store.Store
+	mu  sync.Mutex
+	len map[string]int64
+}
+
+func newStoreFetcher(s store.Store) *storeFetcher {
+	return &storeFetcher{s: s, len: make(map[string]int64)}
+}
+
+// GetRange forwards to the underlying store's GetRange.
+func (f *storeFetcher) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
+	return f.s.GetRange(ctx, key, off, n)
+}
+
+// GetSuffix returns the last n bytes of the value at key. It first probes
+// the store for the blob's length (via a Get followed by len(); cached for
+// the lifetime of this fetcher), then issues a positional GetRange.
+//
+// For backends that natively support HTTP `Range: bytes=-N`, a future
+// optimization can short-circuit this by detecting the backend and issuing
+// the suffix directly. For now, the cache means we pay one whole-blob fetch
+// per shard (which the codec then mostly re-uses via slicedFetcher fallback).
+//
+// NOTE: We intentionally fall back to whole-blob Get here because none of
+// the in-tree backends expose blob length cheaply; for cloud workloads the
+// dominant codepath is one suffix-range HTTP request. Backends should add a
+// real GetSuffix on top of this adapter to enable that path.
+func (f *storeFetcher) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	f.mu.Lock()
+	knownLen, ok := f.len[key]
+	f.mu.Unlock()
+	if ok {
+		off := knownLen - n
+		if off < 0 {
+			off = 0
+			n = knownLen
+		}
+		return f.s.GetRange(ctx, key, off, n)
+	}
+	// First call for this key: fetch the whole blob to learn its length and
+	// return the suffix from it. Cache the length for future calls.
+	whole, err := f.s.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	f.len[key] = int64(len(whole))
+	f.mu.Unlock()
+	if int64(len(whole)) < n {
+		return whole, nil
+	}
+	return whole[int64(len(whole))-n:], nil
 }
 
 // decodeAndCopy decodes one already-fetched chunk and copies its sub-region
