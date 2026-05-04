@@ -173,13 +173,14 @@ func OpenArray[T Numeric](ctx context.Context, s store.Store, path string, opts 
 		return nil, fmt.Errorf("parse fill_value: %w", err)
 	}
 	a := &Array[T]{
-		store:    s,
-		path:     path,
-		meta:     am,
-		pipeline: pipe,
-		dtype:    dt,
-		fill:     fill,
-		opts:     o,
+		store:       s,
+		path:        path,
+		meta:        am,
+		pipeline:    pipe,
+		dtype:       dt,
+		fill:        fill,
+		opts:        o,
+		rawCopyFast: isRawCopyFastPipeline(pipe),
 	}
 	return a, nil
 }
@@ -201,33 +202,33 @@ func openArrayDynamic(s store.Store, path string, am *metadata.ArrayMeta, o arra
 	}
 	switch dt {
 	case DtypeBool:
-		return &Array[bool]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[bool]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeInt8:
-		return &Array[int8]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[int8]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeInt16:
-		return &Array[int16]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[int16]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeInt32:
-		return &Array[int32]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[int32]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeInt64:
-		return &Array[int64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[int64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeUint8:
-		return &Array[uint8]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[uint8]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeUint16:
-		return &Array[uint16]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[uint16]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeUint32:
-		return &Array[uint32]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[uint32]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeUint64:
-		return &Array[uint64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[uint64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeFloat16:
-		return &Array[Float16]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[Float16]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeFloat32:
-		return &Array[float32]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[float32]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeFloat64:
-		return &Array[float64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[float64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeComplex64:
-		return &Array[complex64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[complex64]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	case DtypeComplex128:
-		return &Array[complex128]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o}, nil
+		return &Array[complex128]{store: s, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: isRawCopyFastPipeline(pipe)}, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrUnsupportedDtype, dt)
 }

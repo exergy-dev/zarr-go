@@ -9,10 +9,38 @@ import (
 	"unsafe"
 
 	"github.com/rkm/zarr-go/codec"
+	bytescodec "github.com/rkm/zarr-go/codec/bytes"
 	"github.com/rkm/zarr-go/internal/bufpool"
 	"github.com/rkm/zarr-go/internal/metadata"
 	"github.com/rkm/zarr-go/store"
 )
+
+// hostLittleEndian is true if the host CPU is little-endian.
+var hostLittleEndian = func() bool {
+	var x uint16 = 1
+	return *(*byte)(unsafe.Pointer(&x)) == 1
+}()
+
+// isRawCopyFastPipeline reports whether the pipeline is exactly
+// [bytes(<host endian>)] with no AA or BB codecs. In that case Pipeline.Decode
+// degenerates to copy(out, in) and can be skipped — the raw chunk bytes are
+// already the native element bytes and can be fed straight into copyChunkRegion.
+func isRawCopyFastPipeline(p *codec.Pipeline) bool {
+	if p == nil || p.AB == nil {
+		return false
+	}
+	if len(p.AA) != 0 || len(p.BB) != 0 {
+		return false
+	}
+	bc, ok := p.AB.(*bytescodec.Codec)
+	if !ok {
+		return false
+	}
+	if hostLittleEndian {
+		return bc.Endian == bytescodec.Little
+	}
+	return bc.Endian == bytescodec.Big
+}
 
 // Array is the typed view of a Zarr array. Construct via OpenArray[T].
 type Array[T Numeric] struct {
@@ -23,6 +51,10 @@ type Array[T Numeric] struct {
 	dtype    Dtype
 	fill     []byte // fill value bytes, native LE, sizeof(T)
 	opts     arrayOptions
+	// rawCopyFast is set when the codec pipeline is exactly [bytes(<host endian>)]
+	// with no AA or BB codecs, so the on-wire chunk bytes can be consumed
+	// directly without invoking Pipeline.Decode.
+	rawCopyFast bool
 }
 
 // Chunk is one decoded chunk yielded from Stream.
@@ -211,6 +243,20 @@ func (a *Array[T]) decodeAndCopy(
 	for _, d := range chunkShape {
 		chunkBytes *= int(d)
 	}
+
+	// Fast path: pipeline is [bytes(<host endian>)], no AA/BB. Raw bytes
+	// are already native element bytes — skip pipeline.Decode and the
+	// pooled buffer entirely.
+	if a.rawCopyFast && len(raw) == chunkBytes {
+		copyChunkRegion[T](
+			raw, chunkShape, srcSlice,
+			dst, outShape, outStrides, dstSlice,
+			elemSize,
+			stridesSlice, regionLenSlice, idxSlice,
+		)
+		return nil
+	}
+
 	pooled := bufpool.Get(chunkBytes)
 	defer bufpool.Put(pooled)
 	chunk := codec.ArrayChunk{
