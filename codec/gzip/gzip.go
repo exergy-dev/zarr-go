@@ -1,24 +1,25 @@
 // Package gzip implements the Zarr v3 "gzip" bytes→bytes codec.
 //
-// The codec wraps the standard library's compress/gzip implementation. The
-// v3 spec configuration object accepts a single optional integer field
-// "level" in the inclusive range 0..9, mapped onto compress/gzip's level
-// constants (0 = NoCompression, 1 = BestSpeed, 9 = BestCompression). When
-// the field is absent the default level (5) is used; level == -1 explicitly
-// selects gzip.DefaultCompression.
+// The codec wraps the klauspost/compress gzip implementation, a drop-in
+// replacement for the standard library's compress/gzip with significantly
+// faster decompression. The v3 spec configuration object accepts a single
+// optional integer field "level" in the inclusive range 0..9, mapped onto
+// gzip's level constants (0 = NoCompression, 1 = BestSpeed,
+// 9 = BestCompression). When the field is absent the default level (5) is
+// used; level == -1 explicitly selects gzip.DefaultCompression.
 //
-// The package name shadows the stdlib "compress/gzip" package; this file
-// imports it under the alias "stdgzip".
+// The package name shadows the gzip package; this file imports it under the
+// alias "kpgzip".
 package gzip
 
 import (
 	"bytes"
-	stdgzip "compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
 
+	kpgzip "github.com/klauspost/compress/gzip"
 	"github.com/rkm/zarr-go/codec"
 )
 
@@ -56,7 +57,7 @@ func (c *Codec) Configure(raw json.RawMessage) error {
 	lvl := *cfg.Level
 	switch {
 	case lvl == -1:
-		c.Level = stdgzip.DefaultCompression
+		c.Level = kpgzip.DefaultCompression
 	case lvl >= 0 && lvl <= 9:
 		c.Level = lvl
 	default:
@@ -106,18 +107,18 @@ var readerScratchPool = sync.Pool{
 }
 
 // getWriter returns a *gzip.Writer at the requested level, writing to w.
-func getWriter(w io.Writer, level int) (*stdgzip.Writer, error) {
+func getWriter(w io.Writer, level int) (*kpgzip.Writer, error) {
 	pAny, ok := writerPools.Load(level)
 	if !ok {
 		pAny, _ = writerPools.LoadOrStore(level, &sync.Pool{})
 	}
 	p := pAny.(*sync.Pool)
 	if v := p.Get(); v != nil {
-		gw := v.(*stdgzip.Writer)
+		gw := v.(*kpgzip.Writer)
 		gw.Reset(w)
 		return gw, nil
 	}
-	gw, err := stdgzip.NewWriterLevel(w, level)
+	gw, err := kpgzip.NewWriterLevel(w, level)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +126,7 @@ func getWriter(w io.Writer, level int) (*stdgzip.Writer, error) {
 }
 
 // putWriter returns a writer to the per-level pool.
-func putWriter(gw *stdgzip.Writer, level int) {
+func putWriter(gw *kpgzip.Writer, level int) {
 	if pAny, ok := writerPools.Load(level); ok {
 		pAny.(*sync.Pool).Put(gw)
 	}
@@ -180,9 +181,9 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 	br := readerScratchPool.Get().(*bytes.Reader)
 	br.Reset(in)
 
-	var gr *stdgzip.Reader
+	var gr *kpgzip.Reader
 	if v := readerPool.Get(); v != nil {
-		gr = v.(*stdgzip.Reader)
+		gr = v.(*kpgzip.Reader)
 		if err := gr.Reset(br); err != nil {
 			// Don't return the reader to the pool: Reset failure means it is
 			// not in a clean state. Still return the bytes.Reader.
@@ -192,7 +193,7 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 		}
 	} else {
 		var err error
-		gr, err = stdgzip.NewReader(br)
+		gr, err = kpgzip.NewReader(br)
 		if err != nil {
 			br.Reset(nil)
 			readerScratchPool.Put(br)
