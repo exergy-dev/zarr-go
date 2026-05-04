@@ -1,25 +1,35 @@
-goarch: amd64
-pkg: github.com/rkm/zarr-go
 cpu: Intel(R) Core(TM) i9-14900KF
-BenchmarkReadFloat32_Uncompressed_2D-32    	   18319	     67251 ns/op	3897.98 MB/s	  268157 B/op	      63 allocs/op
-BenchmarkReadFloat32_Uncompressed_2D-32    	   18034	     66451 ns/op	3944.90 MB/s	  268157 B/op	      63 allocs/op
-BenchmarkReadFloat32_Uncompressed_2D-32    	   17883	     65500 ns/op	4002.21 MB/s	  268156 B/op	      63 allocs/op
-BenchmarkReadFloat32_Uncompressed_2D-32    	   17452	     66775 ns/op	3925.81 MB/s	  268156 B/op	      63 allocs/op
-BenchmarkReadFloat32_Uncompressed_2D-32    	   17796	     64317 ns/op	4075.79 MB/s	  268157 B/op	      63 allocs/op
-BenchmarkReadFloat32_Gzip_2D-32            	    3526	    364604 ns/op	 718.98 MB/s	  522799 B/op	     196 allocs/op
-BenchmarkReadFloat32_Gzip_2D-32            	    3271	    363287 ns/op	 721.59 MB/s	  523359 B/op	     195 allocs/op
-BenchmarkReadFloat32_Gzip_2D-32            	    3153	    368324 ns/op	 711.72 MB/s	  519704 B/op	     195 allocs/op
-BenchmarkReadFloat32_Gzip_2D-32            	    3198	    368666 ns/op	 711.06 MB/s	  522920 B/op	     195 allocs/op
-BenchmarkReadFloat32_Gzip_2D-32            	    3206	    362522 ns/op	 723.11 MB/s	  521174 B/op	     195 allocs/op
-BenchmarkReadInt16_Uncompressed_3D-32      	   33559	     36353 ns/op	1802.74 MB/s	   68745 B/op	      38 allocs/op
-BenchmarkReadInt16_Uncompressed_3D-32      	   34456	     35745 ns/op	1833.42 MB/s	   68745 B/op	      38 allocs/op
-BenchmarkReadInt16_Uncompressed_3D-32      	   33055	     35774 ns/op	1831.93 MB/s	   68745 B/op	      38 allocs/op
-BenchmarkReadInt16_Uncompressed_3D-32      	   32924	     35623 ns/op	1839.71 MB/s	   68745 B/op	      38 allocs/op
-BenchmarkReadInt16_Uncompressed_3D-32      	   33775	     36099 ns/op	1815.43 MB/s	   68745 B/op	      38 allocs/op
-BenchmarkReadFloat32_Slice_2D-32           	   59776	     21657 ns/op	1847.00 MB/s	   67321 B/op	      25 allocs/op
-BenchmarkReadFloat32_Slice_2D-32           	   56898	     21177 ns/op	1888.82 MB/s	   67321 B/op	      25 allocs/op
-BenchmarkReadFloat32_Slice_2D-32           	   55914	     21382 ns/op	1870.76 MB/s	   67321 B/op	      25 allocs/op
-BenchmarkReadFloat32_Slice_2D-32           	   55522	     21306 ns/op	1877.41 MB/s	   67321 B/op	      25 allocs/op
-BenchmarkReadFloat32_Slice_2D-32           	   57277	     21046 ns/op	1900.57 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16948	     71572 ns/op	3662.67 MB/s	  268158 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16258	     75104 ns/op	3490.41 MB/s	  268157 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16845	     73026 ns/op	3589.75 MB/s	  268157 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16412	     75169 ns/op	3487.40 MB/s	  268157 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16189	     75212 ns/op	3485.42 MB/s	  268158 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16118	     73975 ns/op	3543.67 MB/s	  268157 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16340	     75660 ns/op	3464.75 MB/s	  268157 B/op	      63 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	   16527	     74528 ns/op	3517.39 MB/s	  268157 B/op	      63 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3468	    341690 ns/op	 767.20 MB/s	  509148 B/op	     205 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3501	    340858 ns/op	 769.07 MB/s	  507916 B/op	     204 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3627	    334255 ns/op	 784.26 MB/s	  506543 B/op	     203 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3704	    336901 ns/op	 778.10 MB/s	  506054 B/op	     203 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3414	    337875 ns/op	 775.86 MB/s	  507373 B/op	     204 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3466	    339732 ns/op	 771.62 MB/s	  507686 B/op	     204 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3342	    339679 ns/op	 771.74 MB/s	  507780 B/op	     204 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    3717	    337322 ns/op	 777.13 MB/s	  507421 B/op	     204 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   31317	     38338 ns/op	1709.43 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   31368	     38833 ns/op	1687.63 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   31098	     37972 ns/op	1725.93 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   30291	     38466 ns/op	1703.73 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   31838	     38590 ns/op	1698.26 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   31526	     38141 ns/op	1718.25 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   32503	     37889 ns/op	1729.69 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	   30526	     37191 ns/op	1762.16 MB/s	   68745 B/op	      38 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   48128	     25555 ns/op	1565.23 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   47740	     24696 ns/op	1619.67 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   48538	     24196 ns/op	1653.18 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   54758	     25823 ns/op	1549.02 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   48624	     25611 ns/op	1561.82 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   47059	     24375 ns/op	1641.01 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   45667	     24514 ns/op	1631.75 MB/s	   67321 B/op	      25 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	   46734	     26092 ns/op	1533.06 MB/s	   67321 B/op	      25 allocs/op
 PASS
-ok  	github.com/rkm/zarr-go	30.575s
+ok  	github.com/rkm/zarr-go	91.943s
