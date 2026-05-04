@@ -61,3 +61,15 @@ type WritableStore interface {
 	// exist. Returns false (without error) if the key was already present.
 	SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error)
 }
+
+// MmapStore is implemented by Stores that can return chunk bytes via memory
+// mapping. The returned slice is valid only until release() is called; the
+// engine must call release() when it's done with the bytes (typically right
+// after pipeline.Decode finishes).
+//
+// Callers that don't probe for MmapStore continue using Get() unchanged.
+// release is always non-nil, even on error paths where it's a no-op, so callers
+// can defer it unconditionally after a successful call.
+type MmapStore interface {
+	GetMmap(ctx context.Context, key string) (data []byte, release func(), err error)
+}

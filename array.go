@@ -45,6 +45,7 @@ func isRawCopyFastPipeline(p *codec.Pipeline) bool {
 // Array is the typed view of a Zarr array. Construct via OpenArray[T].
 type Array[T Numeric] struct {
 	store    store.Store
+	mmap     store.MmapStore // non-nil iff store implements MmapStore
 	path     string
 	meta     *metadata.ArrayMeta
 	pipeline *codec.Pipeline
@@ -179,13 +180,29 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			key := metadata.ChunkKey(a.path, a.meta.ChunkKeyEnc, []int64(coord))
-			raw, err := a.store.Get(cctx, key)
+			var (
+				raw     []byte
+				release func()
+				err     error
+			)
+			// Use mmap fast path when the store supports it. For compressed
+			// pipelines mmap'd bytes still feed Decode and are released
+			// after decodeAndCopy returns, avoiding the read-into-heap copy.
+			if a.mmap != nil {
+				raw, release, err = a.mmap.GetMmap(cctx, key)
+			} else {
+				raw, err = a.store.Get(cctx, key)
+			}
 			if err != nil {
 				if errors.Is(err, store.ErrKeyNotFound) {
 					return // missing chunk = fill, already in dst
 				}
 				setErr(fmt.Errorf("fetch chunk %v: %w", []int64(coord), err))
 				return
+			}
+			// Defer release so it runs after decodeAndCopy is fully done with raw.
+			if release != nil {
+				defer release()
 			}
 			if err := a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, outStrides, dst); err != nil {
 				setErr(err)

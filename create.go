@@ -145,13 +145,15 @@ func CreateArray[T Numeric](
 	}
 
 	a := &Array[T]{
-		store:    s,
-		path:     path,
-		meta:     meta,
-		pipeline: pipe,
-		dtype:    dt,
-		fill:     fill,
-		opts:     co.openOpts,
+		store:       s,
+		mmap:        probeMmap(s),
+		path:        path,
+		meta:        meta,
+		pipeline:    pipe,
+		dtype:       dt,
+		fill:        fill,
+		opts:        co.openOpts,
+		rawCopyFast: isRawCopyFastPipeline(pipe),
 	}
 	return a, nil
 }

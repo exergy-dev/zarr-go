@@ -21,12 +21,13 @@ import (
 // Store is a local-filesystem implementation of store.Store and
 // store.WritableStore. All keys are resolved relative to a fixed root.
 type Store struct {
-	root string
+	root        string
+	mmapEnabled bool
 }
 
 // New constructs a Store rooted at the given directory. The directory must
 // already exist and be a directory.
-func New(root string) (*Store, error) {
+func New(root string, opts ...Option) (*Store, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, fmt.Errorf("fs.New: %w", err)
@@ -34,8 +35,17 @@ func New(root string) (*Store, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("fs.New: root %q is not a directory", root)
 	}
-	return &Store{root: root}, nil
+	s := &Store{root: root}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
+
+// MmapEnabled reports whether GetMmap is available on this Store. When false,
+// the Store still satisfies the MmapStore interface but GetMmap falls back to
+// Get + a no-op release.
+func (s *Store) MmapEnabled() bool { return s.mmapEnabled }
 
 // resolve translates a forward-slash key into an absolute path under the root,
 // rejecting any key that contains a ".." segment.
