@@ -1,0 +1,80 @@
+# 2026/05/03 20:05:01.113759 [TestPropertyReadEqualsSlice/uint8] [rapid] draw rank: 4
+# 2026/05/03 20:05:01.113776 [TestPropertyReadEqualsSlice/uint8] [rapid] draw shape[0]: 1
+# 2026/05/03 20:05:01.113787 [TestPropertyReadEqualsSlice/uint8] [rapid] draw chunks[0]: 1
+# 2026/05/03 20:05:01.113797 [TestPropertyReadEqualsSlice/uint8] [rapid] draw shape[1]: 1
+# 2026/05/03 20:05:01.113804 [TestPropertyReadEqualsSlice/uint8] [rapid] draw chunks[1]: 1
+# 2026/05/03 20:05:01.113812 [TestPropertyReadEqualsSlice/uint8] [rapid] draw shape[2]: 3
+# 2026/05/03 20:05:01.113817 [TestPropertyReadEqualsSlice/uint8] [rapid] draw chunks[2]: 2
+# 2026/05/03 20:05:01.113825 [TestPropertyReadEqualsSlice/uint8] [rapid] draw shape[3]: 1
+# 2026/05/03 20:05:01.113832 [TestPropertyReadEqualsSlice/uint8] [rapid] draw chunks[3]: 1
+# 2026/05/03 20:05:01.113841 [TestPropertyReadEqualsSlice/uint8] [rapid] draw start[0]: 0
+# 2026/05/03 20:05:01.113846 [TestPropertyReadEqualsSlice/uint8] [rapid] draw stop[0]: 1
+# 2026/05/03 20:05:01.113852 [TestPropertyReadEqualsSlice/uint8] [rapid] draw start[1]: 0
+# 2026/05/03 20:05:01.113859 [TestPropertyReadEqualsSlice/uint8] [rapid] draw stop[1]: 1
+# 2026/05/03 20:05:01.113865 [TestPropertyReadEqualsSlice/uint8] [rapid] draw start[2]: 1
+# 2026/05/03 20:05:01.113869 [TestPropertyReadEqualsSlice/uint8] [rapid] draw stop[2]: 3
+# 2026/05/03 20:05:01.113877 [TestPropertyReadEqualsSlice/uint8] [rapid] draw start[3]: 0
+# 2026/05/03 20:05:01.113883 [TestPropertyReadEqualsSlice/uint8] [rapid] draw stop[3]: 1
+# 2026/05/03 20:05:01.113890 [TestPropertyReadEqualsSlice/uint8] [rapid] draw src[0]: 0x0
+# 2026/05/03 20:05:01.113905 [TestPropertyReadEqualsSlice/uint8] [rapid] draw src[1]: 0x0
+# 2026/05/03 20:05:01.113910 [TestPropertyReadEqualsSlice/uint8] [rapid] draw src[2]: 0x0
+# 2026/05/03 20:05:01.114335 [TestPropertyReadEqualsSlice/uint8] decode chunk [0 0 1 0] via codec "bytes": codec "bytes": bytes codec: input length 1 != expected 2 for shape [1 1 2 1] dtype uint8
+# 
+v0.4.8#6538908026931964518
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

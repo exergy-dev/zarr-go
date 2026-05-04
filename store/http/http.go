@@ -1,0 +1,270 @@
+// Package http provides a read-only implementation of store.Store backed by
+// HTTP GET/HEAD requests.
+//
+// It is intended for serving zarr datasets from static web servers, object
+// stores fronted by HTTP (S3 website endpoints, GCS public buckets, etc.), or
+// any other URL-addressable origin. Set, Delete, and SetIfNotExists are not
+// supported and return ErrReadOnly.
+//
+// Listing is not supported because HTTP has no portable directory-listing
+// protocol; consumers that require listing should rely on consolidated zarr
+// metadata. List therefore yields a single (string, error) pair where the
+// error is ErrListUnsupported.
+package http
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"iter"
+
+	"github.com/rkm/zarr-go/store"
+)
+
+// ErrReadOnly is returned by Set and Delete because the HTTP backend does not
+// support mutation.
+var ErrReadOnly = errors.New("http store is read-only")
+
+// ErrListUnsupported is returned (via the iterator) by List because HTTP
+// listing requires consolidated metadata.
+var ErrListUnsupported = errors.New("http store: list requires consolidated metadata")
+
+// Config configures a Store.
+type Config struct {
+	// BaseURL is the prefix used for all key lookups. It must parse via
+	// url.Parse and must end with "/".
+	BaseURL string
+
+	// Client is the HTTP client used for all requests. If nil,
+	// http.DefaultClient is used.
+	Client *http.Client
+
+	// Headers are merged into every outgoing request. Use this to set auth
+	// tokens, custom user agents, etc. The header map is cloned per request,
+	// so callers may mutate it after construction without affecting in-flight
+	// requests.
+	Headers http.Header
+}
+
+// Store is a read-only HTTP-backed store.Store implementation.
+//
+// The zero value is not usable; construct one with New.
+type Store struct {
+	baseURL string
+	client  *http.Client
+	headers http.Header
+}
+
+// New constructs a Store from cfg. It validates that BaseURL parses and ends
+// with "/".
+func New(cfg Config) (*Store, error) {
+	if cfg.BaseURL == "" {
+		return nil, errors.New("http store: BaseURL is required")
+	}
+	if _, err := url.Parse(cfg.BaseURL); err != nil {
+		return nil, fmt.Errorf("http store: invalid BaseURL: %w", err)
+	}
+	if !strings.HasSuffix(cfg.BaseURL, "/") {
+		return nil, fmt.Errorf("http store: BaseURL %q must end with %q", cfg.BaseURL, "/")
+	}
+	client := cfg.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	var headers http.Header
+	if cfg.Headers != nil {
+		headers = cfg.Headers.Clone()
+	}
+	return &Store{
+		baseURL: cfg.BaseURL,
+		client:  client,
+		headers: headers,
+	}, nil
+}
+
+// resolve joins key onto the base URL and rejects keys containing ".."
+// segments. This prevents callers from escaping the configured base.
+func (s *Store) resolve(key string) (string, error) {
+	for _, seg := range strings.Split(key, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("http store: key %q contains forbidden %q segment", key, "..")
+		}
+	}
+	u, err := url.JoinPath(s.baseURL, key)
+	if err != nil {
+		return "", fmt.Errorf("http store: failed to build URL for key %q: %w", key, err)
+	}
+	return u, nil
+}
+
+// newRequest constructs an *http.Request and applies any configured headers.
+func (s *Store) newRequest(ctx context.Context, method, u string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("http store: build request: %w", err)
+	}
+	for k, vs := range s.headers {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	return req, nil
+}
+
+// Get implements store.Store.
+func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
+	u, err := s.resolve(key)
+	if err != nil {
+		return nil, err
+	}
+	req, err := s.newRequest(ctx, http.MethodGet, u)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http store: GET %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("http store: GET %s: read body: %w", u, err)
+		}
+		return body, nil
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("http store: GET %s: %w", u, store.ErrKeyNotFound)
+	default:
+		return nil, fmt.Errorf("http store: GET %s: unexpected status %d", u, resp.StatusCode)
+	}
+}
+
+// GetRange implements store.Store. It issues a Range request and falls back to
+// slicing the full body if the server returned 200 (ignoring the Range header).
+func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
+	if off < 0 {
+		return nil, fmt.Errorf("http store: GetRange: negative offset %d", off)
+	}
+	if n < 0 {
+		return nil, fmt.Errorf("http store: GetRange: negative length %d", n)
+	}
+	u, err := s.resolve(key)
+	if err != nil {
+		return nil, err
+	}
+	req, err := s.newRequest(ctx, http.MethodGet, u)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		// Asking for zero bytes; we can short-circuit but still validate
+		// the key exists so callers see consistent errors.
+		ok, exErr := s.Exists(ctx, key)
+		if exErr != nil {
+			return nil, exErr
+		}
+		if !ok {
+			return nil, fmt.Errorf("http store: GetRange %s: %w", u, store.ErrKeyNotFound)
+		}
+		return []byte{}, nil
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http store: GET %s (range): %w", u, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		// Honor the body length, not Content-Range.
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("http store: GET %s (range): read body: %w", u, err)
+		}
+		if int64(len(body)) > n {
+			body = body[:n]
+		}
+		return body, nil
+	case http.StatusOK:
+		// Server ignored the Range header; slice manually.
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("http store: GET %s (range fallback): read body: %w", u, err)
+		}
+		length := int64(len(body))
+		if off >= length {
+			return []byte{}, nil
+		}
+		end := off + n
+		if end > length {
+			end = length
+		}
+		out := make([]byte, end-off)
+		copy(out, body[off:end])
+		return out, nil
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("http store: GET %s (range): %w", u, store.ErrKeyNotFound)
+	case http.StatusRequestedRangeNotSatisfiable:
+		// Treat as empty slice; the key might exist but the requested range
+		// is past EOF. Return a zero-length slice rather than an error so
+		// callers reading optional trailing bytes don't see a failure.
+		return []byte{}, nil
+	default:
+		return nil, fmt.Errorf("http store: GET %s (range): unexpected status %d", u, resp.StatusCode)
+	}
+}
+
+// Set is unsupported and always returns ErrReadOnly.
+func (s *Store) Set(ctx context.Context, key string, value []byte) error {
+	return ErrReadOnly
+}
+
+// Delete is unsupported and always returns ErrReadOnly.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	return ErrReadOnly
+}
+
+// SetIfNotExists is unsupported and always returns (false, ErrReadOnly).
+func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
+	return false, ErrReadOnly
+}
+
+// Exists implements store.Store using HEAD.
+func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
+	u, err := s.resolve(key)
+	if err != nil {
+		return false, err
+	}
+	req, err := s.newRequest(ctx, http.MethodHead, u)
+	if err != nil {
+		return false, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("http store: HEAD %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("http store: HEAD %s: unexpected status %d", u, resp.StatusCode)
+	}
+}
+
+// List yields a single (string, error) pair where the error is
+// ErrListUnsupported. HTTP has no portable directory-listing protocol; use a
+// consolidated metadata file instead.
+func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		yield("", ErrListUnsupported)
+	}
+}

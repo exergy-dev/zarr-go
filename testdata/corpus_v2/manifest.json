@@ -1,0 +1,126 @@
+[
+  {
+    "name": "f32_1d_none",
+    "dtype": "float32",
+    "shape": [
+      128
+    ],
+    "chunks": [
+      16
+    ],
+    "compressor": null,
+    "dimension_separator": "/"
+  },
+  {
+    "name": "f64_2d_none",
+    "dtype": "float64",
+    "shape": [
+      16,
+      16
+    ],
+    "chunks": [
+      4,
+      8
+    ],
+    "compressor": null,
+    "dimension_separator": "/"
+  },
+  {
+    "name": "i32_3d_none",
+    "dtype": "int32",
+    "shape": [
+      4,
+      8,
+      6
+    ],
+    "chunks": [
+      2,
+      4,
+      3
+    ],
+    "compressor": null,
+    "dimension_separator": "/"
+  },
+  {
+    "name": "u8_2d_none",
+    "dtype": "uint8",
+    "shape": [
+      10,
+      10
+    ],
+    "chunks": [
+      5,
+      5
+    ],
+    "compressor": null,
+    "dimension_separator": "/"
+  },
+  {
+    "name": "f32_2d_gzip",
+    "dtype": "float32",
+    "shape": [
+      32,
+      32
+    ],
+    "chunks": [
+      8,
+      8
+    ],
+    "compressor": "gzip",
+    "dimension_separator": "/"
+  },
+  {
+    "name": "f64_2d_zstd",
+    "dtype": "float64",
+    "shape": [
+      16,
+      16
+    ],
+    "chunks": [
+      4,
+      4
+    ],
+    "compressor": "zstd",
+    "dimension_separator": "/"
+  },
+  {
+    "name": "i16_2d_zlib",
+    "dtype": "int16",
+    "shape": [
+      8,
+      8
+    ],
+    "chunks": [
+      4,
+      4
+    ],
+    "compressor": "zlib",
+    "dimension_separator": "/"
+  },
+  {
+    "name": "f32_edge",
+    "dtype": "float32",
+    "shape": [
+      10
+    ],
+    "chunks": [
+      4
+    ],
+    "compressor": null,
+    "dimension_separator": "/"
+  },
+  {
+    "name": "f32_2d_dot_sep",
+    "dtype": "float32",
+    "shape": [
+      8,
+      8
+    ],
+    "chunks": [
+      4,
+      4
+    ],
+    "compressor": null,
+    "dimension_separator": "."
+  }
+]

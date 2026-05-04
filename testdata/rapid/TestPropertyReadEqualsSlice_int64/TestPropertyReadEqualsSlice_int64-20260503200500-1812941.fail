@@ -1,0 +1,75 @@
+# 2026/05/03 20:05:00.231183 [TestPropertyReadEqualsSlice/int64] [rapid] draw rank: 3
+# 2026/05/03 20:05:00.231204 [TestPropertyReadEqualsSlice/int64] [rapid] draw shape[0]: 1
+# 2026/05/03 20:05:00.231216 [TestPropertyReadEqualsSlice/int64] [rapid] draw chunks[0]: 1
+# 2026/05/03 20:05:00.231226 [TestPropertyReadEqualsSlice/int64] [rapid] draw shape[1]: 1
+# 2026/05/03 20:05:00.231234 [TestPropertyReadEqualsSlice/int64] [rapid] draw chunks[1]: 1
+# 2026/05/03 20:05:00.231249 [TestPropertyReadEqualsSlice/int64] [rapid] draw shape[2]: 5
+# 2026/05/03 20:05:00.231257 [TestPropertyReadEqualsSlice/int64] [rapid] draw chunks[2]: 2
+# 2026/05/03 20:05:00.231268 [TestPropertyReadEqualsSlice/int64] [rapid] draw start[0]: 0
+# 2026/05/03 20:05:00.231278 [TestPropertyReadEqualsSlice/int64] [rapid] draw stop[0]: 1
+# 2026/05/03 20:05:00.231289 [TestPropertyReadEqualsSlice/int64] [rapid] draw start[1]: 0
+# 2026/05/03 20:05:00.231296 [TestPropertyReadEqualsSlice/int64] [rapid] draw stop[1]: 1
+# 2026/05/03 20:05:00.231305 [TestPropertyReadEqualsSlice/int64] [rapid] draw start[2]: 0
+# 2026/05/03 20:05:00.231313 [TestPropertyReadEqualsSlice/int64] [rapid] draw stop[2]: 5
+# 2026/05/03 20:05:00.231325 [TestPropertyReadEqualsSlice/int64] [rapid] draw src[0]: 0
+# 2026/05/03 20:05:00.231332 [TestPropertyReadEqualsSlice/int64] [rapid] draw src[1]: 0
+# 2026/05/03 20:05:00.231338 [TestPropertyReadEqualsSlice/int64] [rapid] draw src[2]: 0
+# 2026/05/03 20:05:00.231347 [TestPropertyReadEqualsSlice/int64] [rapid] draw src[3]: 0
+# 2026/05/03 20:05:00.231357 [TestPropertyReadEqualsSlice/int64] [rapid] draw src[4]: 0
+# 2026/05/03 20:05:00.231762 [TestPropertyReadEqualsSlice/int64] decode chunk [0 0 2] via codec "bytes": codec "bytes": bytes codec: input length 8 != expected 16 for shape [1 1 2] dtype int64
+# 
+v0.4.8#7637030305286965264
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x6b74f03291620
+0x4
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x6b74f03291620
+0x4
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

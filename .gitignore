@@ -1,0 +1,7 @@
+*.test
+*.out
+*.prof
+/dist/
+/coverage.*
+testdata/corpus/
+.envrc

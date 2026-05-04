@@ -1,0 +1,1083 @@
+# 2026/05/03 20:05:00.241196 [TestPropertyReadEqualsSlice/float64] [rapid] draw rank: 3
+# 2026/05/03 20:05:00.241209 [TestPropertyReadEqualsSlice/float64] [rapid] draw shape[0]: 8
+# 2026/05/03 20:05:00.241217 [TestPropertyReadEqualsSlice/float64] [rapid] draw chunks[0]: 7
+# 2026/05/03 20:05:00.241225 [TestPropertyReadEqualsSlice/float64] [rapid] draw shape[1]: 4
+# 2026/05/03 20:05:00.241231 [TestPropertyReadEqualsSlice/float64] [rapid] draw chunks[1]: 3
+# 2026/05/03 20:05:00.241237 [TestPropertyReadEqualsSlice/float64] [rapid] draw shape[2]: 4
+# 2026/05/03 20:05:00.241244 [TestPropertyReadEqualsSlice/float64] [rapid] draw chunks[2]: 3
+# 2026/05/03 20:05:00.241249 [TestPropertyReadEqualsSlice/float64] [rapid] draw start[0]: 1
+# 2026/05/03 20:05:00.241254 [TestPropertyReadEqualsSlice/float64] [rapid] draw stop[0]: 8
+# 2026/05/03 20:05:00.241270 [TestPropertyReadEqualsSlice/float64] [rapid] draw start[1]: 0
+# 2026/05/03 20:05:00.241276 [TestPropertyReadEqualsSlice/float64] [rapid] draw stop[1]: 2
+# 2026/05/03 20:05:00.241281 [TestPropertyReadEqualsSlice/float64] [rapid] draw start[2]: 3
+# 2026/05/03 20:05:00.241287 [TestPropertyReadEqualsSlice/float64] [rapid] draw stop[2]: 4
+# 2026/05/03 20:05:00.241301 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[0]: 0
+# 2026/05/03 20:05:00.241310 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[1]: -5.790483320755103e-280
+# 2026/05/03 20:05:00.241329 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[2]: 0.20231768675951406
+# 2026/05/03 20:05:00.241339 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[3]: 0.24466203153133392
+# 2026/05/03 20:05:00.241350 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[4]: 2.078746795654297
+# 2026/05/03 20:05:00.241360 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[5]: -4.874705155089032e-07
+# 2026/05/03 20:05:00.241367 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[6]: 120863.51844024658
+# 2026/05/03 20:05:00.241377 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[7]: -123814.01408179203
+# 2026/05/03 20:05:00.241385 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[8]: -9.04728794979874e-26
+# 2026/05/03 20:05:00.241393 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[9]: -18530.76546640142
+# 2026/05/03 20:05:00.241401 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[10]: 7.374832098386769e-17
+# 2026/05/03 20:05:00.241409 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[11]: -0.22225914601244767
+# 2026/05/03 20:05:00.241415 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[12]: 9.859239831798959e-147
+# 2026/05/03 20:05:00.241430 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[13]: -4.45417554586128e+07
+# 2026/05/03 20:05:00.241439 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[14]: -1.2991089823190123
+# 2026/05/03 20:05:00.241447 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[15]: 1.7627713284931023e-33
+# 2026/05/03 20:05:00.241455 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[16]: -7.7657075e+06
+# 2026/05/03 20:05:00.241462 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[17]: 1.7852423546679688e+08
+# 2026/05/03 20:05:00.241477 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[18]: -0.5976600646972656
+# 2026/05/03 20:05:00.241483 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[19]: 0.0018640846230937314
+# 2026/05/03 20:05:00.241492 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[20]: 2.302085268776864
+# 2026/05/03 20:05:00.241500 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[21]: -3.131658784013445e-138
+# 2026/05/03 20:05:00.241506 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[22]: 4.600335611996563e-304
+# 2026/05/03 20:05:00.241515 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[23]: -1141.9554319505582
+# 2026/05/03 20:05:00.241521 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[24]: -1.6445822048284173e+08
+# 2026/05/03 20:05:00.241527 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[25]: 0.09535452705361173
+# 2026/05/03 20:05:00.241533 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[26]: -1.3454719135000914
+# 2026/05/03 20:05:00.241541 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[27]: 1.15380859375
+# 2026/05/03 20:05:00.241547 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[28]: 8.313351073295648e-175
+# 2026/05/03 20:05:00.241553 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[29]: -2.865446680250608e-265
+# 2026/05/03 20:05:00.241560 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[30]: 2.347418315e+08
+# 2026/05/03 20:05:00.241568 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[31]: 1.2753466330468655
+# 2026/05/03 20:05:00.241579 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[32]: 1.8116212005529748e-122
+# 2026/05/03 20:05:00.241584 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[33]: 38.9600830078125
+# 2026/05/03 20:05:00.241593 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[34]: 1
+# 2026/05/03 20:05:00.241599 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[35]: 1.2207243297631145e+06
+# 2026/05/03 20:05:00.241605 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[36]: -2.2323972485981933e-103
+# 2026/05/03 20:05:00.241612 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[37]: -3.6003543031880035e-51
+# 2026/05/03 20:05:00.241618 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[38]: -0.25
+# 2026/05/03 20:05:00.241623 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[39]: 0.0103680616602434
+# 2026/05/03 20:05:00.241633 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[40]: -0.013261438238542672
+# 2026/05/03 20:05:00.241640 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[41]: 1.337697057578933e-11
+# 2026/05/03 20:05:00.241647 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[42]: 90.7568637933582
+# 2026/05/03 20:05:00.241653 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[43]: 6
+# 2026/05/03 20:05:00.241661 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[44]: 143505.875
+# 2026/05/03 20:05:00.241667 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[45]: -7.437588960738106e+08
+# 2026/05/03 20:05:00.241675 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[46]: 2.85546875
+# 2026/05/03 20:05:00.241681 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[47]: 2.682857244158164e-19
+# 2026/05/03 20:05:00.241697 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[48]: -5.786295631713059e-139
+# 2026/05/03 20:05:00.241705 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[49]: 27.30593355279416
+# 2026/05/03 20:05:00.241715 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[50]: 27.842647038247378
+# 2026/05/03 20:05:00.241722 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[51]: -2.987047333373348e-58
+# 2026/05/03 20:05:00.241730 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[52]: -1.726004542083274
+# 2026/05/03 20:05:00.241736 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[53]: 2.1522875155273718e-28
+# 2026/05/03 20:05:00.241744 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[54]: -0.542877197265625
+# 2026/05/03 20:05:00.241751 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[55]: -0.24096952988965992
+# 2026/05/03 20:05:00.241759 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[56]: 1.3841392982812977
+# 2026/05/03 20:05:00.241765 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[57]: 350.9114227294922
+# 2026/05/03 20:05:00.241771 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[58]: -3.758544921875
+# 2026/05/03 20:05:00.241780 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[59]: -2.8004302978515625
+# 2026/05/03 20:05:00.241786 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[60]: 4.043258834159199e-21
+# 2026/05/03 20:05:00.241792 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[61]: -3.864393001022812
+# 2026/05/03 20:05:00.241798 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[62]: 28738.09375
+# 2026/05/03 20:05:00.241804 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[63]: -0.4065139091471792
+# 2026/05/03 20:05:00.241811 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[64]: -2.1820740551543073e-145
+# 2026/05/03 20:05:00.241819 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[65]: -6.185480740051239
+# 2026/05/03 20:05:00.241826 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[66]: 4.820631904401998e-98
+# 2026/05/03 20:05:00.241832 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[67]: 1637.1719362127133
+# 2026/05/03 20:05:00.241837 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[68]: 1430.5087287604586
+# 2026/05/03 20:05:00.241848 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[69]: -1.8924408927559853
+# 2026/05/03 20:05:00.241857 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[70]: -0.0007921737588545419
+# 2026/05/03 20:05:00.241864 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[71]: 100.10542031948717
+# 2026/05/03 20:05:00.241870 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[72]: 22.08331651047423
+# 2026/05/03 20:05:00.241877 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[73]: -0.0008713188672708531
+# 2026/05/03 20:05:00.241887 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[74]: -7.507583720795552
+# 2026/05/03 20:05:00.241894 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[75]: 0.381011962890625
+# 2026/05/03 20:05:00.241900 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[76]: -0.005300283432006836
+# 2026/05/03 20:05:00.241909 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[77]: -2.1007268893209454e-86
+# 2026/05/03 20:05:00.241914 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[78]: 0.8984375
+# 2026/05/03 20:05:00.241922 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[79]: 5.7830273398028756e-15
+# 2026/05/03 20:05:00.241930 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[80]: 29.415669698228157
+# 2026/05/03 20:05:00.241938 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[81]: 0.07586193084716797
+# 2026/05/03 20:05:00.241945 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[82]: -2.2233190711764504e-54
+# 2026/05/03 20:05:00.241951 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[83]: -1.2120296623471381e-257
+# 2026/05/03 20:05:00.241958 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[84]: 232.4927320368588
+# 2026/05/03 20:05:00.241964 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[85]: -1e+09
+# 2026/05/03 20:05:00.241971 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[86]: 1.1765732756175566
+# 2026/05/03 20:05:00.241978 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[87]: 0.5568981751233989
+# 2026/05/03 20:05:00.241986 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[88]: 152147.50467920303
+# 2026/05/03 20:05:00.241995 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[89]: 161.26293637730336
+# 2026/05/03 20:05:00.242001 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[90]: -1.0147566910346686e-182
+# 2026/05/03 20:05:00.242011 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[91]: -9.575608305763431
+# 2026/05/03 20:05:00.242019 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[92]: -6.911546766339626
+# 2026/05/03 20:05:00.242025 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[93]: 211.28026094760995
+# 2026/05/03 20:05:00.242034 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[94]: 7.957756906455952e-86
+# 2026/05/03 20:05:00.242040 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[95]: 202.66372282603334
+# 2026/05/03 20:05:00.242047 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[96]: -242180.3726620674
+# 2026/05/03 20:05:00.242053 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[97]: -7.590037415765704e-237
+# 2026/05/03 20:05:00.242063 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[98]: 234.47893285751343
+# 2026/05/03 20:05:00.242071 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[99]: -9.16481302936867e-23
+# 2026/05/03 20:05:00.242079 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[100]: 3.6391238034707576
+# 2026/05/03 20:05:00.242085 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[101]: -2193.9671630859375
+# 2026/05/03 20:05:00.242093 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[102]: -0.2748766447249267
+# 2026/05/03 20:05:00.242101 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[103]: 497.10241040351866
+# 2026/05/03 20:05:00.242107 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[104]: -1.558093972300504e-16
+# 2026/05/03 20:05:00.242133 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[105]: -325739.52792758495
+# 2026/05/03 20:05:00.242139 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[106]: -8.193061081488296e-54
+# 2026/05/03 20:05:00.242146 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[107]: 0.5142169254369264
+# 2026/05/03 20:05:00.242154 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[108]: 5.895935371492441e+08
+# 2026/05/03 20:05:00.242161 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[109]: -71.0368708074966
+# 2026/05/03 20:05:00.242167 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[110]: -1.6877965161391602e-13
+# 2026/05/03 20:05:00.242173 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[111]: 1.3687040170131384e-275
+# 2026/05/03 20:05:00.242179 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[112]: 6.683619349428464e-22
+# 2026/05/03 20:05:00.242187 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[113]: 21.98901482205838
+# 2026/05/03 20:05:00.242194 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[114]: -2.756131131073681e-194
+# 2026/05/03 20:05:00.242203 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[115]: -4.521050907861061e-98
+# 2026/05/03 20:05:00.242212 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[116]: -2.3647414962150853e-265
+# 2026/05/03 20:05:00.242217 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[117]: -0.6105369329452515
+# 2026/05/03 20:05:00.242225 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[118]: 0.9178930856845708
+# 2026/05/03 20:05:00.242231 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[119]: -4.008172901408258e-06
+# 2026/05/03 20:05:00.242239 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[120]: -25.391204833984375
+# 2026/05/03 20:05:00.242247 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[121]: 1.479201590602866e+06
+# 2026/05/03 20:05:00.242254 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[122]: 2.440436611299629
+# 2026/05/03 20:05:00.242274 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[123]: 5.865003913640976e-07
+# 2026/05/03 20:05:00.242282 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[124]: 52359
+# 2026/05/03 20:05:00.242291 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[125]: 74.02934753078162
+# 2026/05/03 20:05:00.242302 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[126]: -9.1552734375e-05
+# 2026/05/03 20:05:00.242308 [TestPropertyReadEqualsSlice/float64] [rapid] draw src[127]: 8.855144233260329e-20
+# 2026/05/03 20:05:00.242638 [TestPropertyReadEqualsSlice/float64] decode chunk [0 0 1] via codec "bytes": codec "bytes": bytes codec: input length 168 != expected 504 for shape [7 3 3] dtype float64
+# 
+v0.4.8#14066973824594640578
+0x18ce54b9ae5302
+0xe1ddb4e47b43f
+0x2
+0x1f84122a04ce96
+0x11b4fc9caf1222
+0x7
+0x1cf7a800aea900
+0x6f7704456399f
+0x6
+0x2b3ee4a09f9a2
+0x14f8d5bc401a1d
+0x3
+0x752711dd8141a
+0x142296ef16e5be
+0x2
+0x1d476046ab3fb0
+0x12099e5525cc9d
+0x3
+0x1cc81ad72a1dc1
+0x5a6820a964a72
+0x2
+0x4cedc0e9c1f96
+0x6346ae9b532a0
+0x1
+0x70d15d96b72cb
+0x1edea5a8b3fe50
+0x6
+0x10aae619a77bda
+0x175af12049b1be
+0x0
+0x1e6b2262294a21
+0x76af930002cb6
+0x1
+0x49c2a2fb7bf05
+0x69d4a1c98711d
+0x3
+0xdb0f20d1890d3
+0x176c7c44f651ab
+0x0
+0x3d2f50ad36436
+0x1a327fbf222800
+0x1f3683c89a01dd
+0xffffffffffffffff
+0x0
+0x0
+0x0
+0x1c04d512a7e93c
+0x1a2251e9b1a9f0
+0x1ad32ed3021747
+0x39f
+0x0
+0x36
+0x5059774fda6fe
+0x9226b05332ac5
+0x14ff0c3beaf7d8
+0x6a46e96a8fdcd
+0x2
+0x0
+0x3f
+0x9e58bc4046a02
+0xfa79838ef2153
+0x1b767cfebbfe6c
+0x4a7c7210e11cc
+0x2
+0x0
+0x1a
+0xf5115e1236118
+0x6d07add4719e5
+0xb72b5c453df87
+0x364d1aee1e37e
+0x1
+0x0
+0x13
+0xa1460461b633
+0x1491d4e7090e47
+0x19c1dcd12f05b6
+0x12b6807340730c
+0x14
+0x0
+0x14
+0x5b57b5fd5011
+0xd9a87f7b6bd93
+0xe2d9dcbe31a4b
+0x185c319f3d99f4
+0x10
+0xd81f
+0x12
+0x84b8b666d
+0x19c2229fcb0494
+0xba0aabedbaff2
+0xf73c70b5f7c0c
+0x10
+0xe3a6
+0x35
+0x39add444
+0x1165415b00292e
+0x16d679c8799cb6
+0x1123691abe32b1
+0x53
+0x0
+0x2
+0xf99d0cacccfd2
+0x11bba2b2cbdc11
+0x6c1be29a697e7
+0x1de13a6b82ec94
+0xe
+0x862
+0x2b
+0x30fd66ca12
+0xbbfe4d5ab6754
+0x13029832016af8
+0xfcbee4e781f43
+0x35
+0x0
+0x20
+0x541aa6590ec76
+0x15efab9d53df9d
+0x1f154dc0d3cff3
+0xa97a7f94c172d
+0x2
+0x0
+0x28
+0xc72fcd9ae2d91
+0xfe3ba5593a4b9
+0x1524ad8d3f937d
+0x135cc2e9cc812d
+0x1e5
+0x0
+0x19
+0xf84492be8b707
+0x162e5fca37e5da
+0xebad7449693cd
+0xefdec02b685dc
+0x1e
+0x19
+0xa7a73b
+0x17
+0x3ab3d3a
+0x1a9732e03dd133
+0x67220928283d8
+0x7b3065756a206
+0x0
+0x0
+0x20
+0x4c926801cd6b2
+0xb75ccdd303ab2
+0x1e16123791c3f7
+0x107b43ffbfc5e3
+0x6c
+0x0
+0xe
+0x24e6b2538d419
+0x1ef167b4f64ea0
+0x379cafe26761
+0x1d737646672a72
+0x16
+0x367ecb
+0x1
+0x3ebfafe8
+0x3a9a0acb5fb9d
+0x2124eb49b5a38
+0xd381747f6807d
+0x1b
+0x2a4104b
+0x9
+0xefd9e8
+0x15907f0b61e2fa
+0x1452877693effa
+0x3348280b409c6
+0x0
+0x0
+0x11
+0x32008c24c348d
+0xbf7c8482fb0f9
+0x16832f2973af6f
+0xde5dd44517416
+0x9
+0x0
+0x20
+0xe8a899f9448f5
+0xb32fc50a899e
+0x206dcc468078b
+0x4fd63a62a82e9
+0x1
+0x0
+0x20
+0x26aabae710c3b
+0x1840e8fef2ab25
+0x15eac1c46df2b6
+0x1ad9bf4d614cf0
+0x1c8
+0x0
+0x30
+0x2a58f689c4a28
+0x2d97bd43cc696
+0x1c91b812487b29
+0x15f21500f97faa
+0x3ef
+0x0
+0x27
+0x430beadfce70d
+0x17eed9b29dc9bc
+0xcde71894e618e
+0xcf0128f68570c
+0xa
+0x75
+0x30
+0x3d25cc0d4ce
+0x125f6ee1c1cdb7
+0xc37197df95cd6
+0x18f0cda72ee79b
+0x1b
+0x1cd6eec
+0x17
+0xf7370a
+0xf76f89ee8b157
+0x15f7468cf00aca
+0x85daf8b10cf5d
+0x3
+0x0
+0x35
+0x869277f3886fb
+0x1783591a82182e
+0x78aad4a341efb
+0x567c8515e4eb1
+0x0
+0x0
+0x2b
+0x5870d8ea2b6bb
+0xb4deadbaf6e5b
+0x94fee994c5282
+0x67e53c09b0d63
+0x0
+0x0
+0xb
+0x2770c40f91f5d
+0xd0a3812176ad9
+0x1c544a22822f5a
+0x1d5ba8ab6e6180
+0x242
+0x0
+0x29
+0xa5192fc43e061
+0x16d65859ce08b1
+0x134dc345bf93d8
+0x14c47b07216786
+0x36e
+0x0
+0x31
+0x27a9fd92d73c4
+0xa85404c4325a5
+0x79a0c77078275
+0x13c5b7382db5e2
+0x1b
+0x5fde047
+0x1
+0x14ac04d
+0xff8e8d4879111
+0x4a2fb979bdcac
+0x1c1fc26aa547fd
+0x1f
+0x0
+0x0
+0x1c
+0x467d1df9c8325
+0x7834f7d5a4395
+0x176abfe3f1b289
+0x1494ecc48ec607
+0x194
+0x0
+0xf
+0x7f3aa351b2140
+0xa0540ffbc46a6
+0x74b0c29248e8a
+0x9454c5a3c9ec8
+0x5
+0x6
+0xd
+0x7ae7dd49b7dd
+0x12be436cc6f48
+0x26de6baa59503
+0x147ff167f10e0
+0x0
+0x0
+0x1
+0x3e120bd58fc37
+0x5f5722390c6f7
+0xc7a8a20f4f1e1
+0x17d34410221db4
+0x14
+0x2a074
+0x18
+0x546b5bad
+0x1feb356daf9c01
+0x13f02110e16886
+0x1b05161df05bfd
+0x154
+0x0
+0x6
+0x1bef1b5f2117
+0x111b9ee52e28cf
+0x19f54e756344f4
+0x132820cdca4b9b
+0xa7
+0x0
+0x2d
+0x58d86e3e9ab99
+0x13f3830ea12d99
+0x13fa1014b69eac
+0x1fffccea6b36
+0x1
+0x0
+0x1
+0x5b57b0ac7f393
+0xe3b9034d6917b
+0x1ffe97f0d530e2
+0xa7ecf3c7265c3
+0x6
+0x0
+0x3a
+0x53bd9ae077d40
+0x1f4f3403c22041
+0x19d83a79d48be5
+0x1045cc287c47c2
+0x6
+0x0
+0x3d
+0xb28d01c427cd0
+0x1433a75e9bfea
+0x18f33860c5c4b4
+0xfccd9fa5ffdb0
+0x24
+0x0
+0x33
+0xd6a90a162e1ca
+0xff55e7c9cbae6
+0x22b2c5c5445eb
+0xf1efc4c21cb5e
+0x6
+0x1a
+0x1e
+0x307074d654cc
+0x66ed09b0af88b
+0x6842616c60457
+0x55a2fbd9e168d
+0x2
+0x2
+0x3
+0x63dddc462266
+0xea98d42d29b8e
+0x55d529cebbbac
+0xf8df97934705e
+0x11
+0x3091
+0x3
+0x728770f1c
+0x1c82abab239e83
+0xdcaf561840735
+0x1732970b0e10fe
+0x1d
+0xc54dc30
+0x12
+0x972ac
+0xa0ac07a92ceae
+0x1e57861916d00
+0x9bfc366bc2685
+0x1
+0x0
+0x9
+0x6dbaa3b8a9a6a
+0x43a72fe209a86
+0x1611acc25528b3
+0xf058ec5b09124
+0x3d
+0x0
+0x2c
+0x3cbc628391843
+0x1da008158fbb51
+0x1fa622b6c920c6
+0x1a436cb6ddb655
+0x1cb
+0x0
+0xa
+0xb928a9d190cbc
+0xe676b0281e18f
+0xefeb924a8bd9
+0xc97f88b43300d
+0x4
+0xb
+0x22
+0x4e51a94c1c8e
+0x89d0668f4eb8f
+0x1b2ec15e40337
+0x1b948ff839bc46
+0x1e
+0x4
+0xb
+0x28
+0xd7b7b75f5890
+0x12299c0f6dd26b
+0x13a537cc823a3e
+0x1ac3257f8ed6c1
+0xbf
+0x0
+0x4
+0xeaf0da85389d1
+0x1cb5c59c1f0efb
+0x751da7996455b
+0xfe66227d674a
+0x0
+0x0
+0x2a
+0xb9db6f04feec3
+0x38450767accd2
+0x16b634a4f9d790
+0x10d92cc17ccec9
+0x5b
+0x0
+0x32
+0x10d5b920fcdd5
+0x1d8bd2dae80921
+0x12d81f3d781a1e
+0x413419e5663e0
+0x0
+0x0
+0x14
+0x15f408a4db669
+0x1b02e70a6d57dc
+0x153c7447e22e28
+0xd4a17e3e1dfe1
+0x2
+0x0
+0x33
+0xed816ed1ab2e1
+0x2c2b19ed72a16
+0x88198479bb782
+0x158e3682674bb2
+0x0
+0x0
+0x28
+0x6256f3fb3a8c6
+0x6b5834046aeff
+0x7b37150f8295d
+0x1c958e5141ec51
+0x8
+0x5e
+0x10
+0xe9538b71a37
+0x13f19716a383c6
+0x1a4e0e6d712f1
+0x1a3188080e42b
+0x1
+0x1
+0xe
+0x6118451be7bb7
+0x12ca554111c745
+0xc50317be6489d
+0x2a1c4072749eb
+0x1
+0x0
+0x10
+0x667480308ebdc
+0xd018a11201651
+0x11fe41311bcf69
+0x108d253cd91f87
+0x43
+0x0
+0x9
+0x31b08c083d46a
+0x1d7911c709fda1
+0x576fc090854bc
+0x1bb88626aaffdf
+0x1
+0x1
+0x30
+0x6ea46e0b24635
+0xcc2bd9edfce1e
+0xa35195bb4b7b2
+0xf492fa614b901
+0xe
+0x3042
+0x5
+0x7705ff179
+0x19ca324efd689d
+0x11ba0de66b9e0b
+0x8e24b5e8c6f17
+0x1
+0x0
+0x23
+0xa0452ea4a028b
+0x194560f053f2d1
+0x1d4f4cd4446ec6
+0x1eb7825cc3efc0
+0x1e0
+0x0
+0x29
+0x5cc4c24c15d85
+0x1c1321de25b3f7
+0x2a20abb935a79
+0x589ecb24e8a8c
+0x2
+0x2
+0x34
+0xbdeea9c23b57
+0x2691a9033bece
+0x12c3727c035380
+0x176b3de450d9ac
+0x143
+0x0
+0x30
+0xa5c1d9809a98b
+0x7670122325fa5
+0x57c749cbe66c2
+0x197f3d294162df
+0xa
+0x265
+0x35
+0xb0100bea68
+0x99af71c2a41dc
+0x4539ba4d315a
+0x1464bff8d856b3
+0xa
+0x196
+0x35
+0x208f03132d1
+0x1ba6ec1a7295e9
+0x91d8e38f23241
+0x554c3b62db22
+0x0
+0x0
+0x1c
+0xe47701a1e9d81
+0x15bbfada639ede
+0x10bdb63af0f085
+0x1727722bb6f6a4
+0xa
+0x0
+0x28
+0x9f53c318a3353
+0x776e1484b565e
+0x2f3191f5b749b
+0x10b0a251d6b245
+0x6
+0x24
+0x29
+0x6bf34de2204
+0x26eaf5e8794e5
+0x16492dce0d9ff
+0xba394648d9ce0
+0x4
+0x6
+0x38
+0x15543b17b423
+0x1d668eb94ad6a7
+0x1a81b7e1af5bb9
+0xa35fae0de9dcd
+0xa
+0x0
+0x3f
+0xc8d2705084f2c
+0x1200ffa4496482
+0x9de63a64e184c
+0x6ab24e7c40c1a
+0x2
+0x3
+0x33
+0x207c406e33210
+0xb9439062b0acc
+0x1993d08c908245
+0x5bf06a3834c1
+0x1
+0x0
+0xd
+0x862b081530a84
+0x1c3907eca77ffe
+0x1dd8746ff69509
+0xf9543d6dd411a
+0x7
+0x0
+0x11
+0x5b5c567874fa7
+0x16166e2184efc5
+0x1b88a2d99743d9
+0x1d74b5c1886742
+0x11c
+0x0
+0x16
+0x4e51200d113ba
+0x724c137f6e4a4
+0x1f81fb6b7bb1a9
+0x945c736cc9ddb
+0x0
+0x0
+0x6
+0xcd4ab1d4a49b0
+0xeeeea72056a52
+0x136b3ff9fc7563
+0x1008ebe7d2a743
+0x2f
+0x0
+0x25
+0xa0b6067aa0bd6
+0x686857d5e0b24
+0xc11777590f581
+0xef56a7454fca8
+0x4
+0xd
+0x26
+0x6a69544fd57c
+0x9a5487bb85e37
+0x19803db822482e
+0x4bdc5c774624f
+0x3
+0x0
+0x10
+0x36bba0da9d755
+0x151d4c579a38dc
+0x17df6ffd16a33f
+0x1b5a49591a4a9d
+0xb2
+0x0
+0xb
+0xb43568d7b1851
+0x15ff81777d3441
+0x15dd19dc6dab30
+0x1d9e9fec9ea4c6
+0x355
+0x0
+0x29
+0x74b56c43e8d98
+0x818a0f5dbca19
+0x5f3f9494b9a63
+0xc46dcba157241
+0x7
+0x68
+0x1c
+0xfc475faae56
+0x1a8eff8e880133
+0x6f09f0cc386a0
+0x1fa5768d38a1a9
+0xffffffffffffffff
+0x0
+0x0
+0x0
+0x53e19cc432ff3
+0x925c8e6644136
+0x31e38a9d657e4
+0x0
+0x0
+0x23
+0x2d33e7fc2f22d
+0xe49e872d8d1ec
+0x1988e580ff87cc
+0x64048d99fd3cc
+0x0
+0x0
+0x3f
+0x1d21c1f2b6d31
+0x1444912a9a770
+0x7955e06fb4119
+0x10252e6e8d0148
+0x11
+0x5253
+0x15
+0x409955925
+0x1f5b6d832fd4e
+0x2f238757293ed
+0x6efa50dd71c9b
+0x7
+0x21
+0x38
+0x869f98cae4b
+0x1e446b5e004356
+0x163d1344a28d23
+0x1e69d5c522383a
+0x25c
+0x0
+0x2a
+0x58f1cce239cb5
+0x15aa418d2c2b0f
+0x2001d88432d05
+0x648b6968a9b4e
+0x3
+0x1
+0x2f
+0x126b621c11eac
+0x16572f55e80fc3
+0x914301033f220
+0x91ea3fa68b207
+0x2
+0x2
+0x2f
+0x3a56c83f8d027
+0x1bad17f281646
+0xaaa6cb6653877
+0x91206474c3123
+0x7
+0x53
+0x37
+0x8f7e5ce8a95
+0xa435b4ba9b4b1
+0x1554309d899b0a
+0x1668cf8819512a
+0x11a
+0x0
+0x19
+0x3c9b2f96fccd4
+0x387fe5a735082
+0x19f12a48e4de5
+0xaefc4002d5469
+0x7
+0x4a
+0x26
+0x153d37a6edaf
+0x1c4c67b1159e57
+0xc8b403571aca9
+0x1ea82d8e453f63
+0x11
+0x1b204
+0x15
+0x2fb364602
+0x1f00e7967d2804
+0x158178c18d7bf2
+0x1daeecf3542c8a
+0x310
+0x0
+0x1e
+0x8b64f5443bea7
+0xde04f256c536d
+0xcda6957cc4b4
+0x77770a55d2638
+0x7
+0x6a
+0x18
+0xf536b1ba2b1
+0x1147eda6060331
+0x1bedffc7877f2d
+0x1013a3568c86a5
+0x49
+0x0
+0x2a
+0xbb2ee3d81a271
+0x70f7e9501e5
+0x3b9ff7d12f6a3
+0xdc511118f57c
+0x1
+0x1
+0x3d
+0x51cecf0d0042b
+0x1b1a9c59e7c941
+0xdd5559b35f89
+0xcf10c10789170
+0xb
+0x91
+0xe
+0x1ef36c30f16
+0x1d7aea6ddb1bf9
+0x10e2683022f39c
+0x7e392617241c4
+0x1
+0x0
+0x2c
+0x1979435e1c787
+0x2aeb79ae824f4
+0x8f229dec89dba
+0x99499df4c892f
+0x8
+0xf1
+0x28
+0x1a379175e2d
+0x1913cdec9dd736
+0x1d9a0c487b06af
+0x14f65bddf300f5
+0x34
+0x0
+0x1d
+0x6745a26cda727
+0x1ae6f5e66d69f8
+0x8d75abfa993f2
+0x19da7392f7cd6f
+0x12
+0xf86b
+0x32
+0x21c990c80
+0x121d48904d2fb4
+0x164f3e06a78462
+0x12d3d5d5dedf96
+0xb0
+0x0
+0x1f
+0x91c95b1bd8975
+0x49d7d5871efa7
+0x15b7341f8758dc
+0x13373e0629620
+0x0
+0x0
+0x2c
+0x74770db9a448
+0x90e70a235e2f2
+0xd90b924a11625
+0x130777f15de68a
+0x1d
+0x1ba9bb8e
+0x3247bc1
+0x1a
+0x131a6e
+0x11959e38c63933
+0x98962639d9f40
+0x1ad06099fd7940
+0x6
+0x7
+0x25
+0x25c1760190c
+0x102bf872484b05
+0x160dcd53aacb73
+0xe16635620bb60
+0x2a
+0x0
+0x2a
+0x7c0ed84e2d0fc
+0x33e891444ecb1
+0x1db269b0a8d793
+0x1cf520e3c64694
+0x391
+0x0
+0xa
+0xe55fc7b230228
+0xf7cb97703013f
+0x166852541a0adb
+0x1172a24541580b
+0x46
+0x0
+0x7
+0x95ff0f92b75c4
+0x162450f71a0ee
+0x8fea1c739183f
+0x1750e404b655ef
+0x4
+0x5
+0x1e
+0xfd30134e15c2
+0x1437eb9a912a53
+0x1a49fba933e60b
+0x1ddeffc8351dad
+0x282
+0x0
+0x14
+0x18794c5b9ddb
+0x1cab79e2db9634
+0x16aa17445b24de
+0x1e5f1eba5f39f7
+0x143
+0x0
+0x10
+0x8b8c23e0ac722
+0x131ebc9ec8973c
+0x1e536daf6cec36
+0x1490e8d4413c83
+0x36f
+0x0
+0x5
+0xef00c6951ba0b
+0x10f99d3503a3ca
+0x1268e90f26f986
+0x910f3d2584435
+0x0
+0x0
+0x17
+0x38984c1e801de
+0xa8d633febf27d
+0x1a169787d80bfa
+0x58a33f056a44
+0x0
+0x0
+0x32
+0xd5f615207ac19
+0x1bfd3ea8d7d152
+0x1a3fbdcf626808
+0x139ace2bcdfaf8
+0x11
+0x0
+0x29
+0xcfbe2d84e10b
+0x1c1c255a445229
+0x87c99630c3582
+0x6e11ce5b042df
+0x4
+0x9
+0x11
+0x64261f021501
+0xe9957966608ee
+0x46e7d0ad68b2e
+0x10f350f8837425
+0x14
+0x69221
+0x2c
+0x9731bfda
+0x3b09d8195f8cc
+0x8ee7159a6d80d
+0x276d890ff9774
+0x1
+0x0
+0x33
+0x38603a14bf19b
+0xdfe9bf5e06505
+0x15ad556b35881e
+0xfd349aaddf681
+0x14
+0x0
+0xc
+0x3ae2d9e51a3f4
+0x64b342bcecee3
+0xdbdb5258a4066
+0x1cc497f536fe50
+0xf
+0x4c87
+0x1
+0x5c831ed7b
+0xf28490c797da3
+0xcfe1f94dae8bb
+0xa101688fbddb7
+0x6
+0xa
+0x3f
+0x1e0d4773b3a
+0x190409724166bc
+0x1ebed2ab5c7d35
+0x1d40da249e206c
+0xd
+0x0
+0x1
+0xe811fce8f61cd
+0xad2285a26bb44
+0x1b7f0b0494868d
+0x11099f37546a43
+0x3f
+0x0
+0x13
+0xa22c36d6d0a7d

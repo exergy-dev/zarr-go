@@ -1,0 +1,25 @@
+goarch: amd64
+pkg: github.com/rkm/zarr-go
+cpu: Intel(R) Core(TM) i9-14900KF
+BenchmarkReadFloat32_Uncompressed_2D-32    	    3382	    324449 ns/op	 807.97 MB/s	  279631 B/op	     144 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	    3987	    325245 ns/op	 805.99 MB/s	  279473 B/op	     143 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	    3644	    333066 ns/op	 787.06 MB/s	  279291 B/op	     143 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	    3524	    326536 ns/op	 802.80 MB/s	  279330 B/op	     143 allocs/op
+BenchmarkReadFloat32_Uncompressed_2D-32    	    3688	    334336 ns/op	 784.07 MB/s	  279364 B/op	     143 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    1575	    752280 ns/op	 348.47 MB/s	  636963 B/op	     278 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    1428	    771692 ns/op	 339.70 MB/s	  635941 B/op	     277 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    1594	    771123 ns/op	 339.95 MB/s	  635519 B/op	     277 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    1550	    767775 ns/op	 341.43 MB/s	  632884 B/op	     277 allocs/op
+BenchmarkReadFloat32_Gzip_2D-32            	    1647	    755824 ns/op	 346.83 MB/s	  634846 B/op	     277 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	    5199	    220118 ns/op	 297.73 MB/s	   71766 B/op	      77 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	    5293	    225747 ns/op	 290.31 MB/s	   71866 B/op	      77 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	    5678	    217721 ns/op	 301.01 MB/s	   71755 B/op	      77 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	    4729	    267137 ns/op	 245.33 MB/s	   71866 B/op	      77 allocs/op
+BenchmarkReadInt16_Uncompressed_3D-32      	    4675	    253584 ns/op	 258.44 MB/s	   71851 B/op	      77 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	    8680	    130986 ns/op	 305.38 MB/s	   69669 B/op	      44 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	    9032	    129190 ns/op	 309.62 MB/s	   69716 B/op	      44 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	    8701	    131803 ns/op	 303.48 MB/s	   69618 B/op	      44 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	    8058	    136897 ns/op	 292.19 MB/s	   69716 B/op	      44 allocs/op
+BenchmarkReadFloat32_Slice_2D-32           	    7710	    132408 ns/op	 302.10 MB/s	   69724 B/op	      44 allocs/op
+PASS
+ok  	github.com/rkm/zarr-go	24.500s

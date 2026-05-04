@@ -1,0 +1,73 @@
+// Package crc32c implements the Zarr v3 "crc32c" bytes→bytes codec.
+//
+// The codec appends a 4-byte little-endian CRC32C (Castagnoli polynomial)
+// trailer to its input on encode, and verifies/strips that trailer on decode.
+//
+// Spec: https://zarr-specs.readthedocs.io/en/latest/v3/codecs/crc32c/v1.0.html
+package crc32c
+
+import (
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"hash/crc32"
+
+	"github.com/rkm/zarr-go/codec"
+)
+
+// castagnoli is the CRC32C polynomial table. Hardware-accelerated on amd64
+// and arm64 via the standard library.
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// Codec implements codec.BytesToBytesCodec for "crc32c".
+type Codec struct{}
+
+// Name returns the v3 codec name.
+func (*Codec) Name() string { return "crc32c" }
+
+// Configure accepts the codec's configuration JSON. The crc32c codec has no
+// configurable parameters; an empty configuration (or nil) is accepted, and
+// any well-formed JSON object is also accepted and ignored.
+func (*Codec) Configure(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	// Accept an empty/arbitrary object; reject only malformed JSON.
+	var ignored map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &ignored); err != nil {
+		return fmt.Errorf("crc32c: invalid configuration: %w", err)
+	}
+	return nil
+}
+
+// EncodeBB returns a fresh slice consisting of in followed by a 4-byte
+// little-endian CRC32C checksum of in.
+func (*Codec) EncodeBB(in []byte) ([]byte, error) {
+	sum := crc32.Checksum(in, castagnoli)
+	out := make([]byte, len(in)+4)
+	copy(out, in)
+	binary.LittleEndian.PutUint32(out[len(in):], sum)
+	return out, nil
+}
+
+// DecodeBB verifies the trailing 4-byte little-endian CRC32C checksum and
+// returns a fresh copy of the body bytes.
+func (*Codec) DecodeBB(in []byte) ([]byte, error) {
+	if len(in) < 4 {
+		return nil, fmt.Errorf("crc32c: input too short: %d bytes (need at least 4)", len(in))
+	}
+	split := len(in) - 4
+	body := in[:split]
+	expected := binary.LittleEndian.Uint32(in[split:])
+	got := crc32.Checksum(body, castagnoli)
+	if got != expected {
+		return nil, fmt.Errorf("crc32c mismatch: expected %x, got %x", expected, got)
+	}
+	out := make([]byte, len(body))
+	copy(out, body)
+	return out, nil
+}
+
+func init() {
+	codec.Register("crc32c", func() codec.Codec { return &Codec{} })
+}
