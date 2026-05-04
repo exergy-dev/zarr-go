@@ -434,6 +434,12 @@ func fillTyped[T Numeric](dst []T, fill []byte) {
 // into the region [outDst] of dst (a row-major typed slice with strides
 // outStrides). It iterates the row-major positions in the destination region;
 // for each, computes the source element offset by walking stride-aware.
+//
+// Fast path: when all chunkSrc steps are 1 we collapse the inner contiguous
+// dims into a single memmove per outer-iteration position. The maximum number
+// of trailing dims we can merge is bounded by how many inner dims span the
+// full chunk row on the source side AND the full output row on the dest side
+// (the outermost merged dim itself may be a partial range).
 func copyChunkRegion[T Numeric](
 	chunkBytes []byte, chunkShape []int64, chunkSrc []DimRange,
 	dst []T, outShape, outStrides []int64, outDst []DimRange,
@@ -454,6 +460,95 @@ func copyChunkRegion[T Numeric](
 	}
 	dstBytes := unsafe.Slice((*byte)(unsafe.Pointer(&dst[0])), len(dst)*elemSize)
 
+	if rank == 0 {
+		return
+	}
+
+	// Detect the all-step==1 case (the dominant Read pattern).
+	allStep1 := true
+	for d := 0; d < rank; d++ {
+		if chunkSrc[d].Step != 1 {
+			allStep1 = false
+			break
+		}
+	}
+
+	if allStep1 {
+		// Determine how many trailing dims we can collapse into a single
+		// contiguous copy. Dim d (with d > mergeStart) must span the FULL
+		// chunk dim on src AND the FULL output dim on dst — otherwise the
+		// destination memory is broken up by a stride and we can't merge
+		// across it. The outermost merged dim (mergeStart) may be partial.
+		mergeStart := rank - 1
+		for mergeStart > 0 {
+			d := mergeStart // candidate inner dim already in the merged block
+			if !(chunkSrc[d].Start == 0 && chunkSrc[d].Stop == chunkShape[d] &&
+				outDst[d].Start == 0 && outDst[d].Stop == outShape[d]) {
+				break
+			}
+			mergeStart--
+		}
+
+		// Per-call element count for the merged inner block.
+		innerElems := int64(1)
+		for d := mergeStart; d < rank; d++ {
+			innerElems *= regionLen[d]
+		}
+		innerBytes := innerElems * int64(elemSize)
+
+		// Outer dims iterate one row at a time.
+		outerRank := mergeStart
+		if outerRank == 0 {
+			// The whole region collapses to one copy.
+			var srcEl, dstEl int64
+			for d := 0; d < rank; d++ {
+				srcEl += chunkSrc[d].Start * chunkStrides[d]
+				dstEl += outDst[d].Start * outStrides[d]
+			}
+			srcOff := srcEl * int64(elemSize)
+			dstOff := dstEl * int64(elemSize)
+			copy(dstBytes[dstOff:dstOff+innerBytes], chunkBytes[srcOff:srcOff+innerBytes])
+			return
+		}
+
+		// Pre-compute the constant base offsets contributed by the inner
+		// (merged) dims; each inner merged dim has Start either 0 (full
+		// span) or some value (only the outermost merged dim can be
+		// partial). Both contributions are constant across iterations.
+		var innerSrcBase, innerDstBase int64
+		for d := mergeStart; d < rank; d++ {
+			innerSrcBase += chunkSrc[d].Start * chunkStrides[d]
+			innerDstBase += outDst[d].Start * outStrides[d]
+		}
+
+		idx := make([]int64, outerRank)
+		// Total iterations over the outer dims.
+		outerTotal := int64(1)
+		for d := 0; d < outerRank; d++ {
+			outerTotal *= regionLen[d]
+		}
+		for k := int64(0); k < outerTotal; k++ {
+			var srcEl, dstEl int64
+			for d := 0; d < outerRank; d++ {
+				srcEl += (chunkSrc[d].Start + idx[d]) * chunkStrides[d]
+				dstEl += (outDst[d].Start + idx[d]) * outStrides[d]
+			}
+			srcOff := (srcEl + innerSrcBase) * int64(elemSize)
+			dstOff := (dstEl + innerDstBase) * int64(elemSize)
+			copy(dstBytes[dstOff:dstOff+innerBytes], chunkBytes[srcOff:srcOff+innerBytes])
+			// Increment idx row-major (last outer dim fastest).
+			for d := outerRank - 1; d >= 0; d-- {
+				idx[d]++
+				if idx[d] < regionLen[d] {
+					break
+				}
+				idx[d] = 0
+			}
+		}
+		return
+	}
+
+	// Fallback: stride > 1 in some dim — element-by-element copy.
 	idx := make([]int64, rank)
 	for k := int64(0); k < total; k++ {
 		// Map idx → source element offset, dest element offset.
