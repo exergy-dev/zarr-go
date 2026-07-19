@@ -227,7 +227,7 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 		putBuffer(out)
 		br.Reset(nil)
 		readerScratchPool.Put(br)
-		return nil, fmt.Errorf("gzip codec: decompressed output exceeds %d bytes (set internal/declimit.SetMax to raise)", maxDec)
+		return nil, fmt.Errorf("gzip codec: decompressed output exceeds %d bytes (call zarr.SetMaxDecodedBytes to raise)", maxDec)
 	}
 	if err := gr.Close(); err != nil {
 		putBuffer(out)

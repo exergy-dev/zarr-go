@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rkm/zarr-go/codec"
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 func newConfigured(t *testing.T, raw string) *Codec {
@@ -93,6 +94,61 @@ func TestCgoConfigureInvalidJSON(t *testing.T) {
 	if err := c.Configure(json.RawMessage(`{not json`)); err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
+}
+
+// TestCgoDecodeBombRejectsForgedFrameContentSize crafts a zstd frame whose
+// header declares a huge Frame_Content_Size but whose actual compressed
+// body is tiny, simulating a decompression bomb. DecodeBB must reject it
+// based on the declared size alone, without attempting to allocate anywhere
+// near the forged size (the pre-fix code did `make([]byte, int(contentSize))`
+// straight from the untrusted header).
+func TestCgoDecodeBombRejectsForgedFrameContentSize(t *testing.T) {
+	orig := declimit.Max()
+	defer declimit.SetMax(orig)
+	declimit.SetMax(1 << 30) // default cap; forged size below is well above it
+
+	c := newConfigured(t, ``)
+	// A payload large enough (>65791 bytes) that WithSingleSegment(true)
+	// picks the 4-byte Frame_Content_Size field (FCS_Flag=2).
+	payload := bytes.Repeat([]byte{0}, 100000)
+	enc, err := c.EncodeBB(payload)
+	if err != nil {
+		t.Fatalf("EncodeBB: %v", err)
+	}
+	forged := forgeFrameContentSize(t, enc, 0xF0000000) // ~4 GiB
+
+	c2 := newConfigured(t, ``)
+	if _, err := c2.DecodeBB(forged); err == nil {
+		t.Fatal("expected error decoding a frame with a forged oversized Frame_Content_Size, got nil")
+	}
+}
+
+// forgeFrameContentSize patches the little-endian Frame_Content_Size field
+// of a single-segment zstd frame (as produced by this codec's EncodeBB,
+// which always sets checksumFlag off and relies on libzstd's default
+// single-segment layout for small known-size inputs) to v, leaving the rest
+// of the frame — including the compressed body — untouched. Requires the
+// frame's FCS_Flag to select a 4-byte field (payload size in
+// [65792, 1<<32)); see RFC 8478 §3.1.1.
+func forgeFrameContentSize(t *testing.T, frame []byte, v uint32) []byte {
+	t.Helper()
+	if len(frame) < 9 {
+		t.Fatalf("frame too short: %d bytes", len(frame))
+	}
+	magic := binary.LittleEndian.Uint32(frame[:4])
+	if magic != 0xFD2FB528 {
+		t.Fatalf("magic = %#x, want 0xFD2FB528", magic)
+	}
+	fhd := frame[4]
+	singleSegment := (fhd>>5)&1 == 1
+	fcsFlag := (fhd >> 6) & 0x3
+	dictIDFlag := fhd & 0x3
+	if !singleSegment || fcsFlag != 2 || dictIDFlag != 0 {
+		t.Fatalf("frame header descriptor %#x: want single-segment, FCS_Flag=2, no dict ID; adjust payload size", fhd)
+	}
+	out := append([]byte(nil), frame...)
+	binary.LittleEndian.PutUint32(out[5:9], v)
+	return out
 }
 
 func TestCgoConfigureDefaults(t *testing.T) {

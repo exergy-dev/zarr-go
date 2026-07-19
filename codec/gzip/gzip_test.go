@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"math/rand"
 	"testing"
+
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 // newConfigured returns a fresh Codec configured from the given JSON. An
@@ -144,6 +146,30 @@ func TestDecodeTruncated(t *testing.T) {
 
 	if _, err := c.DecodeBB(truncated); err == nil {
 		t.Fatalf("DecodeBB(truncated): expected error, got nil")
+	}
+}
+
+// TestDecodeBombBoundedByDeclimit locks in the decompression-bomb defense:
+// a highly compressible payload that expands well past a lowered cap must
+// be rejected with a bounded error, never fully materialized in memory.
+func TestDecodeBombBoundedByDeclimit(t *testing.T) {
+	orig := declimit.Max()
+	defer declimit.SetMax(orig)
+
+	c := newConfigured(t, "")
+	// 8 MiB of zeros compresses to a tiny gzip stream.
+	huge := make([]byte, 8<<20)
+	enc, err := c.EncodeBB(huge)
+	if err != nil {
+		t.Fatalf("EncodeBB: %v", err)
+	}
+	if len(enc) >= len(huge)/100 {
+		t.Fatalf("encoded size = %d, want a large reduction from %d", len(enc), len(huge))
+	}
+
+	declimit.SetMax(1024) // far below the real decompressed size
+	if _, err := c.DecodeBB(enc); err == nil {
+		t.Fatal("expected decode to be rejected once the decompressed size exceeds the cap, got nil")
 	}
 }
 

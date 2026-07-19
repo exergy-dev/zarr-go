@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rkm/zarr-go/codec"
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 func newConfigured(t *testing.T, raw string) *Codec {
@@ -144,6 +145,40 @@ func TestDecodeGarbage(t *testing.T) {
 	garbage := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66}
 	if _, err := c.DecodeBB(garbage); err == nil {
 		t.Fatal("expected error decoding garbage, got nil")
+	}
+}
+
+// TestDecodeBombRejectsForgedNbytes crafts a blosc frame whose 16-byte
+// header declares a huge uncompressed size (nbytes) but whose actual
+// compressed body is tiny, simulating a decompression bomb. DecodeBB must
+// reject it based on the declared nbytes alone, without attempting to
+// allocate anywhere near the forged size (the pre-fix code did
+// `make([]byte, int(nbytes))` straight from the untrusted header).
+//
+// c-blosc's 16-byte header layout: byte0=version, byte1=versionlz,
+// byte2=flags, byte3=typesize, bytes[4:8]=nbytes (LE uint32),
+// bytes[8:12]=blocksize (LE uint32), bytes[12:16]=cbytes (LE uint32). Only
+// nbytes is forged; cbytes must still equal len(frame) or DecodeBB's own
+// length-mismatch check (checked first) would mask the size-cap check.
+func TestDecodeBombRejectsForgedNbytes(t *testing.T) {
+	orig := declimit.Max()
+	defer declimit.SetMax(orig)
+	declimit.SetMax(1 << 30) // default cap; forged size below is well above it
+
+	c := newConfigured(t, `{"cname":"lz4","clevel":5,"shuffle":"noshuffle","typesize":1}`)
+	in := bytes.Repeat([]byte{0}, 4096)
+	enc, err := c.EncodeBB(in)
+	if err != nil {
+		t.Fatalf("EncodeBB: %v", err)
+	}
+	if len(enc) < 16 {
+		t.Fatalf("encoded frame too short: %d bytes", len(enc))
+	}
+	forged := append([]byte(nil), enc...)
+	binary.LittleEndian.PutUint32(forged[4:8], 0xF0000000) // ~4 GiB declared nbytes
+
+	if _, err := c.DecodeBB(forged); err == nil {
+		t.Fatal("expected error decoding a frame with a forged oversized nbytes header, got nil")
 	}
 }
 

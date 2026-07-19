@@ -8,7 +8,6 @@
 package zstd
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -60,39 +59,15 @@ type Codec struct {
 	dec     *kpzstd.Decoder
 }
 
-type configJSON struct {
-	Level    *int  `json:"level,omitempty"`
-	Checksum *bool `json:"checksum,omitempty"`
-}
-
-// Name returns the codec's v3 spec name.
-func (c *Codec) Name() string { return "zstd" }
-
-// Configure parses the v3 codec configuration object.
-//
-// Accepted shape: {"level": <int>, "checksum": <bool>}. Both fields are
-// optional. "level" defaults to 0 (library default). "checksum" defaults to
-// false.
-func (c *Codec) Configure(raw json.RawMessage) error {
-	c.Level = 0
-	c.Checksum = false
-	if len(raw) == 0 {
-		return nil
-	}
-	var cfg configJSON
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("zstd codec: invalid configuration: %w", err)
-	}
-	if cfg.Level != nil {
-		c.Level = *cfg.Level
-	}
-	if cfg.Checksum != nil {
-		c.Checksum = *cfg.Checksum
-	}
-	return nil
-}
-
 // init constructs the encoder/decoder pair on first use.
+//
+// The decoder's max-memory cap is sampled from declimit.Max() here, at first
+// use, and fixed for the lifetime of this Codec instance (klauspost's
+// decoder allocates its max-decoded-size limit at construction; changing
+// zarr.SetMaxDecodedBytes afterward has no effect on already-constructed
+// decoders). Without this, DecodeAll's own default cap is 64 GiB, which
+// still permits a large single allocation before declimit's post-hoc check
+// in DecodeBB below ever runs.
 func (c *Codec) init() {
 	c.once.Do(func() {
 		encOpts := []kpzstd.EOption{
@@ -110,7 +85,11 @@ func (c *Codec) init() {
 			c.initErr = fmt.Errorf("zstd codec: encoder init: %w", err)
 			return
 		}
-		dec, err := kpzstd.NewReader(nil, kpzstd.WithDecoderConcurrency(1))
+		decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(1)}
+		if maxDec := declimit.Max(); maxDec > 0 {
+			decOpts = append(decOpts, kpzstd.WithDecoderMaxMemory(uint64(maxDec)))
+		}
+		dec, err := kpzstd.NewReader(nil, decOpts...)
 		if err != nil {
 			_ = enc.Close()
 			c.initErr = fmt.Errorf("zstd codec: decoder init: %w", err)

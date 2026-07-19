@@ -38,6 +38,8 @@ import (
 	"fmt"
 	"sync"
 	"unsafe"
+
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 // Shuffle filter constants matching blosc.h.
@@ -233,6 +235,9 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 	}
 	if int(cbytes) != len(in) {
 		return nil, fmt.Errorf("blosc codec: frame length mismatch: header=%d, got=%d", int(cbytes), len(in))
+	}
+	if err := declimit.CheckDeclaredSize(int64(nbytes)); err != nil {
+		return nil, fmt.Errorf("blosc codec: decode: %w", err)
 	}
 
 	out := make([]byte, int(nbytes))

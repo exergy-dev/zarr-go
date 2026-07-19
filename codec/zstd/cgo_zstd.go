@@ -23,10 +23,11 @@ package zstd
 import "C"
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"unsafe"
+
+	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 // Codec is the cgo-backed v3 "zstd" bytes→bytes codec. Each call to
@@ -49,38 +50,6 @@ type Codec struct {
 	mu      sync.Mutex
 	cctx    *C.ZSTD_CCtx
 	dctx    *C.ZSTD_DCtx
-}
-
-type configJSON struct {
-	Level    *int  `json:"level,omitempty"`
-	Checksum *bool `json:"checksum,omitempty"`
-}
-
-// Name returns the codec's v3 spec name.
-func (c *Codec) Name() string { return "zstd" }
-
-// Configure parses the v3 codec configuration object.
-//
-// Accepted shape: {"level": <int>, "checksum": <bool>}. Both fields are
-// optional. "level" defaults to 0 (library default). "checksum" defaults
-// to false.
-func (c *Codec) Configure(raw json.RawMessage) error {
-	c.Level = 0
-	c.Checksum = false
-	if len(raw) == 0 {
-		return nil
-	}
-	var cfg configJSON
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("zstd codec: invalid configuration: %w", err)
-	}
-	if cfg.Level != nil {
-		c.Level = *cfg.Level
-	}
-	if cfg.Checksum != nil {
-		c.Checksum = *cfg.Checksum
-	}
-	return nil
 }
 
 func (c *Codec) init() {
@@ -176,6 +145,9 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 	if contentSize == C.ZSTD_CONTENTSIZE_UNKNOWN {
 		return c.decodeStreaming(in)
 	}
+	if err := declimit.CheckDeclaredSize(int64(contentSize)); err != nil {
+		return nil, fmt.Errorf("zstd codec: decode: %w", err)
+	}
 
 	out := make([]byte, int(contentSize))
 	c.mu.Lock()
@@ -232,6 +204,9 @@ func (c *Codec) decodeStreaming(in []byte) ([]byte, error) {
 			return nil, fmt.Errorf("zstd codec: decode: %s", zstdErr(rc))
 		}
 		out = append(out, chunk[:int(outBuf.pos)]...)
+		if maxDec := declimit.Max(); maxDec > 0 && int64(len(out)) > maxDec {
+			return nil, fmt.Errorf("zstd codec: decompressed output exceeds %d bytes", maxDec)
+		}
 		if rc == 0 {
 			break
 		}
