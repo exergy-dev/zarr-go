@@ -3,7 +3,6 @@ package zarr
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/rkm/zarr-go/codec"
@@ -55,10 +54,12 @@ func WithFillValue(raw json.RawMessage) CreateOption {
 	}
 }
 
-// WithAttributes attaches user attributes to the new node.
+// WithAttributes attaches user attributes to the new node. The map is
+// shallow-copied so later mutations by the caller don't alter the node's
+// in-memory or already-persisted metadata.
 func WithAttributes(attrs map[string]any) CreateOption {
 	return func(o *createOptions) {
-		o.attrs = attrs
+		o.attrs = cloneAttrs(attrs)
 	}
 }
 
@@ -72,9 +73,36 @@ func WithDimensionNames(names []string) CreateOption {
 // WithOverwrite makes CreateArray / CreateGroup unconditionally overwrite
 // any existing zarr.json at the target path. Without it, concurrent creates
 // use SetIfNotExists and the loser receives store.ErrAlreadyExists.
+//
+// For CreateArray, an overwrite also deletes every existing key under path
+// (chunks included) before the new metadata is written, so re-creating an
+// array with a different shape/dtype/chunking at the same path can't leave
+// stale chunk bytes that the new metadata's codec pipeline would decode as
+// garbage.
 func WithOverwrite() CreateOption {
 	return func(o *createOptions) {
 		o.overwrite = true
+	}
+}
+
+// WithChunkKeySeparator sets the separator used between chunk-coordinate
+// components. The default chunk_key_encoding's default separator is "/";
+// WithV2ChunkKeys defaults it to ".". Call this after WithV2ChunkKeys in the
+// options list to override that default.
+func WithChunkKeySeparator(sep string) CreateOption {
+	return func(o *createOptions) {
+		o.keySep = sep
+	}
+}
+
+// WithV2ChunkKeys selects the v3 "v2"-compatible chunk_key_encoding (e.g.
+// "arr/0.1" instead of the default "arr/c/0/1"), matching the key layout
+// Zarr v2 stores use, and defaults the separator to "." (v2's convention).
+// Call WithChunkKeySeparator after this option to use a different separator.
+func WithV2ChunkKeys() CreateOption {
+	return func(o *createOptions) {
+		o.keyEncName = "v2"
+		o.keySep = "."
 	}
 }
 
@@ -100,7 +128,8 @@ func writeMetaAtomic(ctx context.Context, ws store.WritableStore, key string, ra
 }
 
 // CreateArray creates a new v3 array under path with the given shape and chunk
-// shape. The store must implement store.WritableStore.
+// shape. shape/chunks may both be empty to create a rank-0 (scalar) array.
+// The store must implement store.WritableStore.
 func CreateArray[T Numeric](
 	ctx context.Context,
 	s store.Store,
@@ -110,10 +139,10 @@ func CreateArray[T Numeric](
 ) (*Array[T], error) {
 	ws, ok := s.(store.WritableStore)
 	if !ok {
-		return nil, fmt.Errorf("store does not support writes")
+		return nil, ErrReadOnly
 	}
-	if len(shape) == 0 || len(chunks) != len(shape) {
-		return nil, fmt.Errorf("shape and chunks must be non-empty and same rank")
+	if len(chunks) != len(shape) {
+		return nil, fmt.Errorf("shape and chunks must have the same rank")
 	}
 	for i, c := range chunks {
 		if c <= 0 {
@@ -137,7 +166,7 @@ func CreateArray[T Numeric](
 		return nil, err
 	}
 	if len(co.fillValue) == 0 {
-		co.fillValue = json.RawMessage("0")
+		co.fillValue = defaultFillValueJSON(dt)
 	}
 	fill, err := parseFillValue(co.fillValue, dt)
 	if err != nil {
@@ -147,12 +176,12 @@ func CreateArray[T Numeric](
 	meta := &metadata.ArrayMeta{
 		ZarrFormat: 3,
 		NodeType:   "array",
-		Shape:      append([]int64(nil), shape...),
+		Shape:      cloneInt64(shape),
 		DataType:   dt.String(),
 		ChunkGrid: metadata.ChunkGrid{
 			Name: "regular",
 			Configuration: metadata.ChunkGridRegularCfg{
-				ChunkShape: append([]int64(nil), chunks...),
+				ChunkShape: cloneInt64(chunks),
 			},
 		},
 		ChunkKeyEnc: metadata.ChunkKeyEncoding{
@@ -170,38 +199,32 @@ func CreateArray[T Numeric](
 	if err != nil {
 		return nil, err
 	}
+	if co.overwrite {
+		if err := deleteStaleChunks(ctx, ws, path); err != nil {
+			return nil, err
+		}
+	}
 	if err := writeMetaAtomic(ctx, ws, joinKey(path, "zarr.json"), raw, co.overwrite, "array", path); err != nil {
 		return nil, err
 	}
 
-	a := &Array[T]{
-		store:       s,
-		mmap:        probeMmap(s),
-		path:        path,
-		meta:        meta,
-		pipeline:    pipe,
-		dtype:       dt,
-		fill:        fill,
-		opts:        co.openOpts,
-		rawCopyFast: isRawCopyFastPipeline(pipe),
-	}
-	return a, nil
+	return newTypedArray[T](s, path, meta, pipe, dt, fill, co.openOpts), nil
 }
 
 // CreateGroup creates a new v3 group under path. The store must implement
 // store.WritableStore. By default this is an atomic create: if a zarr.json
 // already exists at the target the call returns store.ErrAlreadyExists.
-// Pass WithOverwrite(true) to clobber an existing entry.
+// Pass WithOverwrite() to clobber an existing entry.
 func CreateGroup(ctx context.Context, s store.Store, path string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
 	ws, ok := s.(store.WritableStore)
 	if !ok {
-		return nil, fmt.Errorf("store does not support writes")
+		return nil, ErrReadOnly
 	}
 	co := defaultCreateOptions()
 	for _, opt := range opts {
 		opt(&co)
 	}
-	gm := &metadata.GroupMeta{ZarrFormat: 3, NodeType: "group", Attributes: attrs}
+	gm := &metadata.GroupMeta{ZarrFormat: 3, NodeType: "group", Attributes: cloneAttrs(attrs)}
 	raw, err := metadata.MarshalGroup(gm)
 	if err != nil {
 		return nil, err
@@ -209,13 +232,55 @@ func CreateGroup(ctx context.Context, s store.Store, path string, attrs map[stri
 	if err := writeMetaAtomic(ctx, ws, joinKey(path, "zarr.json"), raw, co.overwrite, "group", path); err != nil {
 		return nil, err
 	}
-	return &Group{store: s, path: path, meta: gm, opts: defaultOptions()}, nil
+	return &Group{store: s, path: path, meta: gm, opts: co.openOpts}, nil
+}
+
+// deleteStaleChunks removes every existing key under path (chunks, and any
+// stale metadata) before a WithOverwrite() create writes fresh metadata.
+// Deleting before writing — rather than after — means a crash mid-cleanup
+// leaves the array simply absent (metadata not yet written) instead of
+// present with a mix of old and new chunk bytes.
+func deleteStaleChunks(ctx context.Context, ws store.WritableStore, path string) error {
+	prefix := path
+	if prefix != "" {
+		prefix += "/"
+	}
+	for key, err := range ws.List(ctx, prefix) {
+		if err != nil {
+			return fmt.Errorf("list existing keys at %q: %w", path, err)
+		}
+		if err := ws.Delete(ctx, key); err != nil {
+			return fmt.Errorf("delete stale key %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// cloneAttrs returns a shallow copy of attrs (or nil for nil), so callers
+// storing a map into metadata don't alias the caller's own map.
+func cloneAttrs(attrs map[string]any) map[string]any {
+	if attrs == nil {
+		return nil
+	}
+	out := make(map[string]any, len(attrs))
+	for k, v := range attrs {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneInt64 returns a non-nil copy of s, even when s is empty or nil. Used
+// for Shape/ChunkShape so a rank-0 array's dims marshal as JSON "[]" rather
+// than "null" — append([]int64(nil), s...) would silently stay nil when s
+// has zero elements (nil or not), and DecodeArray's shape-presence check
+// treats a null shape the same as a missing one.
+func cloneInt64(s []int64) []int64 {
+	out := make([]int64, len(s))
+	copy(out, s)
+	return out
 }
 
 // CreateGroup adds a sub-group named name under g.
 func (g *Group) CreateGroup(ctx context.Context, name string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
 	return CreateGroup(ctx, g.store, joinKey(g.path, name), attrs, opts...)
 }
-
-// errReadOnly is returned by writes against non-writable stores.
-var errReadOnly = errors.New("store is read-only")

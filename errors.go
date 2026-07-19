@@ -9,10 +9,6 @@ import (
 
 // Sentinel errors. Wrap with fmt.Errorf("...: %w", ...) at boundaries.
 var (
-	// ErrChunkNotFound is returned by stores when a chunk key is missing.
-	// The array engine catches this and substitutes the array's fill value.
-	ErrChunkNotFound = errors.New("chunk not found")
-
 	// ErrCodecRequiresCGO is raised at array-open time when the metadata
 	// references a codec the current build can't handle (e.g., Blosc on
 	// the default no-cgo build). It aliases codec.ErrRequiresCGO so callers
@@ -27,13 +23,21 @@ var (
 	// isn't in the Numeric constraint set.
 	ErrUnsupportedDtype = errors.New("unsupported dtype")
 
-	// ErrCorruptMetadata is returned when JSON parses but doesn't satisfy
-	// the spec (e.g., chunk shape with a zero dimension).
+	// ErrCorruptMetadata is returned when a zarr.json/.zarray/.zgroup
+	// document parses as JSON but doesn't satisfy the spec (e.g., a chunk
+	// shape with a zero dimension, a missing required field, an
+	// unrecognized must_understand extension). Open/OpenArray wrap the
+	// underlying internal/metadata error with this sentinel.
 	ErrCorruptMetadata = errors.New("corrupt metadata")
 
 	// ErrUnknownCodec is returned at pipeline construction when metadata
-	// references a codec name that isn't in the registry.
-	ErrUnknownCodec = errors.New("unknown codec")
+	// references a codec name that isn't in the registry. It aliases
+	// codec.ErrUnknownCodec so callers can errors.Is against either form.
+	ErrUnknownCodec = codec.ErrUnknownCodec
+
+	// ErrReadOnly is returned by Array.Write, CreateArray, and CreateGroup
+	// when the underlying store does not implement store.WritableStore.
+	ErrReadOnly = errors.New("zarr: store is read-only")
 )
 
 // DecodeError is returned from chunk decode failures with enough context to

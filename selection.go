@@ -26,11 +26,10 @@ func All(shape []int64) Selection {
 	return Selection{Ranges: rs}
 }
 
-// NumElements returns the count of elements covered by the selection.
+// NumElements returns the count of elements covered by the selection. A
+// rank-0 selection (Ranges empty — only valid for a rank-0 array; Validate
+// enforces len(Ranges) == array rank) covers exactly the one scalar element.
 func (s Selection) NumElements() int64 {
-	if len(s.Ranges) == 0 {
-		return 0
-	}
 	n := int64(1)
 	for _, r := range s.Ranges {
 		n *= r.Length()
@@ -79,7 +78,7 @@ func (c ChunkCoord) Clone() ChunkCoord {
 func ChunksIntersecting(arrayShape, chunkShape []int64, sel Selection) iter.Seq[ChunkCoord] {
 	return func(yield func(ChunkCoord) bool) {
 		rank := len(arrayShape)
-		if rank == 0 || len(chunkShape) != rank || len(sel.Ranges) != rank {
+		if len(chunkShape) != rank || len(sel.Ranges) != rank {
 			return
 		}
 		// Per-dim chunk index range: chunks that touch [Start, Stop).

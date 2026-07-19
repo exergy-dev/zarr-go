@@ -13,7 +13,7 @@ func defaultOptions() arrayOptions {
 	return arrayOptions{
 		concurrency:   n,
 		ioConcurrency: 4 * n,
-		rangeGap:      1 << 20, // 1 MiB
+		rangeGap:      4 << 20, // 4 MiB
 	}
 }
 
@@ -39,7 +39,12 @@ func WithIOConcurrency(n int) OpenOption {
 }
 
 // WithRangeGap sets the maximum gap (in bytes) between adjacent ranges that
-// will be coalesced into a single GetRange call.
+// will be coalesced into a single GetRange call. Used by the sharded
+// partial-decode path: inner chunks intersecting a read's region are usually
+// NOT contiguous in the shard body (unneeded inner chunks lie between needed
+// rows), so paying for a few KB of extra payload is usually cheaper than
+// paying for the latency of another round trip on a high-RTT object store.
+// 0 disables coalescing beyond exact adjacency.
 func WithRangeGap(b int64) OpenOption {
 	return func(o *arrayOptions) {
 		if b >= 0 {

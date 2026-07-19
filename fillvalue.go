@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"unsafe"
+	"strconv"
+	"strings"
 )
 
 // parseFillValue decodes the JSON fill_value field into typed value bytes
@@ -57,49 +58,96 @@ func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 			binary.LittleEndian.PutUint64(out, n)
 		}
 	case DtypeFloat16:
-		f, err := parseSpecialFloat(raw)
+		bits, err := parseFloatBits(raw, 16)
 		if err != nil {
 			return nil, err
 		}
-		// Encode as float16 bits (simplified: use the float32→float16 path).
-		bits := float32ToFloat16Bits(float32(f))
-		binary.LittleEndian.PutUint16(out, bits)
+		binary.LittleEndian.PutUint16(out, uint16(bits))
 	case DtypeFloat32:
-		f, err := parseSpecialFloat(raw)
+		bits, err := parseFloatBits(raw, 32)
 		if err != nil {
 			return nil, err
 		}
-		binary.LittleEndian.PutUint32(out, math.Float32bits(float32(f)))
+		binary.LittleEndian.PutUint32(out, uint32(bits))
 	case DtypeFloat64:
-		f, err := parseSpecialFloat(raw)
+		bits, err := parseFloatBits(raw, 64)
 		if err != nil {
 			return nil, err
 		}
-		binary.LittleEndian.PutUint64(out, math.Float64bits(f))
+		binary.LittleEndian.PutUint64(out, bits)
 	case DtypeComplex64, DtypeComplex128:
 		var arr [2]json.RawMessage
 		if err := json.Unmarshal(raw, &arr); err != nil {
 			return nil, err
 		}
-		re, err := parseSpecialFloat(arr[0])
+		width := 32
+		if dt == DtypeComplex128 {
+			width = 64
+		}
+		reBits, err := parseFloatBits(arr[0], width)
 		if err != nil {
 			return nil, err
 		}
-		im, err := parseSpecialFloat(arr[1])
+		imBits, err := parseFloatBits(arr[1], width)
 		if err != nil {
 			return nil, err
 		}
 		if dt == DtypeComplex64 {
-			binary.LittleEndian.PutUint32(out[0:4], math.Float32bits(float32(re)))
-			binary.LittleEndian.PutUint32(out[4:8], math.Float32bits(float32(im)))
+			binary.LittleEndian.PutUint32(out[0:4], uint32(reBits))
+			binary.LittleEndian.PutUint32(out[4:8], uint32(imBits))
 		} else {
-			binary.LittleEndian.PutUint64(out[0:8], math.Float64bits(re))
-			binary.LittleEndian.PutUint64(out[8:16], math.Float64bits(im))
+			binary.LittleEndian.PutUint64(out[0:8], reBits)
+			binary.LittleEndian.PutUint64(out[8:16], imBits)
 		}
 	default:
 		return nil, fmt.Errorf("fill value not supported for dtype %s", dt)
 	}
 	return out, nil
+}
+
+// parseFloatBits parses one float fill-value component — a JSON number,
+// a "NaN"/"Infinity"/"-Infinity" string, or a v3 hex bit-pattern string like
+// "0x7fc00000" — into its raw bits at the given width (16, 32, or 64).
+// Hex bit-pattern values are decoded directly (no float64 round-trip), so
+// exact NaN payloads and signs are preserved.
+func parseFloatBits(raw json.RawMessage, bitWidth int) (uint64, error) {
+	if bits, ok, err := hexFloatBits(raw, bitWidth); ok {
+		return bits, err
+	}
+	f, err := parseSpecialFloat(raw)
+	if err != nil {
+		return 0, err
+	}
+	switch bitWidth {
+	case 16:
+		return uint64(float32ToFloat16Bits(float32(f))), nil
+	case 32:
+		return uint64(math.Float32bits(float32(f))), nil
+	default:
+		return math.Float64bits(f), nil
+	}
+}
+
+// hexFloatBits parses a v3 hex bit-pattern fill value string ("0x..." or
+// "0X...") into its raw bits, sized to bitWidth (16, 32, or 64). ok is false
+// when raw isn't a hex-string fill value, so the caller falls through to the
+// numeric/NaN/Infinity path; err is only meaningful when ok is true.
+func hexFloatBits(raw json.RawMessage, bitWidth int) (bits uint64, ok bool, err error) {
+	if len(raw) < 3 || raw[0] != '"' {
+		return 0, false, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, false, nil
+	}
+	if !strings.HasPrefix(s, "0x") && !strings.HasPrefix(s, "0X") {
+		return 0, false, nil
+	}
+	v, err := strconv.ParseUint(s[2:], 16, bitWidth)
+	if err != nil {
+		return 0, true, fmt.Errorf("invalid hex float fill value %q: %w", s, err)
+	}
+	return v, true, nil
 }
 
 // parseSpecialFloat handles "NaN", "Infinity", "-Infinity" strings as well as
@@ -148,12 +196,20 @@ func float32ToFloat16Bits(f float32) uint16 {
 	return sign | uint16(exp<<10) | uint16(mant>>13)
 }
 
-// fillValueToTyped reinterprets the little-endian fill bytes as one element of
-// type T. Caller must ensure len(b) == sizeof(T).
-func fillValueToTyped[T Numeric](b []byte) T {
-	var t T
-	_ = b[len(b)-1] // bounds check
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(&t)), int(unsafe.Sizeof(t)))
-	copy(dst, b)
-	return t
+// defaultFillValueJSON returns the v3 JSON literal CreateArray uses as the
+// implicit fill_value when the caller doesn't pass WithFillValue: false for
+// bool, a 2-element zero array for complex dtypes, 0 otherwise. The blanket
+// literal "0" is invalid JSON for bool ("cannot unmarshal number into bool")
+// and for complex (which needs a 2-element array), so CreateArray[bool] and
+// CreateArray[complex64/128] would otherwise always fail without an explicit
+// WithFillValue.
+func defaultFillValueJSON(dt Dtype) json.RawMessage {
+	switch dt {
+	case DtypeBool:
+		return json.RawMessage("false")
+	case DtypeComplex64, DtypeComplex128:
+		return json.RawMessage("[0,0]")
+	default:
+		return json.RawMessage("0")
+	}
 }

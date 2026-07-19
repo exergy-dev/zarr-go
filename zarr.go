@@ -41,7 +41,13 @@ func (a *Array[T]) zarrNode() {}
 func (g *Group) Path() string { return g.path }
 
 // Attrs returns the group's user attributes.
-func (g *Group) Attrs() map[string]any { return g.meta.Attributes }
+func (g *Group) Attrs() map[string]any { return cloneAttrs(g.meta.Attributes) }
+
+// wrapCorrupt tags a metadata decode failure with ErrCorruptMetadata so
+// callers can errors.Is against it, while preserving the underlying message.
+func wrapCorrupt(err error) error {
+	return fmt.Errorf("%w: %v", ErrCorruptMetadata, err)
+}
 
 // Open returns the Node (Group or Array) at path. Detects v3 by reading
 // zarr.json; falls back to v2 (.zarray / .zgroup) if zarr.json is absent.
@@ -61,19 +67,19 @@ func Open(ctx context.Context, s store.Store, path string, opts ...OpenOption) (
 func openV3(ctx context.Context, s store.Store, path string, raw []byte, o arrayOptions) (Node, error) {
 	nt, err := metadata.PeekNodeType(raw)
 	if err != nil {
-		return nil, err
+		return nil, wrapCorrupt(err)
 	}
 	switch nt {
 	case metadata.NodeGroup:
 		gm, err := metadata.DecodeGroup(raw)
 		if err != nil {
-			return nil, err
+			return nil, wrapCorrupt(err)
 		}
 		return &Group{store: s, path: path, meta: gm, opts: o}, nil
 	case metadata.NodeArray:
 		am, err := metadata.DecodeArray(raw)
 		if err != nil {
-			return nil, err
+			return nil, wrapCorrupt(err)
 		}
 		return openArrayDynamic(s, path, am, o)
 	}
@@ -84,7 +90,7 @@ func openV2(ctx context.Context, s store.Store, path string, o arrayOptions) (No
 	if raw, err := s.Get(ctx, joinKey(path, ".zarray")); err == nil {
 		am, err := metadata.DecodeArrayV2(raw)
 		if err != nil {
-			return nil, err
+			return nil, wrapCorrupt(err)
 		}
 		attrs, err := loadAttrs(ctx, s, path)
 		if err != nil {
@@ -98,7 +104,7 @@ func openV2(ctx context.Context, s store.Store, path string, o arrayOptions) (No
 	if raw, err := s.Get(ctx, joinKey(path, ".zgroup")); err == nil {
 		gm, err := metadata.DecodeGroupV2(raw)
 		if err != nil {
-			return nil, err
+			return nil, wrapCorrupt(err)
 		}
 		attrs, err := loadAttrs(ctx, s, path)
 		if err != nil {
@@ -116,19 +122,23 @@ func loadArrayMeta(ctx context.Context, s store.Store, path string) (*metadata.A
 	if raw, err := s.Get(ctx, joinKey(path, "zarr.json")); err == nil {
 		nt, perr := metadata.PeekNodeType(raw)
 		if perr != nil {
-			return nil, perr
+			return nil, wrapCorrupt(perr)
 		}
 		if nt != metadata.NodeArray {
 			return nil, fmt.Errorf("node at %q is not an array", path)
 		}
-		return metadata.DecodeArray(raw)
+		am, derr := metadata.DecodeArray(raw)
+		if derr != nil {
+			return nil, wrapCorrupt(derr)
+		}
+		return am, nil
 	} else if !errors.Is(err, store.ErrKeyNotFound) {
 		return nil, fmt.Errorf("read zarr.json at %q: %w", path, err)
 	}
 	if raw, err := s.Get(ctx, joinKey(path, ".zarray")); err == nil {
 		am, derr := metadata.DecodeArrayV2(raw)
 		if derr != nil {
-			return nil, derr
+			return nil, wrapCorrupt(derr)
 		}
 		attrs, lerr := loadAttrs(ctx, s, path)
 		if lerr != nil {
@@ -187,18 +197,7 @@ func OpenArray[T Numeric](ctx context.Context, s store.Store, path string, opts 
 	if err != nil {
 		return nil, fmt.Errorf("parse fill_value: %w", err)
 	}
-	a := &Array[T]{
-		store:       s,
-		mmap:        probeMmap(s),
-		path:        path,
-		meta:        am,
-		pipeline:    pipe,
-		dtype:       dt,
-		fill:        fill,
-		opts:        o,
-		rawCopyFast: isRawCopyFastPipeline(pipe),
-	}
-	return a, nil
+	return newTypedArray[T](s, path, am, pipe, dt, fill, o), nil
 }
 
 // probeMmap returns a non-nil MmapStore if s implements it, else nil.
@@ -207,6 +206,26 @@ func probeMmap(s store.Store) store.MmapStore {
 		return m
 	}
 	return nil
+}
+
+// newTypedArray builds an Array[T] from already-resolved metadata, pipeline,
+// and dtype. Every Array[T] field is independent of T itself (T only selects
+// which concrete instantiation of the generic struct is returned), so this
+// one function backs OpenArray, every openArrayDynamic case, and CreateArray.
+func newTypedArray[T Numeric](s store.Store, path string, am *metadata.ArrayMeta, pipe *codec.Pipeline, dt Dtype, fill []byte, o arrayOptions) *Array[T] {
+	return &Array[T]{
+		store:          s,
+		mmap:           probeMmap(s),
+		path:           path,
+		meta:           am,
+		pipeline:       pipe,
+		dtype:          dt,
+		fill:           fill,
+		opts:           o,
+		rawCopyFast:    isRawCopyFastPipeline(pipe),
+		partialDecoder: pipelinePartialDecoder(pipe),
+		fetcher:        newChunkFetcher(s),
+	}
 }
 
 // openArrayDynamic returns a Node-typed array whose concrete T matches the
@@ -224,37 +243,35 @@ func openArrayDynamic(s store.Store, path string, am *metadata.ArrayMeta, o arra
 	if err != nil {
 		return nil, fmt.Errorf("parse fill_value: %w", err)
 	}
-	mm := probeMmap(s)
-	rcf := isRawCopyFastPipeline(pipe)
 	switch dt {
 	case DtypeBool:
-		return &Array[bool]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[bool](s, path, am, pipe, dt, fill, o), nil
 	case DtypeInt8:
-		return &Array[int8]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[int8](s, path, am, pipe, dt, fill, o), nil
 	case DtypeInt16:
-		return &Array[int16]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[int16](s, path, am, pipe, dt, fill, o), nil
 	case DtypeInt32:
-		return &Array[int32]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[int32](s, path, am, pipe, dt, fill, o), nil
 	case DtypeInt64:
-		return &Array[int64]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[int64](s, path, am, pipe, dt, fill, o), nil
 	case DtypeUint8:
-		return &Array[uint8]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[uint8](s, path, am, pipe, dt, fill, o), nil
 	case DtypeUint16:
-		return &Array[uint16]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[uint16](s, path, am, pipe, dt, fill, o), nil
 	case DtypeUint32:
-		return &Array[uint32]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[uint32](s, path, am, pipe, dt, fill, o), nil
 	case DtypeUint64:
-		return &Array[uint64]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[uint64](s, path, am, pipe, dt, fill, o), nil
 	case DtypeFloat16:
-		return &Array[Float16]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[Float16](s, path, am, pipe, dt, fill, o), nil
 	case DtypeFloat32:
-		return &Array[float32]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[float32](s, path, am, pipe, dt, fill, o), nil
 	case DtypeFloat64:
-		return &Array[float64]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[float64](s, path, am, pipe, dt, fill, o), nil
 	case DtypeComplex64:
-		return &Array[complex64]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[complex64](s, path, am, pipe, dt, fill, o), nil
 	case DtypeComplex128:
-		return &Array[complex128]{store: s, mmap: mm, path: path, meta: am, pipeline: pipe, dtype: dt, fill: fill, opts: o, rawCopyFast: rcf}, nil
+		return newTypedArray[complex128](s, path, am, pipe, dt, fill, o), nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrUnsupportedDtype, dt)
 }

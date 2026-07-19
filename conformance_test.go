@@ -60,47 +60,39 @@ func TestConformance(t *testing.T) {
 	}
 }
 
+// readTyped opens the array at s's root as dtype T and reads sel into a
+// freshly allocated slice.
+func readTyped[T zarr.Numeric](ctx context.Context, s *fs.Store, sel zarr.Selection) ([]T, error) {
+	a, err := zarr.OpenArray[T](ctx, s, "")
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	dst := make([]T, sel.NumElements())
+	if err := a.Read(ctx, sel, dst); err != nil {
+		return nil, fmt.Errorf("read: %w", err)
+	}
+	return dst, nil
+}
+
 func readAndCompare(t *testing.T, s *fs.Store, entry manifestEntry, expected []byte) error {
 	t.Helper()
 	ctx := context.Background()
 	sel := zarr.All(entry.Shape)
 	switch entry.Dtype {
-	case "float32":
-		a, err := zarr.OpenArray[float32](ctx, s, "")
+	case "int8":
+		dst, err := readTyped[int8](ctx, s, sel)
 		if err != nil {
-			return fmt.Errorf("open: %w", err)
+			return err
 		}
-		dst := make([]float32, sel.NumElements())
-		if err := a.Read(ctx, sel, dst); err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-		got := make([]byte, len(dst)*4)
+		got := make([]byte, len(dst))
 		for i, v := range dst {
-			binary.LittleEndian.PutUint32(got[i*4:], math.Float32bits(v))
-		}
-		return cmpBytes(got, expected)
-	case "float64":
-		a, err := zarr.OpenArray[float64](ctx, s, "")
-		if err != nil {
-			return fmt.Errorf("open: %w", err)
-		}
-		dst := make([]float64, sel.NumElements())
-		if err := a.Read(ctx, sel, dst); err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-		got := make([]byte, len(dst)*8)
-		for i, v := range dst {
-			binary.LittleEndian.PutUint64(got[i*8:], math.Float64bits(v))
+			got[i] = byte(v)
 		}
 		return cmpBytes(got, expected)
 	case "int16":
-		a, err := zarr.OpenArray[int16](ctx, s, "")
+		dst, err := readTyped[int16](ctx, s, sel)
 		if err != nil {
-			return fmt.Errorf("open: %w", err)
-		}
-		dst := make([]int16, sel.NumElements())
-		if err := a.Read(ctx, sel, dst); err != nil {
-			return fmt.Errorf("read: %w", err)
+			return err
 		}
 		got := make([]byte, len(dst)*2)
 		for i, v := range dst {
@@ -108,37 +100,117 @@ func readAndCompare(t *testing.T, s *fs.Store, entry manifestEntry, expected []b
 		}
 		return cmpBytes(got, expected)
 	case "int32":
-		a, err := zarr.OpenArray[int32](ctx, s, "")
+		dst, err := readTyped[int32](ctx, s, sel)
 		if err != nil {
-			return fmt.Errorf("open: %w", err)
-		}
-		dst := make([]int32, sel.NumElements())
-		if err := a.Read(ctx, sel, dst); err != nil {
-			return fmt.Errorf("read: %w", err)
+			return err
 		}
 		got := make([]byte, len(dst)*4)
 		for i, v := range dst {
 			binary.LittleEndian.PutUint32(got[i*4:], uint32(v))
 		}
 		return cmpBytes(got, expected)
-	case "uint8":
-		a, err := zarr.OpenArray[uint8](ctx, s, "")
+	case "int64":
+		dst, err := readTyped[int64](ctx, s, sel)
 		if err != nil {
-			return fmt.Errorf("open: %w", err)
+			return err
 		}
-		dst := make([]uint8, sel.NumElements())
-		if err := a.Read(ctx, sel, dst); err != nil {
-			return fmt.Errorf("read: %w", err)
+		got := make([]byte, len(dst)*8)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint64(got[i*8:], uint64(v))
+		}
+		return cmpBytes(got, expected)
+	case "uint8":
+		dst, err := readTyped[uint8](ctx, s, sel)
+		if err != nil {
+			return err
 		}
 		return cmpBytes(dst, expected)
-	case "bool":
-		a, err := zarr.OpenArray[bool](ctx, s, "")
+	case "uint16":
+		dst, err := readTyped[uint16](ctx, s, sel)
 		if err != nil {
-			return fmt.Errorf("open: %w", err)
+			return err
 		}
-		dst := make([]bool, sel.NumElements())
-		if err := a.Read(ctx, sel, dst); err != nil {
-			return fmt.Errorf("read: %w", err)
+		got := make([]byte, len(dst)*2)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint16(got[i*2:], v)
+		}
+		return cmpBytes(got, expected)
+	case "uint32":
+		dst, err := readTyped[uint32](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*4)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint32(got[i*4:], v)
+		}
+		return cmpBytes(got, expected)
+	case "uint64":
+		dst, err := readTyped[uint64](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*8)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint64(got[i*8:], v)
+		}
+		return cmpBytes(got, expected)
+	case "float16":
+		dst, err := readTyped[zarr.Float16](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*2)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint16(got[i*2:], uint16(v))
+		}
+		return cmpBytes(got, expected)
+	case "float32":
+		dst, err := readTyped[float32](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*4)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint32(got[i*4:], math.Float32bits(v))
+		}
+		return cmpBytes(got, expected)
+	case "float64":
+		dst, err := readTyped[float64](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*8)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint64(got[i*8:], math.Float64bits(v))
+		}
+		return cmpBytes(got, expected)
+	case "complex64":
+		dst, err := readTyped[complex64](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*8)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint32(got[i*8:], math.Float32bits(real(v)))
+			binary.LittleEndian.PutUint32(got[i*8+4:], math.Float32bits(imag(v)))
+		}
+		return cmpBytes(got, expected)
+	case "complex128":
+		dst, err := readTyped[complex128](ctx, s, sel)
+		if err != nil {
+			return err
+		}
+		got := make([]byte, len(dst)*16)
+		for i, v := range dst {
+			binary.LittleEndian.PutUint64(got[i*16:], math.Float64bits(real(v)))
+			binary.LittleEndian.PutUint64(got[i*16+8:], math.Float64bits(imag(v)))
+		}
+		return cmpBytes(got, expected)
+	case "bool":
+		dst, err := readTyped[bool](ctx, s, sel)
+		if err != nil {
+			return err
 		}
 		got := make([]byte, len(dst))
 		for i, v := range dst {

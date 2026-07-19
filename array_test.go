@@ -146,43 +146,6 @@ func chunkCoords(shape, chunks []int64) [][]int64 {
 	}
 }
 
-func extractRowMajor(arrBytes []byte, arrShape []int64, coord, chunkShape, actualChunk []int64, elemSize int) []byte {
-	rank := len(arrShape)
-	arrStrides := make([]int64, rank)
-	arrStrides[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		arrStrides[i] = arrStrides[i+1] * arrShape[i+1]
-	}
-	chunkStrides := make([]int64, rank)
-	chunkStrides[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		chunkStrides[i] = chunkStrides[i+1] * actualChunk[i+1]
-	}
-	total := int64(1)
-	for _, n := range actualChunk {
-		total *= n
-	}
-	out := make([]byte, total*int64(elemSize))
-	idx := make([]int64, rank)
-	for k := int64(0); k < total; k++ {
-		var srcEl, dstEl int64
-		for d := 0; d < rank; d++ {
-			srcEl += (coord[d]*chunkShape[d] + idx[d]) * arrStrides[d]
-			dstEl += idx[d] * chunkStrides[d]
-		}
-		copy(out[dstEl*int64(elemSize):(dstEl+1)*int64(elemSize)],
-			arrBytes[srcEl*int64(elemSize):(srcEl+1)*int64(elemSize)])
-		for d := rank - 1; d >= 0; d-- {
-			idx[d]++
-			if idx[d] < actualChunk[d] {
-				break
-			}
-			idx[d] = 0
-		}
-	}
-	return out
-}
-
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"

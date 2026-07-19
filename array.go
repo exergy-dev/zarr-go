@@ -12,6 +12,7 @@ import (
 	bytescodec "github.com/rkm/zarr-go/codec/bytes"
 	"github.com/rkm/zarr-go/internal/bufpool"
 	"github.com/rkm/zarr-go/internal/metadata"
+	"github.com/rkm/zarr-go/internal/ndcopy"
 	"github.com/rkm/zarr-go/store"
 )
 
@@ -26,21 +27,21 @@ var hostLittleEndian = func() bool {
 // on top of it (BB on top of sharding doesn't make sense — sharding is
 // always the outermost AB). Otherwise returns nil. Result is cached on
 // Array at open time so the per-chunk hot path needs no type assertion.
-func pipelinePartialDecoder(p *codec.Pipeline) (codec.PartialDecoder, bool) {
+func pipelinePartialDecoder(p *codec.Pipeline) codec.PartialDecoder {
 	if p == nil || p.AB == nil || len(p.BB) != 0 {
-		return nil, false
+		return nil
 	}
 	pd, ok := p.AB.(codec.PartialDecoder)
 	if !ok {
-		return nil, false
+		return nil
 	}
-	return pd, true
+	return pd
 }
 
 // isRawCopyFastPipeline reports whether the pipeline is exactly
 // [bytes(<host endian>)] with no AA or BB codecs. In that case Pipeline.Decode
 // degenerates to copy(out, in) and can be skipped — the raw chunk bytes are
-// already the native element bytes and can be fed straight into copyChunkRegion.
+// already the native element bytes and can be fed straight into ndcopy.Copy.
 func isRawCopyFastPipeline(p *codec.Pipeline) bool {
 	if p == nil || p.AB == nil {
 		return false
@@ -81,17 +82,20 @@ type Array[T Numeric] struct {
 	// partialDecoder is non-nil when the pipeline's AB codec implements
 	// codec.PartialDecoder AND no BB codecs sit on top of it. Cached here
 	// (computed once at open) so per-chunk reads avoid a type assertion.
-	// hasPartial mirrors `partialDecoder != nil` as a single byte; the hot
-	// path checks this byte instead of the 2-word interface compare.
 	partialDecoder codec.PartialDecoder
-	hasPartial     bool
+	// fetcher adapts store to codec.RangeFetcher (and codec.SuffixRangeFetcher
+	// when store implements store.SuffixReader) for the partial-decode path.
+	// Constructed once at open so per-chunk reads don't pay adapter-alloc cost.
+	fetcher codec.RangeFetcher
 	// rawCopyFast is set when the codec pipeline is exactly [bytes(<host endian>)]
 	// with no AA or BB codecs, so the on-wire chunk bytes can be consumed
 	// directly without invoking Pipeline.Decode.
 	rawCopyFast bool
 }
 
-// Chunk is one decoded chunk yielded from Stream.
+// Chunk is one decoded chunk yielded from Stream. Data aliases an internal
+// buffer owned by the iterator and is only valid for the current loop-body
+// iteration; see Stream's doc comment for the full lifetime contract.
 type Chunk[T Numeric] struct {
 	Coord []int64
 	Shape []int64
@@ -122,15 +126,35 @@ func (a *Array[T]) Dtype() Dtype { return a.dtype }
 // higher ranks fall back to heap allocation, which is correct but slower.
 const maxStackRank = 8
 
-// chunkScratch holds fixed-size scratch arrays used per chunk during Read.
-// When rank <= maxStackRank, slicing these arrays avoids heap allocation
-// because the whole struct lives on the calling goroutine's stack.
+// chunkScratch holds fixed-size scratch arrays used per chunk during Read
+// and Write. When rank <= maxStackRank, slicing these arrays avoids heap
+// allocation because the whole struct lives on the calling goroutine's
+// stack. chunkSrc/outDst are filled by chunkSelectionInto (in the zarr
+// package's own DimRange type, the public selection-description type);
+// srcRegion/dstRegion hold the same ranges converted to ndcopy.Region (the
+// shared copy kernel's independent type — see toRegions) for feeding
+// ndcopy.Copy. srcStrides/dstStrides/regionLen/idx back an ndcopy.Scratch.
 type chunkScratch struct {
-	chunkSrc     [maxStackRank]DimRange
-	outDst       [maxStackRank]DimRange
-	chunkStrides [maxStackRank]int64
-	regionLen    [maxStackRank]int64
-	idx          [maxStackRank]int64
+	chunkSrc   [maxStackRank]DimRange
+	outDst     [maxStackRank]DimRange
+	srcRegion  [maxStackRank]ndcopy.Region
+	dstRegion  [maxStackRank]ndcopy.Region
+	srcStrides [maxStackRank]int64
+	dstStrides [maxStackRank]int64
+	regionLen  [maxStackRank]int64
+	idx        [maxStackRank]int64
+}
+
+// toRegions converts DimRange values (zarr's public selection-description
+// type) into ndcopy.Region values (the shared copy kernel's independent
+// type — kept separate so the internal copy-kernel package doesn't dictate
+// the public API's type). The two have identical field layout but Go does
+// not allow a direct slice conversion between differently-named struct
+// types, hence this explicit per-element copy.
+func toRegions(dst []ndcopy.Region, src []DimRange) {
+	for i, r := range src {
+		dst[i] = ndcopy.Region{Start: r.Start, Stop: r.Stop, Step: r.Step}
+	}
 }
 
 // Read materializes the selection into dst. dst must hold sel.NumElements()
@@ -156,7 +180,6 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 	for i, r := range sel.Ranges {
 		outShape[i] = r.Length()
 	}
-	outStrides := rowMajorStrides(outShape)
 
 	// Collect chunk coords. For rank <= maxStackRank, store coords as
 	// fixed-size arrays to avoid one []int64 allocation per chunk
@@ -180,14 +203,27 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 		return nil
 	}
 
-	conc := a.opts.concurrency
-	if conc > nwork {
-		conc = nwork
+	// ioSem bounds in-flight store fetches (and, for the partial-decode path,
+	// the whole fetch+inner-decode operation, which is I/O-bound overall).
+	// decodeSem separately bounds the CPU-bound full-chunk decode step, so a
+	// high ioConcurrency (good for a network-bound store) doesn't also
+	// oversubscribe CPU decode workers.
+	ioConc := a.opts.ioConcurrency
+	if ioConc > nwork {
+		ioConc = nwork
 	}
-	if conc < 1 {
-		conc = 1
+	if ioConc < 1 {
+		ioConc = 1
 	}
-	sem := make(chan struct{}, conc)
+	decodeConc := a.opts.concurrency
+	if decodeConc > nwork {
+		decodeConc = nwork
+	}
+	if decodeConc < 1 {
+		decodeConc = 1
+	}
+	ioSem := make(chan struct{}, ioConc)
+	decodeSem := make(chan struct{}, decodeConc)
 	var wg sync.WaitGroup
 	var firstErrMu sync.Mutex
 	var firstErr error
@@ -206,15 +242,17 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 		select {
 		case <-cctx.Done():
 			return
-		case sem <- struct{}{}:
+		case ioSem <- struct{}{}:
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
+			defer func() { <-ioSem }()
 			key := metadata.ChunkKey(a.path, a.meta.ChunkKeyEnc, []int64(coord))
-			if a.hasPartial {
-				if err := a.partialDecodeAndCopy(cctx, a.partialDecoder, coord, key, sel, chunkShape, outShape, outStrides, dst); err != nil {
+			if a.partialDecoder != nil {
+				// Interleaves I/O and per-inner-chunk decode internally;
+				// runs entirely under the I/O gate, no decodeSem.
+				if err := a.partialDecodeAndCopy(cctx, a.partialDecoder, coord, key, sel, chunkShape, outShape, dst); err != nil {
 					if errors.Is(err, store.ErrKeyNotFound) {
 						return
 					}
@@ -242,7 +280,14 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 			if release != nil {
 				defer release()
 			}
-			if err := a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, outStrides, dst); err != nil {
+			select {
+			case <-cctx.Done():
+				return
+			case decodeSem <- struct{}{}:
+			}
+			err = a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, dst)
+			<-decodeSem
+			if err != nil {
 				setErr(err)
 			}
 		}()
@@ -258,10 +303,13 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 		launch(c)
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return firstErr
+	if firstErr == nil {
+		// If ctx was cancelled, launch() may have skipped chunks without any
+		// goroutine recording an error; returning nil would silently hand
+		// back incomplete data.
+		firstErr = context.Cause(ctx)
 	}
-	return nil
+	return firstErr
 }
 
 // chunkActualShape returns the (possibly clipped) extent of the chunk at
@@ -290,27 +338,33 @@ func (a *Array[T]) partialDecodeAndCopy(
 	coord ChunkCoord,
 	key string,
 	sel Selection,
-	chunkShape, outShape, outStrides []int64,
+	chunkShape, outShape []int64,
 	dst []T,
 ) error {
 	rank := len(chunkShape)
 	var scratch chunkScratch
 	var (
-		srcSlice, dstSlice                     []DimRange
-		stridesSlice, regionLenSlice, idxSlice []int64
+		srcSlice, dstSlice   []DimRange
+		srcRegion, dstRegion []ndcopy.Region
+		ndSc                 ndcopy.Scratch
 	)
 	if rank <= maxStackRank {
 		srcSlice = scratch.chunkSrc[:rank]
 		dstSlice = scratch.outDst[:rank]
-		stridesSlice = scratch.chunkStrides[:rank]
-		regionLenSlice = scratch.regionLen[:rank]
-		idxSlice = scratch.idx[:rank]
+		srcRegion = scratch.srcRegion[:rank]
+		dstRegion = scratch.dstRegion[:rank]
+		ndSc = ndcopy.Scratch{
+			SrcStrides: scratch.srcStrides[:rank],
+			DstStrides: scratch.dstStrides[:rank],
+			RegionLen:  scratch.regionLen[:rank],
+			Idx:        scratch.idx[:rank],
+		}
 	} else {
 		srcSlice = make([]DimRange, rank)
 		dstSlice = make([]DimRange, rank)
-		stridesSlice = make([]int64, rank)
-		regionLenSlice = make([]int64, rank)
-		idxSlice = make([]int64, rank)
+		srcRegion = make([]ndcopy.Region, rank)
+		dstRegion = make([]ndcopy.Region, rank)
+		ndSc = *ndcopy.NewScratch(rank)
 	}
 	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, srcSlice, dstSlice)
 
@@ -325,7 +379,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 			if err != nil {
 				return err
 			}
-			return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, outStrides, dst)
+			return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, dst)
 		}
 		if srcSlice[d].Start != 0 || srcSlice[d].Stop != actual[d] {
 			isFull = false
@@ -337,7 +391,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 		if err != nil {
 			return err
 		}
-		return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, outStrides, dst)
+		return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, dst)
 	}
 
 	elemSize := int(unsafe.Sizeof(*new(T)))
@@ -354,9 +408,21 @@ func (a *Array[T]) partialDecodeAndCopy(
 	defer bufpool.Put(pooled)
 	out := pooled[:regionBytes]
 
-	// Use the AB codec's DecodePartial; thread the store as the fetcher.
-	fetcher := newStoreFetcher(a.store)
-	if err := pd.DecodePartial(ctx, fetcher, key, actual, a.meta.DataType, region, out, a.fill); err != nil {
+	// fullShape is the FULL configured chunk shape, never the array-bounds-
+	// clipped actual: chunks (including shards) are always encoded at the
+	// full chunk_shape, so feeding a clipped shape here would compute the
+	// wrong inner chunk grid (wrong index size, garbage entries). actual is
+	// only used above to size the step==1/isFull short-circuit checks.
+	req := codec.PartialReadRequest{
+		Key:       key,
+		FullShape: chunkShape,
+		Dtype:     a.meta.DataType,
+		Region:    region,
+		Out:       out,
+		Fill:      a.fill,
+		GapBytes:  a.opts.rangeGap,
+	}
+	if err := pd.DecodePartial(ctx, a.fetcher, &req); err != nil {
 		// Translate "key not found" to the same sentinel as the full path
 		// so the caller skips the chunk and leaves the fill value in place.
 		if errors.Is(err, store.ErrKeyNotFound) {
@@ -366,84 +432,56 @@ func (a *Array[T]) partialDecodeAndCopy(
 	}
 
 	// Copy the dense region buffer into dst at the dstSlice positions.
-	// The region buffer has shape regionShape (in chunk-local source coords),
-	// dst has shape outShape with strides outStrides, and the region maps
-	// 1:1 onto dstSlice (Step==1 along every dim).
-	//
-	// We can express this via copyChunkRegion by treating the region buffer
-	// as if it were the chunk and using DimRange{0, regionShape[d], 1} for
-	// chunkSrc.
-	srcAll := scratch.chunkSrc[:rank]
+	// The region buffer has shape regionShape (in chunk-local source coords)
+	// and maps 1:1 onto dstSlice (Step==1 along every dim), so it can be
+	// treated as if it were the whole "chunk" with a full [0, regionShape[d])
+	// source region.
 	for d := 0; d < rank; d++ {
-		srcAll[d] = DimRange{Start: 0, Stop: regionShape[d], Step: 1}
+		srcRegion[d] = ndcopy.Region{Start: 0, Stop: regionShape[d], Step: 1}
 	}
-	copyChunkRegion[T](
-		out, regionShape, srcAll,
-		dst, outShape, outStrides, dstSlice,
-		elemSize,
-		stridesSlice, regionLenSlice, idxSlice,
-	)
+	toRegions(dstRegion, dstSlice)
+	var dstBytes []byte
+	if len(dst) > 0 {
+		dstBytes = unsafe.Slice((*byte)(unsafe.Pointer(&dst[0])), len(dst)*elemSize)
+	}
+	ndcopy.Copy(dstBytes, outShape, dstRegion, out, regionShape, srcRegion, elemSize, &ndSc)
 	return nil
 }
 
-// storeFetcher adapts a store.Store to codec.RangeFetcher (and, when the
-// underlying store has the methods, codec.sharding.SuffixRangeFetcher). The
-// adapter caches the blob length on first GetRange so subsequent suffix
-// requests can be served by a single positional GetRange — important for
-// backends that don't expose a native suffix-range API.
-type storeFetcher struct {
-	s   store.Store
-	mu  sync.Mutex
-	len map[string]int64
-}
-
-func newStoreFetcher(s store.Store) *storeFetcher {
-	return &storeFetcher{s: s, len: make(map[string]int64)}
+// rangeOnlyFetcher adapts a store.Store to codec.RangeFetcher, nothing more.
+// Used when the store doesn't implement store.SuffixReader; the sharding
+// codec falls back to its own whole-blob-fetch strategy for the index
+// trailer in that case.
+type rangeOnlyFetcher struct {
+	s store.Store
 }
 
 // GetRange forwards to the underlying store's GetRange.
-func (f *storeFetcher) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
+func (f rangeOnlyFetcher) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	return f.s.GetRange(ctx, key, off, n)
 }
 
-// GetSuffix returns the last n bytes of the value at key. It first probes
-// the store for the blob's length (via a Get followed by len(); cached for
-// the lifetime of this fetcher), then issues a positional GetRange.
-//
-// For backends that natively support HTTP `Range: bytes=-N`, a future
-// optimization can short-circuit this by detecting the backend and issuing
-// the suffix directly. For now, the cache means we pay one whole-blob fetch
-// per shard (which the codec then mostly re-uses via slicedFetcher fallback).
-//
-// NOTE: We intentionally fall back to whole-blob Get here because none of
-// the in-tree backends expose blob length cheaply; for cloud workloads the
-// dominant codepath is one suffix-range HTTP request. Backends should add a
-// real GetSuffix on top of this adapter to enable that path.
-func (f *storeFetcher) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
-	f.mu.Lock()
-	knownLen, ok := f.len[key]
-	f.mu.Unlock()
-	if ok {
-		off := knownLen - n
-		if off < 0 {
-			off = 0
-			n = knownLen
-		}
-		return f.s.GetRange(ctx, key, off, n)
+// suffixFetcher extends rangeOnlyFetcher with a native GetSuffix, used when
+// the underlying store implements store.SuffixReader — the dominant
+// codepath for cloud backends (a single `Range: bytes=-N` request for the
+// index trailer instead of a whole-blob fetch).
+type suffixFetcher struct {
+	rangeOnlyFetcher
+	sr store.SuffixReader
+}
+
+func (f suffixFetcher) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	return f.sr.GetSuffix(ctx, key, n)
+}
+
+// newChunkFetcher builds the codec.RangeFetcher used for partial chunk
+// decodes, chosen once at array open based on what s implements.
+func newChunkFetcher(s store.Store) codec.RangeFetcher {
+	rf := rangeOnlyFetcher{s: s}
+	if sr, ok := s.(store.SuffixReader); ok {
+		return suffixFetcher{rangeOnlyFetcher: rf, sr: sr}
 	}
-	// First call for this key: fetch the whole blob to learn its length and
-	// return the suffix from it. Cache the length for future calls.
-	whole, err := f.s.Get(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	f.mu.Lock()
-	f.len[key] = int64(len(whole))
-	f.mu.Unlock()
-	if int64(len(whole)) < n {
-		return whole, nil
-	}
-	return whole[int64(len(whole))-n:], nil
+	return rf
 }
 
 // decodeAndCopy decodes one already-fetched chunk and copies its sub-region
@@ -452,45 +490,52 @@ func (a *Array[T]) decodeAndCopy(
 	coord ChunkCoord,
 	raw []byte,
 	sel Selection,
-	chunkShape, outShape, outStrides []int64,
+	chunkShape, outShape []int64,
 	dst []T,
 ) error {
 	rank := len(chunkShape)
 	var scratch chunkScratch
 	var (
-		srcSlice, dstSlice                     []DimRange
-		stridesSlice, regionLenSlice, idxSlice []int64
+		srcSlice, dstSlice   []DimRange
+		srcRegion, dstRegion []ndcopy.Region
+		ndSc                 ndcopy.Scratch
 	)
 	if rank <= maxStackRank {
 		srcSlice = scratch.chunkSrc[:rank]
 		dstSlice = scratch.outDst[:rank]
-		stridesSlice = scratch.chunkStrides[:rank]
-		regionLenSlice = scratch.regionLen[:rank]
-		idxSlice = scratch.idx[:rank]
+		srcRegion = scratch.srcRegion[:rank]
+		dstRegion = scratch.dstRegion[:rank]
+		ndSc = ndcopy.Scratch{
+			SrcStrides: scratch.srcStrides[:rank],
+			DstStrides: scratch.dstStrides[:rank],
+			RegionLen:  scratch.regionLen[:rank],
+			Idx:        scratch.idx[:rank],
+		}
 	} else {
 		srcSlice = make([]DimRange, rank)
 		dstSlice = make([]DimRange, rank)
-		stridesSlice = make([]int64, rank)
-		regionLenSlice = make([]int64, rank)
-		idxSlice = make([]int64, rank)
+		srcRegion = make([]ndcopy.Region, rank)
+		dstRegion = make([]ndcopy.Region, rank)
+		ndSc = *ndcopy.NewScratch(rank)
 	}
 	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, srcSlice, dstSlice)
+	toRegions(srcRegion, srcSlice)
+	toRegions(dstRegion, dstSlice)
 	elemSize := int(unsafe.Sizeof(*new(T)))
 	chunkBytes := elemSize
 	for _, d := range chunkShape {
 		chunkBytes *= int(d)
+	}
+	var dstBytes []byte
+	if len(dst) > 0 {
+		dstBytes = unsafe.Slice((*byte)(unsafe.Pointer(&dst[0])), len(dst)*elemSize)
 	}
 
 	// Fast path: pipeline is [bytes(<host endian>)], no AA/BB. Raw bytes
 	// are already native element bytes — skip pipeline.Decode and the
 	// pooled buffer entirely.
 	if a.rawCopyFast && len(raw) == chunkBytes {
-		copyChunkRegion[T](
-			raw, chunkShape, srcSlice,
-			dst, outShape, outStrides, dstSlice,
-			elemSize,
-			stridesSlice, regionLenSlice, idxSlice,
-		)
+		ndcopy.Copy(dstBytes, outShape, dstRegion, raw, chunkShape, srcRegion, elemSize, &ndSc)
 		return nil
 	}
 
@@ -505,13 +550,12 @@ func (a *Array[T]) decodeAndCopy(
 	if err := a.pipeline.Decode(raw, &chunk); err != nil {
 		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
 	}
+	if len(chunk.Data) != chunkBytes {
+		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(),
+			Err: fmt.Errorf("decoded chunk size %d != expected %d", len(chunk.Data), chunkBytes)}
+	}
 
-	copyChunkRegion[T](
-		chunk.Data, chunkShape, srcSlice,
-		dst, outShape, outStrides, dstSlice,
-		elemSize,
-		stridesSlice, regionLenSlice, idxSlice,
-	)
+	ndcopy.Copy(dstBytes, outShape, dstRegion, chunk.Data, chunkShape, srcRegion, elemSize, &ndSc)
 	return nil
 }
 
@@ -533,7 +577,10 @@ func (a *Array[T]) Write(ctx context.Context, sel Selection, src []T) error {
 	}
 	ws, ok := a.store.(store.WritableStore)
 	if !ok {
-		return errReadOnly
+		return ErrReadOnly
+	}
+	if want == 0 {
+		return nil // empty selection: nothing to write, and &src[0] below would panic
 	}
 
 	chunkShape := a.meta.ChunkGrid.Configuration.ChunkShape
@@ -542,14 +589,13 @@ func (a *Array[T]) Write(ctx context.Context, sel Selection, src []T) error {
 	for i, r := range sel.Ranges {
 		srcShape[i] = r.Length()
 	}
-	srcStrides := rowMajorStrides(srcShape)
 	elemSize := int(unsafe.Sizeof(*new(T)))
 
 	srcBytes := unsafe.Slice((*byte)(unsafe.Pointer(&src[0])), len(src)*elemSize)
 
 	for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
 		coord := c.Clone()
-		if err := a.writeOneChunk(ctx, ws, coord, sel, chunkShape, srcShape, srcStrides, srcBytes, elemSize); err != nil {
+		if err := a.writeOneChunk(ctx, ws, coord, sel, chunkShape, srcShape, srcBytes, elemSize); err != nil {
 			return err
 		}
 	}
@@ -561,35 +607,64 @@ func (a *Array[T]) writeOneChunk(
 	ws store.WritableStore,
 	coord ChunkCoord,
 	sel Selection,
-	chunkShape, srcShape, srcStrides []int64,
+	chunkShape, srcShape []int64,
 	srcBytes []byte,
 	elemSize int,
 ) error {
-	chunkSrc, outDst := ChunkSelection(a.meta.Shape, chunkShape, sel, coord)
 	rank := len(chunkShape)
+	var scratch chunkScratch
+	var (
+		chunkSrcSlice, outDstSlice []DimRange
+		dstRegion, srcRegion       []ndcopy.Region
+		ndSc                       ndcopy.Scratch
+	)
+	if rank <= maxStackRank {
+		chunkSrcSlice = scratch.chunkSrc[:rank]
+		outDstSlice = scratch.outDst[:rank]
+		dstRegion = scratch.dstRegion[:rank] // chunk side (write destination) may be stepped
+		srcRegion = scratch.srcRegion[:rank] // user src side (read source) is always step1
+		ndSc = ndcopy.Scratch{
+			SrcStrides: scratch.srcStrides[:rank],
+			DstStrides: scratch.dstStrides[:rank],
+			RegionLen:  scratch.regionLen[:rank],
+			Idx:        scratch.idx[:rank],
+		}
+	} else {
+		chunkSrcSlice = make([]DimRange, rank)
+		outDstSlice = make([]DimRange, rank)
+		dstRegion = make([]ndcopy.Region, rank)
+		srcRegion = make([]ndcopy.Region, rank)
+		ndSc = *ndcopy.NewScratch(rank)
+	}
+	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, chunkSrcSlice, outDstSlice)
 
-	// Compute covered region per dim. If it equals the full chunk_shape
-	// (clipped to the array), we can skip the read-modify path.
 	totalChunkBytes := int64(elemSize)
 	for _, d := range chunkShape {
 		totalChunkBytes *= d
 	}
-	chunkBuf := make([]byte, totalChunkBytes)
+	chunkBuf := bufpool.Get(int(totalChunkBytes))
+	defer bufpool.Put(chunkBuf)
 
-	regionLen := make([]int64, rank)
+	// fullCovered (in-array-extent based) gates whether the existing chunk
+	// needs to be read at all: if the write covers every in-array-visible
+	// element, there's nothing worth preserving from the old chunk.
+	// noPadding (full chunkShape based) additionally requires there be no
+	// clipped edge region — only then does the copy below touch every byte
+	// of chunkBuf, making a fill pass beforehand pure waste.
 	fullCovered := true
+	noPadding := true
 	for i := 0; i < rank; i++ {
-		regionLen[i] = chunkSrc[i].Stop - chunkSrc[i].Start
-		// "Full coverage" within array bounds: chunkSrc spans [0, in-array-extent)
-		// AND step is 1.
 		origin := coord[i] * chunkShape[i]
 		end := origin + chunkShape[i]
 		if end > a.meta.Shape[i] {
 			end = a.meta.Shape[i]
 		}
 		inArrayExtent := end - origin
-		if !(chunkSrc[i].Start == 0 && chunkSrc[i].Stop == inArrayExtent && chunkSrc[i].Step == 1) {
+		if chunkSrcSlice[i].Start != 0 || chunkSrcSlice[i].Stop != inArrayExtent || chunkSrcSlice[i].Step != 1 {
 			fullCovered = false
+		}
+		if inArrayExtent != chunkShape[i] {
+			noPadding = false
 		}
 	}
 
@@ -615,40 +690,19 @@ func (a *Array[T]) writeOneChunk(
 		default:
 			return fmt.Errorf("fetch chunk %v: %w", []int64(coord), err)
 		}
-	} else if hasNonZeroFill(a.fill) {
-		// We're going to overwrite every in-array byte, but padded edge
-		// positions still need fill.
+	} else if !noPadding || hasNonZeroFill(a.fill) {
+		// Either padded edge positions need fill, or every in-array byte is
+		// about to be overwritten but chunkBuf (pooled — possibly reused,
+		// non-zero) still needs an explicit fill pass.
 		fillChunk(chunkBuf, a.fill, elemSize)
 	}
 
-	// Copy from src into chunkBuf at chunkSrc positions, drawing from outDst
-	// positions in the user's src.
-	chunkStrides := rowMajorStrides(chunkShape)
-	total := int64(1)
-	for _, n := range regionLen {
-		total *= n
-	}
-	idx := make([]int64, rank)
-	for k := int64(0); k < total; k++ {
-		var srcEl, dstEl int64
-		for d := 0; d < rank; d++ {
-			srcCoord := outDst[d].Start + idx[d]
-			srcEl += srcCoord * srcStrides[d]
-			dstCoord := chunkSrc[d].Start + idx[d]*chunkSrc[d].Step
-			dstEl += dstCoord * chunkStrides[d]
-		}
-		copy(
-			chunkBuf[dstEl*int64(elemSize):(dstEl+1)*int64(elemSize)],
-			srcBytes[srcEl*int64(elemSize):(srcEl+1)*int64(elemSize)],
-		)
-		for d := rank - 1; d >= 0; d-- {
-			idx[d]++
-			if idx[d] < regionLen[d] {
-				break
-			}
-			idx[d] = 0
-		}
-	}
+	// Copy from src into chunkBuf: the chunk side (chunkSrcSlice) is the
+	// copy destination and may be stepped; the user-src side (outDstSlice)
+	// is the copy source and is always step1.
+	toRegions(dstRegion, chunkSrcSlice)
+	toRegions(srcRegion, outDstSlice)
+	ndcopy.Copy(chunkBuf, chunkShape, dstRegion, srcBytes, srcShape, srcRegion, elemSize, &ndSc)
 
 	encoded, err := a.pipeline.Encode(codec.ArrayChunk{
 		Shape: append([]int64(nil), chunkShape...),
@@ -665,13 +719,13 @@ func (a *Array[T]) writeOneChunk(
 	return nil
 }
 
-// fillChunk replicates one element's fill bytes across buf.
+// fillChunk replicates one element's fill bytes across buf, or zeroes buf
+// when fill is the zero value. Always writes every byte explicitly — it
+// does NOT assume buf arrives pre-zeroed, since callers may pass a pooled,
+// reused buffer rather than a fresh make().
 func fillChunk(buf, fill []byte, elemSize int) {
-	if len(fill) != elemSize || elemSize == 0 {
-		return
-	}
-	if !hasNonZeroFill(fill) {
-		// already zeros from make
+	if len(fill) != elemSize || elemSize == 0 || !hasNonZeroFill(fill) {
+		clear(buf)
 		return
 	}
 	for i := 0; i < len(buf); i += elemSize {
@@ -735,8 +789,41 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 				})
 				return
 			}
-			n := len(ck.Data) / elemSize
-			data := unsafe.Slice((*T)(unsafe.Pointer(&ck.Data[0])), n)
+			chunkBytes := elemSize
+			for _, d := range chunkShape {
+				chunkBytes *= int(d)
+			}
+			if len(ck.Data) != chunkBytes {
+				yield(Chunk[T]{Coord: []int64(coord)}, &DecodeError{
+					Coord: []int64(coord), Codec: a.pipeline.AB.Name(),
+					Err: fmt.Errorf("decoded chunk size %d != expected %d", len(ck.Data), chunkBytes),
+				})
+				return
+			}
+			var data []T
+			if clipped := !slicesEqual(actualChunk, chunkShape); clipped {
+				// Edge chunk: the stored chunk covers the full chunkShape, but
+				// the yielded Shape is clipped to the array bounds. Extract the
+				// in-bounds region into a dense buffer so Data's layout matches
+				// Shape (same layout the missing-chunk branch produces).
+				rank := len(chunkShape)
+				n := int64(1)
+				for _, d := range actualChunk {
+					n *= d
+				}
+				data = make([]T, n)
+				region := make([]ndcopy.Region, rank)
+				for i := 0; i < rank; i++ {
+					region[i] = ndcopy.Region{Start: 0, Stop: actualChunk[i], Step: 1}
+				}
+				var dataBytes []byte
+				if n > 0 {
+					dataBytes = unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data)*elemSize)
+				}
+				ndcopy.Copy(dataBytes, actualChunk, region, ck.Data, chunkShape, region, elemSize, nil)
+			} else {
+				data = unsafe.Slice((*T)(unsafe.Pointer(&ck.Data[0])), len(ck.Data)/elemSize)
+			}
 			if !yield(Chunk[T]{Coord: []int64(coord), Shape: actualChunk, Data: data}, nil) {
 				return
 			}
@@ -744,24 +831,17 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 	}
 }
 
-// rowMajorStrides returns element strides (not byte strides) in row-major order.
-func rowMajorStrides(shape []int64) []int64 {
-	s := make([]int64, len(shape))
-	rowMajorStridesInto(shape, s)
-	return s
-}
-
-// rowMajorStridesInto fills out (len rank) with the row-major element strides
-// for shape. Caller-allocated variant of rowMajorStrides.
-func rowMajorStridesInto(shape, out []int64) {
-	rank := len(shape)
-	if rank == 0 {
-		return
+// slicesEqual reports whether a and b have the same length and elements.
+func slicesEqual(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	out[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		out[i] = out[i+1] * shape[i+1]
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
+	return true
 }
 
 // hasNonZeroFill reports whether any byte in fill is non-zero.
@@ -785,154 +865,5 @@ func fillTyped[T Numeric](dst []T, fill []byte) {
 	copy(dstBytes, fill)
 	for i := range dst {
 		dst[i] = v
-	}
-}
-
-// copyChunkRegion copies the region [chunkSrc] of the chunk's element bytes
-// into the region [outDst] of dst (a row-major typed slice with strides
-// outStrides). It iterates the row-major positions in the destination region;
-// for each, computes the source element offset by walking stride-aware.
-//
-// Fast path: when all chunkSrc steps are 1 we collapse the inner contiguous
-// dims into a single memmove per outer-iteration position. The maximum number
-// of trailing dims we can merge is bounded by how many inner dims span the
-// full chunk row on the source side AND the full output row on the dest side
-// (the outermost merged dim itself may be a partial range).
-func copyChunkRegion[T Numeric](
-	chunkBytes []byte, chunkShape []int64, chunkSrc []DimRange,
-	dst []T, outShape, outStrides []int64, outDst []DimRange,
-	elemSize int,
-	chunkStrides, regionLen, idx []int64,
-) {
-	rank := len(chunkShape)
-	rowMajorStridesInto(chunkShape, chunkStrides)
-	for i := 0; i < rank; i++ {
-		regionLen[i] = outDst[i].Stop - outDst[i].Start
-		idx[i] = 0
-	}
-	total := int64(1)
-	for _, n := range regionLen {
-		total *= n
-	}
-	if total == 0 {
-		return
-	}
-	dstBytes := unsafe.Slice((*byte)(unsafe.Pointer(&dst[0])), len(dst)*elemSize)
-
-	if rank == 0 {
-		return
-	}
-
-	// Detect the all-step==1 case (the dominant Read pattern).
-	allStep1 := true
-	for d := 0; d < rank; d++ {
-		if chunkSrc[d].Step != 1 {
-			allStep1 = false
-			break
-		}
-	}
-
-	if allStep1 {
-		// Determine how many trailing dims we can collapse into a single
-		// contiguous copy. Dim d (with d > mergeStart) must span the FULL
-		// chunk dim on src AND the FULL output dim on dst — otherwise the
-		// destination memory is broken up by a stride and we can't merge
-		// across it. The outermost merged dim (mergeStart) may be partial.
-		mergeStart := rank - 1
-		for mergeStart > 0 {
-			d := mergeStart // candidate inner dim already in the merged block
-			if !(chunkSrc[d].Start == 0 && chunkSrc[d].Stop == chunkShape[d] &&
-				outDst[d].Start == 0 && outDst[d].Stop == outShape[d]) {
-				break
-			}
-			mergeStart--
-		}
-
-		// Per-call element count for the merged inner block.
-		innerElems := int64(1)
-		for d := mergeStart; d < rank; d++ {
-			innerElems *= regionLen[d]
-		}
-		innerBytes := innerElems * int64(elemSize)
-
-		// Outer dims iterate one row at a time.
-		outerRank := mergeStart
-		if outerRank == 0 {
-			// The whole region collapses to one copy.
-			var srcEl, dstEl int64
-			for d := 0; d < rank; d++ {
-				srcEl += chunkSrc[d].Start * chunkStrides[d]
-				dstEl += outDst[d].Start * outStrides[d]
-			}
-			srcOff := srcEl * int64(elemSize)
-			dstOff := dstEl * int64(elemSize)
-			copy(dstBytes[dstOff:dstOff+innerBytes], chunkBytes[srcOff:srcOff+innerBytes])
-			return
-		}
-
-		// Pre-compute the constant base offsets contributed by the inner
-		// (merged) dims; each inner merged dim has Start either 0 (full
-		// span) or some value (only the outermost merged dim can be
-		// partial). Both contributions are constant across iterations.
-		var innerSrcBase, innerDstBase int64
-		for d := mergeStart; d < rank; d++ {
-			innerSrcBase += chunkSrc[d].Start * chunkStrides[d]
-			innerDstBase += outDst[d].Start * outStrides[d]
-		}
-
-		// Reuse caller-supplied idx (sliced to outerRank).
-		outerIdx := idx[:outerRank]
-		for d := 0; d < outerRank; d++ {
-			outerIdx[d] = 0
-		}
-		// Total iterations over the outer dims.
-		outerTotal := int64(1)
-		for d := 0; d < outerRank; d++ {
-			outerTotal *= regionLen[d]
-		}
-		for k := int64(0); k < outerTotal; k++ {
-			var srcEl, dstEl int64
-			for d := 0; d < outerRank; d++ {
-				srcEl += (chunkSrc[d].Start + outerIdx[d]) * chunkStrides[d]
-				dstEl += (outDst[d].Start + outerIdx[d]) * outStrides[d]
-			}
-			srcOff := (srcEl + innerSrcBase) * int64(elemSize)
-			dstOff := (dstEl + innerDstBase) * int64(elemSize)
-			copy(dstBytes[dstOff:dstOff+innerBytes], chunkBytes[srcOff:srcOff+innerBytes])
-			// Increment outerIdx row-major (last outer dim fastest).
-			for d := outerRank - 1; d >= 0; d-- {
-				outerIdx[d]++
-				if outerIdx[d] < regionLen[d] {
-					break
-				}
-				outerIdx[d] = 0
-			}
-		}
-		return
-	}
-
-	// Fallback: stride > 1 in some dim — element-by-element copy.
-	// idx already zeroed at function entry.
-	for k := int64(0); k < total; k++ {
-		// Map idx → source element offset, dest element offset.
-		var srcEl, dstEl int64
-		for d := 0; d < rank; d++ {
-			srcCoord := chunkSrc[d].Start + idx[d]*chunkSrc[d].Step
-			srcEl += srcCoord * chunkStrides[d]
-			dstCoord := outDst[d].Start + idx[d]
-			dstEl += dstCoord * outStrides[d]
-		}
-		copy(
-			dstBytes[dstEl*int64(elemSize):(dstEl+1)*int64(elemSize)],
-			chunkBytes[srcEl*int64(elemSize):(srcEl+1)*int64(elemSize)],
-		)
-		// Increment idx in row-major order (last dim fastest).
-		for d := rank - 1; d >= 0; d-- {
-			idx[d]++
-			if idx[d] < regionLen[d] {
-				break
-			}
-			idx[d] = 0
-		}
 	}
 }

@@ -3,10 +3,13 @@ package zarr
 import (
 	"fmt"
 	"math"
+
+	"github.com/rkm/zarr-go/codec"
 )
 
-// Float16 is the IEEE 754 binary16 type. Stored as the raw bit pattern; conversion
-// helpers live in float16.go.
+// Float16 is the IEEE 754 binary16 type. Stored as the raw bit pattern;
+// conversion helpers (Float16ToFloat32, float32ToFloat16Bits) live in this
+// file and fillvalue.go.
 type Float16 uint16
 
 // Complex64 and Complex128 are aliases for the standard library complex types.
@@ -18,12 +21,19 @@ type (
 // Numeric is the type constraint for all dtypes the typed Array[T] supports.
 //
 // bool is included to match the Zarr v3 spec; one byte per element.
+//
+// Deliberately exact (no ~), not approximate: DtypeOf and the byte-level
+// codecs (bytes, transpose, ...) all switch/reinterpret on T's concrete
+// type, not its underlying type, so a defined type like `type MyF32
+// float32` would satisfy an approximate constraint but silently misbehave
+// (DtypeOf would return DtypeInvalid instead of DtypeFloat32). Excluding
+// such types from the constraint turns that into a compile error instead.
 type Numeric interface {
-	~bool |
-		~int8 | ~int16 | ~int32 | ~int64 |
-		~uint8 | ~uint16 | ~uint32 | ~uint64 |
-		~float32 | ~float64 |
-		~complex64 | ~complex128
+	bool |
+		int8 | int16 | int32 | int64 |
+		uint8 | uint16 | uint32 | uint64 |
+		Float16 | float32 | float64 |
+		complex64 | complex128
 }
 
 // Dtype identifies the on-wire element type of a Zarr array.
@@ -58,19 +68,7 @@ const (
 
 // Size returns the byte size of one element of the dtype.
 func (d Dtype) Size() int {
-	switch d {
-	case DtypeBool, DtypeInt8, DtypeUint8:
-		return 1
-	case DtypeInt16, DtypeUint16, DtypeFloat16:
-		return 2
-	case DtypeInt32, DtypeUint32, DtypeFloat32:
-		return 4
-	case DtypeInt64, DtypeUint64, DtypeFloat64, DtypeComplex64:
-		return 8
-	case DtypeComplex128:
-		return 16
-	}
-	return 0
+	return codec.DtypeSize(d.String())
 }
 
 // String returns the v3 spec name for the dtype.
