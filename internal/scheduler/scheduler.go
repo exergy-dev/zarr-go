@@ -1,12 +1,9 @@
-// Package scheduler provides bounded I/O and decode worker pools used by the
-// array engine. It also implements range coalescing so that adjacent inner
+// Package scheduler implements range coalescing so that adjacent inner
 // chunks of a sharded blob can be fetched in one round-trip.
 package scheduler
 
 import (
-	"context"
 	"sort"
-	"sync"
 )
 
 // Range describes a (offset, length) request against a single key.
@@ -78,45 +75,4 @@ func CoalesceRanges(in []Range, gapBytes int64) []MergedRange {
 	}
 	out = append(out, cur)
 	return out
-}
-
-// Pool runs jobs on a bounded number of workers.
-type Pool struct {
-	work chan func()
-	wg   sync.WaitGroup
-}
-
-// NewPool constructs a worker pool with workers goroutines.
-func NewPool(workers int) *Pool {
-	if workers < 1 {
-		workers = 1
-	}
-	p := &Pool{work: make(chan func(), workers*2)}
-	p.wg.Add(workers)
-	for i := 0; i < workers; i++ {
-		go func() {
-			defer p.wg.Done()
-			for f := range p.work {
-				f()
-			}
-		}()
-	}
-	return p
-}
-
-// Submit enqueues a job. Returns ctx.Err() if ctx is cancelled before the job
-// can be enqueued.
-func (p *Pool) Submit(ctx context.Context, f func()) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case p.work <- f:
-		return nil
-	}
-}
-
-// Close signals workers to exit and waits for them.
-func (p *Pool) Close() {
-	close(p.work)
-	p.wg.Wait()
 }

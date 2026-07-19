@@ -71,24 +71,6 @@ func (c *Codec) Configure(raw json.RawMessage) error {
 	return nil
 }
 
-// dtypeSize returns the byte size of one element of the named dtype, or 0 if
-// the name is unknown.
-func dtypeSize(name string) int {
-	switch name {
-	case "bool", "int8", "uint8":
-		return 1
-	case "int16", "uint16", "float16":
-		return 2
-	case "int32", "uint32", "float32":
-		return 4
-	case "int64", "uint64", "float64", "complex64":
-		return 8
-	case "complex128":
-		return 16
-	}
-	return 0
-}
-
 // swapUnit returns the byte-swap chunk size used for a dtype. Complex numbers
 // have two equally-sized real components that are each byte-swapped
 // independently, so the swap unit is half the element size.
@@ -105,7 +87,7 @@ func swapUnit(dtype string, elemSize int) int {
 // EncodeAB serializes the chunk's element buffer with the configured endianness.
 // The returned slice is freshly allocated and owned by the caller.
 func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
-	size := dtypeSize(in.Dtype)
+	size := codec.DtypeSize(in.Dtype)
 	if size == 0 {
 		return nil, fmt.Errorf("bytes codec: unsupported dtype %q", in.Dtype)
 	}
@@ -128,7 +110,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	if out == nil {
 		return fmt.Errorf("bytes codec: nil output chunk")
 	}
-	size := dtypeSize(out.Dtype)
+	size := codec.DtypeSize(out.Dtype)
 	if size == 0 {
 		return fmt.Errorf("bytes codec: unsupported dtype %q", out.Dtype)
 	}
@@ -162,6 +144,16 @@ func (c *Codec) needsSwap(elemSize int) bool {
 
 // swapBytes writes src into dst, reversing each unit-sized group of bytes.
 // len(src) must equal len(dst) and be a multiple of unit.
+//
+// Alias safety: dst and src must either be the exact same slice (true
+// in-place swap — safe, since each unit-sized group's read and write region
+// is identical) or non-overlapping entirely. A partial/offset overlap is
+// undefined: the unit==4/8 fast paths (swapBulk32/64) dispatch to SIMD
+// routines that process a whole vector-width prefix per call and may read
+// ahead of what a byte-at-a-time reversal would have already overwritten,
+// corrupting data if dst and src overlap by a non-zero amount less than the
+// group size. Every in-tree caller passes a freshly allocated dst distinct
+// from src, so this is currently unreachable, not merely untested.
 func swapBytes(dst, src []byte, unit int) {
 	switch unit {
 	case 2:

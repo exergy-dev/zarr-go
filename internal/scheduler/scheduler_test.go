@@ -1,8 +1,6 @@
 package scheduler
 
 import (
-	"context"
-	"sync/atomic"
 	"testing"
 )
 
@@ -55,20 +53,5 @@ func TestCoalesceRangesPreservesIndices(t *testing.T) {
 		if !seen[i] {
 			t.Fatalf("OriginalIndex %d missing", i)
 		}
-	}
-}
-
-func TestPoolRunsJobs(t *testing.T) {
-	p := NewPool(4)
-	var n int32
-	ctx := context.Background()
-	for i := 0; i < 100; i++ {
-		if err := p.Submit(ctx, func() { atomic.AddInt32(&n, 1) }); err != nil {
-			t.Fatalf("submit: %v", err)
-		}
-	}
-	p.Close()
-	if n != 100 {
-		t.Fatalf("want 100 jobs run, got %d", n)
 	}
 }

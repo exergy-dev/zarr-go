@@ -103,9 +103,9 @@ func (c *Codec) transpose(in codec.ArrayChunk, out *codec.ArrayChunk, perm []int
 	if len(in.Shape) != rank {
 		return fmt.Errorf("transpose: input rank %d does not match permutation rank %d", len(in.Shape), rank)
 	}
-	elemSize, err := dtypeSize(in.Dtype)
-	if err != nil {
-		return err
+	elemSize := codec.DtypeSize(in.Dtype)
+	if elemSize == 0 {
+		return fmt.Errorf("transpose: unsupported dtype %q", in.Dtype)
 	}
 
 	// Total element count and input byte length sanity check.
@@ -203,23 +203,4 @@ func rowMajorStrides(shape []int64) []int64 {
 		strides[i] = strides[i+1] * shape[i+1]
 	}
 	return strides
-}
-
-// dtypeSize returns the in-memory element size in bytes for a Zarr v3
-// canonical dtype name.
-func dtypeSize(dt string) (int, error) {
-	switch dt {
-	case "bool", "int8", "uint8":
-		return 1, nil
-	case "int16", "uint16", "float16":
-		return 2, nil
-	case "int32", "uint32", "float32":
-		return 4, nil
-	case "int64", "uint64", "float64", "complex64":
-		return 8, nil
-	case "complex128":
-		return 16, nil
-	default:
-		return 0, fmt.Errorf("transpose: unsupported dtype %q", dt)
-	}
 }
