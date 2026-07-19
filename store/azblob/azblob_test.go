@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"slices"
 	"testing"
@@ -12,65 +11,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 
 	"github.com/rkm/zarr-go/store"
+	"github.com/rkm/zarr-go/store/storetest"
 )
-
-func TestJoinKey(t *testing.T) {
-	cases := []struct {
-		prefix, key, want string
-	}{
-		{"", "foo", "foo"},
-		{"", "/foo", "foo"},
-		{"p", "foo", "p/foo"},
-		{"p/", "foo", "p/foo"},
-		{"/p/", "foo", "p/foo"},
-		{"/p/", "/foo", "p/foo"},
-		{"a/b", "c/d", "a/b/c/d"},
-		{"p", "", "p"},
-		{"", "", ""},
-		{"p", "/", "p"},
-	}
-	for _, c := range cases {
-		got := joinKey(c.prefix, c.key)
-		if got != c.want {
-			t.Errorf("joinKey(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
-		}
-	}
-}
-
-func TestStripPrefix(t *testing.T) {
-	cases := []struct {
-		prefix, key, want string
-	}{
-		{"", "foo", "foo"},
-		{"p", "p/foo", "foo"},
-		{"p", "p/foo/bar", "foo/bar"},
-		{"a/b", "a/b/c", "c"},
-		// key without prefix is returned as-is.
-		{"p", "other/foo", "other/foo"},
-	}
-	for _, c := range cases {
-		got := stripPrefix(c.prefix, c.key)
-		if got != c.want {
-			t.Errorf("stripPrefix(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
-		}
-	}
-}
-
-func TestTrimSlashes(t *testing.T) {
-	cases := map[string]string{
-		"":         "",
-		"/":        "",
-		"//a//":    "a",
-		"a/b":      "a/b",
-		"/a/b/":    "a/b",
-		"///a/b//": "a/b",
-	}
-	for in, want := range cases {
-		if got := trimSlashes(in); got != want {
-			t.Errorf("trimSlashes(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
 
 func TestIsNotFound(t *testing.T) {
 	if isNotFound(nil) {
@@ -119,25 +61,6 @@ func TestNew_RequiresAccountKey(t *testing.T) {
 	_, err := New(context.Background(), Config{AccountName: "x", Container: "c"})
 	if err == nil {
 		t.Fatal("expected error when AccountKey is empty (azidentity not supported)")
-	}
-}
-
-func TestReadSeekCloser(t *testing.T) {
-	r := newReadSeekCloser([]byte("hello, zarr"))
-	buf := make([]byte, 5)
-	n, err := r.Read(buf)
-	if err != nil || n != 5 || string(buf[:n]) != "hello" {
-		t.Fatalf("Read: n=%d buf=%q err=%v", n, buf[:n], err)
-	}
-	if pos, err := r.Seek(7, io.SeekStart); err != nil || pos != 7 {
-		t.Fatalf("Seek(7,Start): pos=%d err=%v", pos, err)
-	}
-	rest, err := io.ReadAll(r)
-	if err != nil || string(rest) != "zarr" {
-		t.Fatalf("ReadAll after seek: %q err=%v", rest, err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
 	}
 }
 
@@ -281,4 +204,10 @@ func TestIntegration_SetIfNotExists(t *testing.T) {
 	if err != nil || string(got) != "first" {
 		t.Fatalf("Get after SetIfNotExists: got=%q err=%v", got, err)
 	}
+}
+
+func TestIntegration_Conformance(t *testing.T) {
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return integrationStore(t)
+	}, storetest.Options{})
 }

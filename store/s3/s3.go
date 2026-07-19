@@ -13,7 +13,6 @@ import (
 	"io"
 	"iter"
 	"net/http"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -21,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
+	"github.com/rkm/zarr-go/internal/cloudstore"
 	zstore "github.com/rkm/zarr-go/store"
 )
 
@@ -75,35 +75,8 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	return &Store{
 		client: client,
 		bucket: cfg.Bucket,
-		prefix: trimSlashes(cfg.Prefix),
+		prefix: cloudstore.TrimSlashes(cfg.Prefix),
 	}, nil
-}
-
-// joinKey joins the configured prefix with key, producing a clean S3 key with
-// no leading or duplicate slashes.
-func joinKey(prefix, key string) string {
-	prefix = trimSlashes(prefix)
-	key = strings.TrimLeft(key, "/")
-	if prefix == "" {
-		return key
-	}
-	if key == "" {
-		return prefix
-	}
-	return prefix + "/" + key
-}
-
-func trimSlashes(s string) string {
-	return strings.Trim(s, "/")
-}
-
-// stripPrefix removes the configured prefix from a returned S3 key.
-func stripPrefix(prefix, key string) string {
-	if prefix == "" {
-		return key
-	}
-	p := prefix + "/"
-	return strings.TrimPrefix(key, p)
 }
 
 // isNotFound reports whether err corresponds to an S3 NoSuchKey/NotFound or a
@@ -120,23 +93,57 @@ func isNotFound(err error) bool {
 	if errors.As(err, &nf) {
 		return true
 	}
-	var re *smithyhttp.ResponseError
-	if errors.As(err, &re) {
-		if re.HTTPStatusCode() == http.StatusNotFound {
-			return true
-		}
-	}
-	return false
+	return responseStatus(err) == http.StatusNotFound
 }
 
-// notFoundErr wraps store.ErrKeyNotFound with context about the missing key.
+// isInvalidRange reports whether err is a 416 Requested Range Not
+// Satisfiable, returned when off is at or past the object's size.
+func isInvalidRange(err error) bool {
+	return responseStatus(err) == http.StatusRequestedRangeNotSatisfiable
+}
+
+// responseStatus extracts the HTTP status code from a smithy ResponseError,
+// or 0 if err isn't one.
+func responseStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	var re *smithyhttp.ResponseError
+	if errors.As(err, &re) {
+		return re.HTTPStatusCode()
+	}
+	return 0
+}
+
+// notFoundErr wraps store.ErrKeyNotFound with context about the missing key
+// and, when available, the underlying SDK error (for debugging; err is
+// still reachable via errors.Is/As through the multi-%w chain).
 func notFoundErr(key string, err error) error {
-	return fmt.Errorf("s3: key %q: %w", key, zstore.ErrKeyNotFound)
+	if err == nil {
+		return fmt.Errorf("s3: key %q: %w", key, zstore.ErrKeyNotFound)
+	}
+	return fmt.Errorf("s3: key %q: %w: %w", key, zstore.ErrKeyNotFound, err)
+}
+
+// headExists implements the existence check shared by Exists and the n==0
+// GetRange/GetSuffix cases. k is the already-prefix-joined S3 key.
+func (s *Store) headExists(ctx context.Context, k string) (bool, error) {
+	_, err := s.client.HeadObject(ctx, &awss3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(k),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("s3: HeadObject %q: %w", k, err)
+	}
+	return true, nil
 }
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	out, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(k),
@@ -155,12 +162,22 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return b, nil
 }
 
-// GetRange implements store.Store.
+// GetRange implements store.Store, per the store.Store GetRange contract.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	if n <= 0 {
+	if err := cloudstore.ValidateRange("s3", "GetRange", off, n); err != nil {
+		return nil, err
+	}
+	k := cloudstore.JoinKey(s.prefix, key)
+	if n == 0 {
+		ok, err := s.headExists(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, notFoundErr(key, nil)
+		}
 		return []byte{}, nil
 	}
-	k := joinKey(s.prefix, key)
 	rng := fmt.Sprintf("bytes=%d-%d", off, off+n-1)
 	out, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -170,6 +187,19 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	if err != nil {
 		if isNotFound(err) {
 			return nil, notFoundErr(key, err)
+		}
+		if isInvalidRange(err) {
+			// off is at or past the object's size (or the object is empty):
+			// per the GetRange contract this is an empty result, not an
+			// error, as long as the key exists.
+			ok, hErr := s.headExists(ctx, k)
+			if hErr != nil {
+				return nil, hErr
+			}
+			if !ok {
+				return nil, notFoundErr(key, nil)
+			}
+			return []byte{}, nil
 		}
 		return nil, fmt.Errorf("s3: GetObject %q range %s: %w", k, rng, err)
 	}
@@ -181,9 +211,53 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
+// GetSuffix implements store.SuffixReader using S3's native suffix-range
+// syntax ("bytes=-N"), per the store.SuffixReader contract.
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if err := cloudstore.ValidateRange("s3", "GetSuffix", 0, n); err != nil {
+		return nil, err
+	}
+	k := cloudstore.JoinKey(s.prefix, key)
+	if n == 0 {
+		ok, err := s.headExists(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, notFoundErr(key, nil)
+		}
+		return []byte{}, nil
+	}
+	rng := fmt.Sprintf("bytes=-%d", n)
+	out, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(k),
+		Range:  aws.String(rng),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, notFoundErr(key, err)
+		}
+		if isInvalidRange(err) {
+			// Some S3-compatible implementations reject a suffix range
+			// longer than the object itself instead of clamping it; a
+			// whole-object fetch is exactly the clamped result the
+			// contract calls for.
+			return s.Get(ctx, key)
+		}
+		return nil, fmt.Errorf("s3: GetObject %q suffix range %s: %w", k, rng, err)
+	}
+	defer out.Body.Close()
+	b, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("s3: read body %q: %w", k, err)
+	}
+	return b, nil
+}
+
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	_, err := s.client.PutObject(ctx, &awss3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(k),
@@ -198,13 +272,15 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // SetIfNotExists implements store.WritableStore using S3's If-None-Match
 // conditional write (generally available since November 2024).
 //
-// If the object already exists S3 responds with 412 PreconditionFailed; we
-// translate that into (false, nil) so callers can race safely. Any other
-// error surfaces as (false, err). Callers behind older S3-compatible
-// gateways that do not understand If-None-Match will see those errors here
-// rather than silent overwrites.
+// If the object already exists S3 responds with 412 PreconditionFailed
+// (older/most gateways) or, per S3's newer conditional-write documentation,
+// a 409 Conflict with error code ConditionalRequestConflict when two
+// If-None-Match PUTs race in flight; both translate into (false, nil) so
+// callers can race safely. Any other error surfaces as (false, err). Callers
+// behind older S3-compatible gateways that do not understand If-None-Match
+// will see those errors here rather than silent overwrites.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	_, err := s.client.PutObject(ctx, &awss3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(k),
@@ -212,8 +288,8 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 		IfNoneMatch: aws.String("*"),
 	})
 	if err != nil {
-		var re *smithyhttp.ResponseError
-		if errors.As(err, &re) && re.HTTPStatusCode() == http.StatusPreconditionFailed {
+		status := responseStatus(err)
+		if status == http.StatusPreconditionFailed || status == http.StatusConflict {
 			return false, nil
 		}
 		return false, fmt.Errorf("s3: PutObject %q (if-none-match): %w", k, err)
@@ -223,7 +299,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	_, err := s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(k),
@@ -239,25 +315,14 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k := joinKey(s.prefix, key)
-	_, err := s.client.HeadObject(ctx, &awss3.HeadObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(k),
-	})
-	if err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("s3: HeadObject %q: %w", k, err)
-	}
-	return true, nil
+	return s.headExists(ctx, cloudstore.JoinKey(s.prefix, key))
 }
 
 // List implements store.Store. The supplied prefix is joined with the
 // store's configured prefix; yielded keys have the configured prefix
 // stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := joinKey(s.prefix, prefix)
+	full := cloudstore.JoinKey(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		paginator := awss3.NewListObjectsV2Paginator(s.client, &awss3.ListObjectsV2Input{
 			Bucket: aws.String(s.bucket),
@@ -277,7 +342,7 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 				if obj.Key == nil {
 					continue
 				}
-				k := stripPrefix(s.prefix, *obj.Key)
+				k := cloudstore.StripPrefix(s.prefix, *obj.Key)
 				if !yield(k, nil) {
 					return
 				}
@@ -290,4 +355,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 var (
 	_ zstore.Store         = (*Store)(nil)
 	_ zstore.WritableStore = (*Store)(nil)
+	_ zstore.SuffixReader  = (*Store)(nil)
 )

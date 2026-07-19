@@ -20,6 +20,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"iter"
@@ -46,9 +47,10 @@ type Config struct {
 	Client *http.Client
 
 	// Headers are merged into every outgoing request. Use this to set auth
-	// tokens, custom user agents, etc. The header map is cloned per request,
-	// so callers may mutate it after construction without affecting in-flight
-	// requests.
+	// tokens, custom user agents, etc. The header map is cloned once, at
+	// construction time (see New) — mutating cfg.Headers afterward has no
+	// effect on the constructed Store; build a new Store if headers need to
+	// change (e.g. to rotate a token).
 	Headers http.Header
 }
 
@@ -146,32 +148,21 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 }
 
-// GetRange implements store.Store. It issues a Range request and falls back to
-// slicing the full body if the server returned 200 (ignoring the Range header).
+// GetRange implements store.Store, per the store.Store GetRange contract. It
+// issues a Range request and falls back to slicing the full body if the
+// server returned 200 (ignoring the Range header).
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	if off < 0 {
-		return nil, fmt.Errorf("http store: GetRange: negative offset %d", off)
-	}
-	if n < 0 {
-		return nil, fmt.Errorf("http store: GetRange: negative length %d", n)
-	}
-	// Guard the Range header against int64 overflow: bytes=off-(off+n-1)
-	// must be representable. Anything that would overflow is far past any
-	// real object size, so cap n to whatever fits.
-	if n > 0 && off > 0 && off > math.MaxInt64-(n-1) {
-		n = math.MaxInt64 - off + 1
+	if off < 0 || n < 0 {
+		return nil, fmt.Errorf("http store: GetRange(off=%d, n=%d): %w", off, n, store.ErrInvalidRange)
 	}
 	u, err := s.resolve(key)
 	if err != nil {
 		return nil, err
 	}
-	req, err := s.newRequest(ctx, http.MethodGet, u)
-	if err != nil {
-		return nil, err
-	}
 	if n == 0 {
-		// Asking for zero bytes; we can short-circuit but still validate
-		// the key exists so callers see consistent errors.
+		// Asking for zero bytes; skip building the GET request entirely,
+		// but still validate the key exists so callers see consistent
+		// errors.
 		ok, exErr := s.Exists(ctx, key)
 		if exErr != nil {
 			return nil, exErr
@@ -181,6 +172,16 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		}
 		return []byte{}, nil
 	}
+	// Guard the Range header against int64 overflow: bytes=off-(off+n-1)
+	// must be representable. Anything that would overflow is far past any
+	// real object size, so cap n to whatever fits.
+	if off > 0 && off > math.MaxInt64-(n-1) {
+		n = math.MaxInt64 - off + 1
+	}
+	req, err := s.newRequest(ctx, http.MethodGet, u)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -189,7 +190,16 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		// Honor the body length, not Content-Range.
+		// A server that honors Range is expected to report the actual
+		// range served via Content-Range; if it disagrees with what we
+		// asked for, the body isn't what the caller thinks it is (a proxy
+		// or misconfigured origin serving the wrong bytes) — fail loudly
+		// rather than silently returning mismatched data.
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			if start, ok := parseContentRangeStart(cr); ok && start != off {
+				return nil, fmt.Errorf("http store: GET %s (range): server returned Content-Range %q for requested offset %d", u, cr, off)
+			}
+		}
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (range): read body: %w", u, err)
@@ -225,6 +235,91 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	default:
 		return nil, fmt.Errorf("http store: GET %s (range): unexpected status %d", u, resp.StatusCode)
 	}
+}
+
+// GetSuffix implements store.SuffixReader using an HTTP suffix range
+// request (Range: bytes=-N). Falls back to a whole-body fetch and manual
+// slice if the server returns 200 (ignoring Range) or 416 (rejecting a
+// suffix longer than the resource).
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("http store: GetSuffix(n=%d): %w", n, store.ErrInvalidRange)
+	}
+	u, err := s.resolve(key)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		ok, exErr := s.Exists(ctx, key)
+		if exErr != nil {
+			return nil, exErr
+		}
+		if !ok {
+			return nil, fmt.Errorf("http store: GetSuffix %s: %w", u, store.ErrKeyNotFound)
+		}
+		return []byte{}, nil
+	}
+	req, err := s.newRequest(ctx, http.MethodGet, u)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=-%d", n))
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("http store: GET %s (suffix range): read body: %w", u, err)
+		}
+		if int64(len(body)) > n {
+			body = body[int64(len(body))-n:]
+		}
+		return body, nil
+	case http.StatusOK:
+		// Server ignored the Range header; slice manually.
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("http store: GET %s (suffix range fallback): read body: %w", u, err)
+		}
+		length := int64(len(body))
+		start := length - n
+		if start < 0 {
+			start = 0
+		}
+		return body[start:], nil
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u, store.ErrKeyNotFound)
+	case http.StatusRequestedRangeNotSatisfiable:
+		// n is at or past the resource's size; the contract calls for the
+		// whole value in that case.
+		return s.Get(ctx, key)
+	default:
+		return nil, fmt.Errorf("http store: GET %s (suffix range): unexpected status %d", u, resp.StatusCode)
+	}
+}
+
+// parseContentRangeStart extracts the start offset from a Content-Range
+// header value of the form "bytes <start>-<end>/<size-or-*>". ok is false
+// if the header isn't in the expected form.
+func parseContentRangeStart(h string) (start int64, ok bool) {
+	const prefix = "bytes "
+	if !strings.HasPrefix(h, prefix) {
+		return 0, false
+	}
+	rest := h[len(prefix):]
+	dash := strings.IndexByte(rest, '-')
+	if dash < 0 {
+		return 0, false
+	}
+	start, err := strconv.ParseInt(rest[:dash], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return start, true
 }
 
 // Set is unsupported and always returns ErrReadOnly.
@@ -275,3 +370,9 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 		yield("", ErrListUnsupported)
 	}
 }
+
+// Compile-time interface assertions.
+var (
+	_ store.Store        = (*Store)(nil)
+	_ store.SuffixReader = (*Store)(nil)
+)

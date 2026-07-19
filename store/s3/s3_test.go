@@ -15,65 +15,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/rkm/zarr-go/store"
+	"github.com/rkm/zarr-go/store/storetest"
 )
-
-func TestJoinKey(t *testing.T) {
-	cases := []struct {
-		prefix, key, want string
-	}{
-		{"", "foo", "foo"},
-		{"", "/foo", "foo"},
-		{"p", "foo", "p/foo"},
-		{"p/", "foo", "p/foo"},
-		{"/p/", "foo", "p/foo"},
-		{"/p/", "/foo", "p/foo"},
-		{"a/b", "c/d", "a/b/c/d"},
-		{"p", "", "p"},
-		{"", "", ""},
-		{"p", "/", "p"},
-	}
-	for _, c := range cases {
-		got := joinKey(c.prefix, c.key)
-		if got != c.want {
-			t.Errorf("joinKey(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
-		}
-	}
-}
-
-func TestStripPrefix(t *testing.T) {
-	cases := []struct {
-		prefix, key, want string
-	}{
-		{"", "foo", "foo"},
-		{"p", "p/foo", "foo"},
-		{"p", "p/foo/bar", "foo/bar"},
-		{"a/b", "a/b/c", "c"},
-		// key without prefix is returned as-is.
-		{"p", "other/foo", "other/foo"},
-	}
-	for _, c := range cases {
-		got := stripPrefix(c.prefix, c.key)
-		if got != c.want {
-			t.Errorf("stripPrefix(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
-		}
-	}
-}
-
-func TestTrimSlashes(t *testing.T) {
-	cases := map[string]string{
-		"":         "",
-		"/":        "",
-		"//a//":    "a",
-		"a/b":      "a/b",
-		"/a/b/":    "a/b",
-		"///a/b//": "a/b",
-	}
-	for in, want := range cases {
-		if got := trimSlashes(in); got != want {
-			t.Errorf("trimSlashes(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
 
 func TestIsNotFound(t *testing.T) {
 	if isNotFound(nil) {
@@ -251,4 +194,10 @@ func TestIntegration_DeleteMissing(t *testing.T) {
 	if err := s.Delete(ctx, "definitely/does/not/exist"); err != nil {
 		t.Fatalf("Delete missing should be nil, got %v", err)
 	}
+}
+
+func TestIntegration_Conformance(t *testing.T) {
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return integrationStore(t)
+	}, storetest.Options{})
 }

@@ -4,22 +4,28 @@
 // chunks repeatedly. Wrapping a Store with cache.New eliminates the
 // network/disk round-trip on warm hits.
 //
-// Concurrent misses on the same key are coalesced via singleflight so a single
-// underlying Get is performed and the result fan-outs to all waiters.
+// Concurrent misses on the same key are coalesced by a small hand-rolled
+// flight tracker (see flight below) so a single underlying Get is performed
+// and the result fans out to all waiters. Unlike golang.org/x/sync's
+// singleflight, each waiter blocks on its own context (a short-deadline
+// caller can't fail out every other waiter, and a waiter's own cancellation
+// doesn't block on the leader), and a Set/Delete that completes while a
+// fetch is in flight poisons that fetch so its result is never admitted —
+// closing a stale-cache window a naive invalidate-then-write has.
 //
-// GetRange requests are passed through unchanged: range reads are typically
-// sharding-index trailers where each call uses a different (off, n), so
-// caching them by key alone would either be unsafe or wasteful.
+// GetRange/GetSuffix consult a cached whole value first (sliced in memory)
+// before falling back to the underlying store, so a cached shard serves
+// every partial-decode range read from memory.
 package cache
 
 import (
 	"container/list"
 	"context"
+	"errors"
 	"iter"
 	"sync"
 
 	"github.com/rkm/zarr-go/store"
-	"golang.org/x/sync/singleflight"
 )
 
 // Config configures the cache. Underlying is required; the size/count limits
@@ -42,12 +48,11 @@ type Store struct {
 	maxBytes   int64
 	maxEntries int
 
-	mu    sync.Mutex
-	lru   *list.List               // front = most recently used
-	index map[string]*list.Element // key -> element holding *entry
-	bytes int64
-
-	sf singleflight.Group
+	mu      sync.Mutex
+	lru     *list.List               // front = most recently used
+	index   map[string]*list.Element // key -> element holding *entry
+	bytes   int64
+	flights map[string]*flight // key -> in-progress Get fetch
 }
 
 type entry struct {
@@ -55,6 +60,22 @@ type entry struct {
 	val  []byte
 	size int64
 }
+
+// flight tracks one in-flight underlying Get for a key, shared by every
+// concurrent Get miss on that key.
+type flight struct {
+	done     chan struct{}
+	val      []byte
+	err      error
+	poisoned bool // a Set/Delete for this key completed while the fetch was in flight
+}
+
+// testHookWaiterJoined, when non-nil, is called each time Get finds an
+// existing in-flight fetch for a key and joins it as a waiter (as opposed
+// to becoming the leader). Used by tests to deterministically wait for N
+// waiters to join a flight before releasing the leader, instead of racing
+// on goroutine scheduling. Never set outside tests.
+var testHookWaiterJoined func()
 
 // New constructs a cache wrapping cfg.Underlying.
 //
@@ -69,10 +90,14 @@ func New(cfg Config) *Store {
 		maxEntries: cfg.MaxEntries,
 		lru:        list.New(),
 		index:      make(map[string]*list.Element),
+		flights:    make(map[string]*flight),
 	}
 }
 
-// lookup returns a defensive copy of the cached value for key, if present.
+// lookup returns the cached value for key, if present, WITHOUT copying —
+// callers that hand the result to another goroutine or retain it past the
+// call must copy it themselves. Internal helper; see Get/GetRange for the
+// copying public-facing accessors.
 func (s *Store) lookup(key string) ([]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,10 +106,7 @@ func (s *Store) lookup(key string) ([]byte, bool) {
 		return nil, false
 	}
 	s.lru.MoveToFront(el)
-	e := el.Value.(*entry)
-	out := make([]byte, len(e.val))
-	copy(out, e.val)
-	return out, true
+	return el.Value.(*entry).val, true
 }
 
 // admit installs (key,val) into the cache, evicting older entries as needed
@@ -113,12 +135,18 @@ func (s *Store) admit(key string, val []byte) {
 	s.evictLocked()
 }
 
-// invalidate removes any cached entry for key.
+// invalidate removes any cached entry for key and poisons any in-flight
+// fetch for key, so a fill that started before this mutation can't admit a
+// stale value after it. Must be called AFTER the underlying mutation
+// completes — see Set/Delete.
 func (s *Store) invalidate(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if el, ok := s.index[key]; ok {
 		s.removeLocked(el)
+	}
+	if fl, ok := s.flights[key]; ok {
+		fl.poisoned = true
 	}
 }
 
@@ -150,63 +178,180 @@ func (s *Store) evictLocked() {
 	}
 }
 
-// Get returns the value at key, consulting the cache first. Concurrent misses
-// for the same key are coalesced into a single underlying Get.
+// Get returns the value at key, consulting the cache first. Concurrent
+// misses for the same key are coalesced into a single underlying Get (see
+// flight); each waiter blocks on its own ctx, independent of the leader's.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if v, ok := s.lookup(key); ok {
-		return v, nil
-	}
-	// Coalesce concurrent misses. The singleflight result holds the freshly
-	// fetched payload; we admit a reference into the cache and hand callers
-	// independent defensive copies.
-	v, err, _ := s.sf.Do(key, func() (any, error) {
-		// Re-check after winning the flight in case another goroutine
-		// admitted the key between our miss and acquiring leadership.
-		if cached, ok := s.lookup(key); ok {
-			return cached, nil
+	for {
+		if v, ok := s.lookup(key); ok {
+			return cloneBytes(v), nil
 		}
-		raw, err := s.underlying.Get(ctx, key)
-		if err != nil {
-			return nil, err
+
+		s.mu.Lock()
+		if v, ok := s.index[key]; ok { // admitted between the unlocked lookup and here
+			s.lru.MoveToFront(v)
+			out := cloneBytes(v.Value.(*entry).val)
+			s.mu.Unlock()
+			return out, nil
 		}
-		// Admit a copy so the cache owns its bytes independent of whatever
-		// the caller does with the returned slice.
-		stored := make([]byte, len(raw))
-		copy(stored, raw)
-		s.admit(key, stored)
-		return raw, nil
-	})
-	if err != nil {
-		return nil, err
+		fl, waiting := s.flights[key] // waiting: someone else is already fetching key
+		amLeader := !waiting
+		if amLeader {
+			fl = &flight{done: make(chan struct{})}
+			s.flights[key] = fl
+		}
+		s.mu.Unlock()
+		if waiting && testHookWaiterJoined != nil {
+			testHookWaiterJoined()
+		}
+
+		if amLeader {
+			s.runFetch(ctx, key, fl)
+		}
+
+		select {
+		case <-fl.done:
+			if fl.err != nil {
+				if leaderCtxErr(fl.err) && ctx.Err() == nil {
+					// The leader's own ctx was cancelled/timed out, not
+					// ours; retry — we become the next leader (or join a
+					// fresh flight another live waiter started).
+					continue
+				}
+				return nil, fl.err
+			}
+			return cloneBytes(fl.val), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	src := v.([]byte)
-	out := make([]byte, len(src))
-	copy(out, src)
-	return out, nil
 }
 
-// GetRange passes through to the underlying store. Range reads are not
-// cached.
+// leaderCtxErr reports whether err is (possibly wrapped) a context
+// cancellation/deadline error, i.e. the leader's fetch failed because of ITS
+// ctx, not because the underlying store legitimately errored. Cloud SDKs
+// typically wrap context errors (e.g. "get object: %w") rather than
+// returning the bare sentinel, so this must use errors.Is, not ==.
+func leaderCtxErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// runFetch performs the underlying Get for a flight this goroutine is
+// leading, and publishes the result. Always closes fl.done exactly once.
+func (s *Store) runFetch(ctx context.Context, key string, fl *flight) {
+	raw, err := s.underlying.Get(ctx, key)
+	s.mu.Lock()
+	delete(s.flights, key)
+	poisoned := fl.poisoned
+	s.mu.Unlock()
+
+	if err != nil {
+		fl.err = err
+		close(fl.done)
+		return
+	}
+	if !poisoned {
+		s.admit(key, raw)
+	}
+	fl.val = raw
+	close(fl.done)
+}
+
+// cloneBytes returns a defensive copy of b.
+func cloneBytes(b []byte) []byte {
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
+
+// GetRange returns n bytes starting at off from the value at key. A cached
+// whole value is sliced in memory; otherwise the request is delegated to
+// the underlying store's GetRange WITHOUT admitting anything into the cache
+// (a range read is not evidence the caller wants the whole value cached).
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
+	if v, ok := s.lookup(key); ok {
+		return sliceRange(v, off, n)
+	}
 	return s.underlying.GetRange(ctx, key, off, n)
 }
 
-// Set invalidates any cached entry for key and writes through. Returns an
-// error if the underlying store does not implement store.WritableStore-style
-// write semantics (it must satisfy store.Store, which includes Set).
-func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	s.invalidate(key)
-	return s.underlying.Set(ctx, key, value)
+// GetSuffix returns the last n bytes of the value at key, consulting a
+// cached whole value first. Falls back to the underlying store's
+// GetSuffix if it implements store.SuffixReader, else to a full Get (which
+// admits the value, so subsequent range/suffix reads on the same key are
+// then served from cache).
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if v, ok := s.lookup(key); ok {
+		return sliceSuffix(v, n)
+	}
+	if n < 0 {
+		return nil, store.ErrInvalidRange
+	}
+	if sr, ok := s.underlying.(store.SuffixReader); ok {
+		return sr.GetSuffix(ctx, key, n)
+	}
+	whole, err := s.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return sliceSuffix(whole, n)
 }
 
-// Delete invalidates any cached entry for key and forwards to the underlying
-// store.
-func (s *Store) Delete(ctx context.Context, key string) error {
+// sliceRange applies the store.Store GetRange contract to an in-memory
+// value.
+func sliceRange(v []byte, off, n int64) ([]byte, error) {
+	if off < 0 || n < 0 {
+		return nil, store.ErrInvalidRange
+	}
+	length := int64(len(v))
+	if off >= length || n == 0 {
+		return []byte{}, nil
+	}
+	end := off + n
+	if end > length || end < off {
+		end = length
+	}
+	return cloneBytes(v[off:end]), nil
+}
+
+// sliceSuffix applies the store.SuffixReader contract to an in-memory value.
+func sliceSuffix(v []byte, n int64) ([]byte, error) {
+	if n < 0 {
+		return nil, store.ErrInvalidRange
+	}
+	length := int64(len(v))
+	start := length - n
+	if start < 0 {
+		start = 0
+	}
+	return cloneBytes(v[start:]), nil
+}
+
+// Set invalidates any cached entry for key and writes through. The
+// invalidate happens AFTER the underlying write completes (and also
+// poisons, rather than just invalidates, any fetch that raced with it) so a
+// concurrent miss-fill can't admit a value that's already stale by the time
+// it lands.
+func (s *Store) Set(ctx context.Context, key string, value []byte) error {
+	if err := s.underlying.Set(ctx, key, value); err != nil {
+		return err
+	}
 	s.invalidate(key)
-	return s.underlying.Delete(ctx, key)
+	return nil
+}
+
+// Delete invalidates/poisons any cached or in-flight entry for key (see
+// Set's doc for why this happens after the underlying call) and forwards to
+// the underlying store.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	if err := s.underlying.Delete(ctx, key); err != nil {
+		return err
+	}
+	s.invalidate(key)
+	return nil
 }
 
 // Exists is a passthrough; existence is not cached.
@@ -220,16 +365,17 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 }
 
 // SetIfNotExists forwards to the underlying store when it implements
-// store.WritableStore. The cache entry for key is invalidated regardless of
-// whether the write succeeded, so a subsequent Get re-fetches authoritative
-// state.
+// store.WritableStore. Any cached/in-flight entry for key is
+// invalidated/poisoned regardless of whether the write succeeded, so a
+// subsequent Get re-fetches authoritative state.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
 	w, ok := s.underlying.(store.WritableStore)
 	if !ok {
 		return false, errNotWritable{}
 	}
+	ok2, err := w.SetIfNotExists(ctx, key, value)
 	s.invalidate(key)
-	return w.SetIfNotExists(ctx, key, value)
+	return ok2, err
 }
 
 type errNotWritable struct{}
@@ -252,3 +398,9 @@ func (s *Store) Bytes() int64 {
 	defer s.mu.Unlock()
 	return s.bytes
 }
+
+// Compile-time interface assertions.
+var (
+	_ store.Store         = (*Store)(nil)
+	_ store.WritableStore = (*Store)(nil)
+)

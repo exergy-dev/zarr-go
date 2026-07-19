@@ -12,12 +12,12 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"strings"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
+	"github.com/rkm/zarr-go/internal/cloudstore"
 	zstore "github.com/rkm/zarr-go/store"
 )
 
@@ -51,7 +51,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		client: client,
 		bucket: client.Bucket(cfg.Bucket),
 		name:   cfg.Bucket,
-		prefix: trimSlashes(cfg.Prefix),
+		prefix: cloudstore.TrimSlashes(cfg.Prefix),
 	}, nil
 }
 
@@ -63,33 +63,6 @@ func (s *Store) Close() error {
 	return s.client.Close()
 }
 
-// joinKey joins the configured prefix with key, producing a clean GCS object
-// name with no leading or duplicate slashes.
-func joinKey(prefix, key string) string {
-	prefix = trimSlashes(prefix)
-	key = strings.TrimLeft(key, "/")
-	if prefix == "" {
-		return key
-	}
-	if key == "" {
-		return prefix
-	}
-	return prefix + "/" + key
-}
-
-func trimSlashes(s string) string {
-	return strings.Trim(s, "/")
-}
-
-// stripPrefix removes the configured prefix from a returned GCS object name.
-func stripPrefix(prefix, key string) string {
-	if prefix == "" {
-		return key
-	}
-	p := prefix + "/"
-	return strings.TrimPrefix(key, p)
-}
-
 // notFoundErr wraps store.ErrKeyNotFound with context about the missing key.
 func notFoundErr(key string) error {
 	return fmt.Errorf("gcs: key %q: %w", key, zstore.ErrKeyNotFound)
@@ -98,19 +71,35 @@ func notFoundErr(key string) error {
 // isPreconditionFailed reports whether err is a 412 PreconditionFailed from
 // the GCS API (used to detect SetIfNotExists conflicts).
 func isPreconditionFailed(err error) bool {
+	return googleAPICode(err) == 412
+}
+
+// isInvalidRange reports whether err is a 416 Requested Range Not
+// Satisfiable. Verified against fake-gcs-server that GCS only returns this
+// once object existence has already been confirmed (a missing object fails
+// with storage.ErrObjectNotExist before range validity is ever evaluated),
+// so a 416 always means "off is at or past the object's size", not "missing
+// key".
+func isInvalidRange(err error) bool {
+	return googleAPICode(err) == 416
+}
+
+// googleAPICode extracts the HTTP status code from a *googleapi.Error, or 0
+// if err isn't one.
+func googleAPICode(err error) int {
 	if err == nil {
-		return false
+		return 0
 	}
 	var ge *googleapi.Error
 	if errors.As(err, &ge) {
-		return ge.Code == 412
+		return ge.Code
 	}
-	return false
+	return 0
 }
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	r, err := s.bucket.Object(k).NewReader(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
@@ -126,16 +115,24 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return b, nil
 }
 
-// GetRange implements store.Store.
+// GetRange implements store.Store, per the store.Store GetRange contract.
+//
+// off/n are passed straight through to NewRangeReader, which already
+// implements the n==0 (empty, existence-checked via a real request) and
+// clamp-past-EOF behavior the contract calls for; only the negative-off/n
+// rejection and the off-at/past-EOF (416) case need translating here.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	if n <= 0 {
-		return []byte{}, nil
+	if err := cloudstore.ValidateRange("gcs", "GetRange", off, n); err != nil {
+		return nil, err
 	}
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	r, err := s.bucket.Object(k).NewRangeReader(ctx, off, n)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return nil, notFoundErr(key)
+		}
+		if isInvalidRange(err) {
+			return []byte{}, nil
 		}
 		return nil, fmt.Errorf("gcs: NewRangeReader %q [%d,%d): %w", k, off, off+n, err)
 	}
@@ -147,9 +144,43 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
+// GetSuffix implements store.SuffixReader. GCS's NewRangeReader overloads a
+// negative offset to mean "read the last abs(offset) bytes" (with length
+// forced to -1), which is exactly GetSuffix's semantics for n > 0 — but that
+// trick can't express n==0 (there's no negative zero), so that case is
+// handled separately via Attrs.
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if err := cloudstore.ValidateRange("gcs", "GetSuffix", 0, n); err != nil {
+		return nil, err
+	}
+	k := cloudstore.JoinKey(s.prefix, key)
+	if n == 0 {
+		if _, err := s.bucket.Object(k).Attrs(ctx); err != nil {
+			if errors.Is(err, storage.ErrObjectNotExist) {
+				return nil, notFoundErr(key)
+			}
+			return nil, fmt.Errorf("gcs: Attrs %q: %w", k, err)
+		}
+		return []byte{}, nil
+	}
+	r, err := s.bucket.Object(k).NewRangeReader(ctx, -n, -1)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, notFoundErr(key)
+		}
+		return nil, fmt.Errorf("gcs: NewRangeReader %q suffix -%d: %w", k, n, err)
+	}
+	defer r.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("gcs: read body %q: %w", k, err)
+	}
+	return b, nil
+}
+
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	w := s.bucket.Object(k).NewWriter(ctx)
 	if _, err := w.Write(value); err != nil {
 		_ = w.Close()
@@ -165,7 +196,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // "x-goog-if-generation-match: 0" precondition (DoesNotExist) so concurrent
 // writers can race safely; the loser receives a 412 and we return (false, nil).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	obj := s.bucket.Object(k).If(storage.Conditions{DoesNotExist: true})
 	w := obj.NewWriter(ctx)
 	if _, err := w.Write(value); err != nil {
@@ -186,7 +217,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	if err := s.bucket.Object(k).Delete(ctx); err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return nil
@@ -198,7 +229,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	if _, err := s.bucket.Object(k).Attrs(ctx); err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return false, nil
@@ -211,7 +242,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // List implements store.Store. The supplied prefix is joined with the store's
 // configured prefix; yielded keys have the configured prefix stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := joinKey(s.prefix, prefix)
+	full := cloudstore.JoinKey(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		it := s.bucket.Objects(ctx, &storage.Query{Prefix: full})
 		for {
@@ -230,7 +261,7 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 			if attrs == nil || attrs.Name == "" {
 				continue
 			}
-			k := stripPrefix(s.prefix, attrs.Name)
+			k := cloudstore.StripPrefix(s.prefix, attrs.Name)
 			if !yield(k, nil) {
 				return
 			}
@@ -242,4 +273,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 var (
 	_ zstore.Store         = (*Store)(nil)
 	_ zstore.WritableStore = (*Store)(nil)
+	_ zstore.SuffixReader  = (*Store)(nil)
 )

@@ -7,12 +7,56 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/rkm/zarr-go/store"
+	"github.com/rkm/zarr-go/store/storetest"
 )
+
+// fileServerStore pairs a Store with the on-disk directory its backing
+// httptest server serves, so the conformance suite's Seed callback can write
+// files directly instead of going through Set (which this read-only store
+// doesn't support). Embedding *Store promotes Get/GetRange/GetSuffix/etc.
+type fileServerStore struct {
+	*Store
+	dir string
+}
+
+// newFileServerStore serves dir (RFC 7233 Range support, including suffix
+// ranges and 416, all via the standard library) as the backing store.
+func newFileServerStore(t *testing.T) store.Store {
+	t.Helper()
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
+	t.Cleanup(srv.Close)
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return fileServerStore{Store: s, dir: dir}
+}
+
+func TestIntegration_Conformance(t *testing.T) {
+	storetest.RunConformance(t, newFileServerStore, storetest.Options{
+		ReadOnly: true,
+		NoList:   true, // the http store has no listing protocol (ErrListUnsupported)
+		Seed: func(t *testing.T, s store.Store, key string, value []byte) {
+			t.Helper()
+			fs := s.(fileServerStore)
+			path := filepath.Join(fs.dir, filepath.FromSlash(key))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("seed MkdirAll: %v", err)
+			}
+			if err := os.WriteFile(path, value, 0o644); err != nil {
+				t.Fatalf("seed WriteFile: %v", err)
+			}
+		},
+	})
+}
 
 // newTestStore spins up an httptest.Server backed by data and returns a Store
 // pointed at it, plus a cleanup func.

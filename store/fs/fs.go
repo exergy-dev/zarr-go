@@ -1,7 +1,10 @@
 // Package fs provides a local-filesystem backend for the zarr Store interface.
 //
 // Keys are forward-slash separated and mapped to paths beneath a fixed root
-// directory. All writes are atomic via temp-file + rename.
+// directory. All writes are atomic via temp-file + rename (Set) or
+// temp-file + hard-link (SetIfNotExists), and durable by default (fsynced
+// before publish; see WithNoSync to opt out for throughput-sensitive
+// scratch use).
 package fs
 
 import (
@@ -13,17 +16,32 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/rkm/zarr-go/store"
 )
+
+// tempPrefix names the reserved staging-file namespace Set/SetIfNotExists
+// use for their temp files. Basenames matching this prefix are rejected as
+// keys (see resolve) and filtered out of List results, so a crash-leaked
+// temp file (before the following rename/link) never becomes visible as a
+// phantom store key.
+const tempPrefix = ".zarr-tmp-"
 
 // Store is a local-filesystem implementation of store.Store and
 // store.WritableStore. All keys are resolved relative to a fixed root.
 type Store struct {
 	root        string
 	mmapEnabled bool
+	noSync      bool
 }
+
+// testHookBeforeCommit, when non-nil, is invoked after a temp file has been
+// fully written (and synced) but before the rename/link that publishes it.
+// Used by tests to deterministically observe pre-commit state. Never set
+// outside tests.
+var testHookBeforeCommit func()
 
 // New constructs a Store rooted at the given directory. The directory must
 // already exist and be a directory.
@@ -48,7 +66,8 @@ func New(root string, opts ...Option) (*Store, error) {
 func (s *Store) MmapEnabled() bool { return s.mmapEnabled }
 
 // resolve translates a forward-slash key into an absolute path under the root,
-// rejecting any key that contains a ".." segment.
+// rejecting any key that contains a ".." segment or a segment in the
+// reserved temp-file namespace.
 func (s *Store) resolve(key string) (string, error) {
 	if key == "" {
 		return s.root, nil
@@ -57,6 +76,9 @@ func (s *Store) resolve(key string) (string, error) {
 	for _, seg := range strings.Split(key, "/") {
 		if seg == ".." {
 			return "", fmt.Errorf("fs: key %q contains forbidden \"..\" segment", key)
+		}
+		if strings.HasPrefix(seg, tempPrefix) {
+			return "", fmt.Errorf("fs: key %q contains reserved segment %q (prefix %q is reserved for staging files)", key, seg, tempPrefix)
 		}
 	}
 	return filepath.Join(s.root, filepath.FromSlash(key)), nil
@@ -81,15 +103,14 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return b, nil
 }
 
-// GetRange returns up to n bytes starting at off from the value at key.
-// If off+n exceeds the file size, the returned slice is clamped to whatever
-// bytes are available at or after off.
+// GetRange returns up to n bytes starting at off from the value at key, per
+// the store.Store GetRange contract.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if off < 0 || n < 0 {
-		return nil, fmt.Errorf("fs.GetRange: negative off/n (off=%d n=%d)", off, n)
+		return nil, fmt.Errorf("fs: GetRange(off=%d, n=%d): %w", off, n, store.ErrInvalidRange)
 	}
 	path, err := s.resolve(key)
 	if err != nil {
@@ -124,8 +145,53 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return buf[:read], nil
 }
 
+// GetSuffix returns the last n bytes of the value at key, per the
+// store.SuffixReader contract.
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if n < 0 {
+		return nil, fmt.Errorf("fs: GetSuffix(n=%d): %w", n, store.ErrInvalidRange)
+	}
+	path, err := s.resolve(key)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		if errors.Is(err, stdfs.ErrNotExist) {
+			return nil, store.ErrKeyNotFound
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	start := size - n
+	if start < 0 {
+		start = 0
+	}
+	want := size - start
+	if want == 0 {
+		return []byte{}, nil
+	}
+	buf := make([]byte, want)
+	read, err := f.ReadAt(buf, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buf[:read], nil
+}
+
 // Set writes value at key, creating parent directories as needed. The write
-// is atomic: data is written to a sibling temp file and then renamed.
+// is atomic: data is written to a sibling temp file (fsynced by default),
+// then renamed into place, then the parent directory is fsynced so the
+// rename itself is durable. See WithNoSync to skip the fsyncs.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -134,23 +200,83 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, value, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		// Best-effort cleanup of the temp file on rename failure.
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	if err := s.writeAndCommit(tmp, tmpPath, value); err != nil {
 		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if !s.noSync {
+		if err := syncDir(dir); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
+// writeAndCommit writes value to tmp, syncs and closes it (unless noSync),
+// and invokes testHookBeforeCommit — the shared prefix of Set and
+// SetIfNotExists between "temp file created" and "temp file published".
+// Removes the temp file and returns the error on any failure.
+func (s *Store) writeAndCommit(tmp *os.File, tmpPath string, value []byte) error {
+	if _, err := tmp.Write(value); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if !s.noSync {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+			return err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if testHookBeforeCommit != nil {
+		testHookBeforeCommit()
+	}
+	return nil
+}
+
+// syncDir fsyncs a directory so a preceding rename/link within it is
+// durable. A no-op on Windows, which doesn't support syncing directory
+// handles.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
 // SetIfNotExists writes value at key only if the key does not already exist.
 // Returns false (without error) if the key was already present.
+//
+// Unlike Set, this writes the full content to a temp file first and
+// publishes it via a hard link (not a direct O_EXCL write), so a concurrent
+// reader can never observe a partially-written file at key, and a crash
+// between the temp write and the link leaves no trace at key at all (the
+// pre-fix O_EXCL approach could leave a permanently-empty file at key,
+// wedging it as "already exists" forever). Requires the store's filesystem
+// to support hard links within a directory (true for essentially all
+// POSIX/NTFS filesystems; not FAT/exFAT).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -159,23 +285,30 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 	if err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	if err := s.writeAndCommit(tmp, tmpPath, value); err != nil {
+		return false, err
+	}
+	defer os.Remove(tmpPath) // Link doesn't consume the source; always clean it up.
+
+	if err := os.Link(tmpPath, path); err != nil {
 		if errors.Is(err, stdfs.ErrExist) {
 			return false, nil
 		}
 		return false, err
 	}
-	if _, werr := f.Write(value); werr != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
-		return false, werr
-	}
-	if cerr := f.Close(); cerr != nil {
-		return false, cerr
+	if !s.noSync {
+		if err := syncDir(dir); err != nil {
+			return true, err
+		}
 	}
 	return true, nil
 }
@@ -213,11 +346,26 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-// List yields all file keys under prefix (recursively). If the prefix does not
-// resolve to an existing directory, the iterator yields nothing without error.
+// List yields every key for which strings.HasPrefix(key, prefix) holds,
+// per the store.Store List contract (pure string-prefix, not path-prefix —
+// a prefix that isn't a complete path segment, e.g. "foo/ba", still matches
+// "foo/bar"). Reserved staging-file entries (see tempPrefix) are never
+// yielded.
+//
+// Implementation: starts the filesystem walk from the parent directory of
+// prefix's last "/"-separated segment (an optimization — the walk needs
+// only ever look inside directories whose path is a prefix of, or is
+// prefixed by, that starting point) and prunes subtrees during the walk
+// that can't possibly contain a match, so the full store is only walked
+// when the prefix supplies no path segment at all (e.g. "" or a single
+// top-level partial name).
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		base, err := s.resolve(prefix)
+		dirKey := ""
+		if idx := strings.LastIndex(prefix, "/"); idx >= 0 {
+			dirKey = prefix[:idx]
+		}
+		base, err := s.resolve(dirKey)
 		if err != nil {
 			yield("", err)
 			return
@@ -230,14 +378,7 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 			yield("", err)
 			return
 		}
-		// If prefix points at a regular file, yield just that key.
 		if !info.IsDir() {
-			rel, rerr := filepath.Rel(s.root, base)
-			if rerr != nil {
-				yield("", rerr)
-				return
-			}
-			yield(filepath.ToSlash(rel), nil)
 			return
 		}
 
@@ -248,14 +389,27 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
-			if d.IsDir() {
-				return nil
-			}
 			rel, rerr := filepath.Rel(s.root, path)
 			if rerr != nil {
 				return rerr
 			}
-			if !yield(filepath.ToSlash(rel), nil) {
+			key := filepath.ToSlash(rel)
+			if d.IsDir() {
+				if key == "." {
+					return nil
+				}
+				if strings.HasPrefix(key+"/", prefix) || strings.HasPrefix(prefix, key+"/") {
+					return nil
+				}
+				return filepath.SkipDir
+			}
+			if strings.HasPrefix(d.Name(), tempPrefix) {
+				return nil
+			}
+			if !strings.HasPrefix(key, prefix) {
+				return nil
+			}
+			if !yield(key, nil) {
 				return filepath.SkipAll
 			}
 			return nil
@@ -270,4 +424,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 var (
 	_ store.Store         = (*Store)(nil)
 	_ store.WritableStore = (*Store)(nil)
+	_ store.SuffixReader  = (*Store)(nil)
 )

@@ -10,7 +10,14 @@ import (
 
 	"github.com/rkm/zarr-go/store"
 	"github.com/rkm/zarr-go/store/mem"
+	"github.com/rkm/zarr-go/store/storetest"
 )
+
+func TestConformance(t *testing.T) {
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return mem.New()
+	}, storetest.Options{})
+}
 
 func TestSetGetRoundTripAndCopySemantics(t *testing.T) {
 	t.Parallel()

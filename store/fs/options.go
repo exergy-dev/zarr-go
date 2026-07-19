@@ -15,3 +15,17 @@ func WithMmap() Option {
 		s.mmapEnabled = true
 	}
 }
+
+// WithNoSync disables fsync-before-rename/link on Set and SetIfNotExists.
+// By default, writes are durable: the temp file is fsynced before the
+// rename/link that publishes it, and the parent directory is fsynced after
+// (so the rename itself survives a crash on filesystems that require it).
+// Without WithNoSync, "atomic" only means "never observed partially
+// written" — a power loss can still lose an acknowledged write. Pass this
+// for throughput-sensitive scratch/test use where that durability isn't
+// needed.
+func WithNoSync() Option {
+	return func(s *Store) {
+		s.noSync = true
+	}
+}

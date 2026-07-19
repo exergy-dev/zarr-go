@@ -9,20 +9,22 @@
 package azblob
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
-	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 
+	"github.com/rkm/zarr-go/internal/cloudstore"
 	zstore "github.com/rkm/zarr-go/store"
 )
 
@@ -83,35 +85,8 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	return &Store{
 		client:    client,
 		container: cfg.Container,
-		prefix:    trimSlashes(cfg.Prefix),
+		prefix:    cloudstore.TrimSlashes(cfg.Prefix),
 	}, nil
-}
-
-// joinKey joins the configured prefix with key, producing a clean blob key
-// with no leading or duplicate slashes.
-func joinKey(prefix, key string) string {
-	prefix = trimSlashes(prefix)
-	key = strings.TrimLeft(key, "/")
-	if prefix == "" {
-		return key
-	}
-	if key == "" {
-		return prefix
-	}
-	return prefix + "/" + key
-}
-
-func trimSlashes(s string) string {
-	return strings.Trim(s, "/")
-}
-
-// stripPrefix removes the configured prefix from a returned blob key.
-func stripPrefix(prefix, key string) string {
-	if prefix == "" {
-		return key
-	}
-	p := prefix + "/"
-	return strings.TrimPrefix(key, p)
 }
 
 // isNotFound reports whether err corresponds to a BlobNotFound from the
@@ -133,14 +108,43 @@ func isPreconditionFailed(err error) bool {
 		bloberror.HasCode(err, bloberror.BlobAlreadyExists)
 }
 
+// invalidRangeCode is the Azure Blob Storage error code for a 416 Requested
+// Range Not Satisfiable. bloberror has no predefined constant for it, but
+// bloberror.Code is just a string type, so this is equally valid input to
+// bloberror.HasCode.
+const invalidRangeCode bloberror.Code = "InvalidRange"
+
+// isInvalidRange reports whether err is a 416 Requested Range Not
+// Satisfiable, returned when off is past the blob's size.
+func isInvalidRange(err error) bool {
+	if err == nil {
+		return false
+	}
+	return bloberror.HasCode(err, invalidRangeCode)
+}
+
 // notFoundErr wraps store.ErrKeyNotFound with context about the missing key.
 func notFoundErr(key string, _ error) error {
 	return fmt.Errorf("azblob: key %q: %w", key, zstore.ErrKeyNotFound)
 }
 
+// blobExists implements the existence check shared by Exists and the n==0
+// GetRange case. k is the already-prefix-joined blob key.
+func (s *Store) blobExists(ctx context.Context, k string) (bool, error) {
+	bbClient := s.client.ServiceClient().NewContainerClient(s.container).NewBlockBlobClient(k)
+	_, err := bbClient.GetProperties(ctx, nil)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("azblob: GetProperties %q: %w", k, err)
+	}
+	return true, nil
+}
+
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	resp, err := s.client.DownloadStream(ctx, s.container, k, nil)
 	if err != nil {
 		if isNotFound(err) {
@@ -156,18 +160,37 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return b, nil
 }
 
-// GetRange implements store.Store.
+// GetRange implements store.Store, per the store.Store GetRange contract.
+//
+// n==0 is handled as an explicit existence check rather than passed through
+// to blob.HTTPRange: Count:0 in that struct means "read to the end of the
+// blob" (a zero-value HTTPRange field is a "not specified" sentinel, not a
+// literal zero-length range), so passing n==0 straight through would
+// silently return the ENTIRE blob instead of an empty slice.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	if n <= 0 {
+	if err := cloudstore.ValidateRange("azblob", "GetRange", off, n); err != nil {
+		return nil, err
+	}
+	k := cloudstore.JoinKey(s.prefix, key)
+	if n == 0 {
+		ok, err := s.blobExists(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, notFoundErr(key, nil)
+		}
 		return []byte{}, nil
 	}
-	k := joinKey(s.prefix, key)
 	resp, err := s.client.DownloadStream(ctx, s.container, k, &azblob.DownloadStreamOptions{
 		Range: blob.HTTPRange{Offset: off, Count: n},
 	})
 	if err != nil {
 		if isNotFound(err) {
 			return nil, notFoundErr(key, err)
+		}
+		if isInvalidRange(err) {
+			return []byte{}, nil
 		}
 		return nil, fmt.Errorf("azblob: DownloadStream %q range [%d,%d): %w", k, off, off+n, err)
 	}
@@ -181,7 +204,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	_, err := s.client.UploadBuffer(ctx, s.container, k, value, nil)
 	if err != nil {
 		return fmt.Errorf("azblob: UploadBuffer %q: %w", k, err)
@@ -193,9 +216,9 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // access condition; on 412 PreconditionFailed (or BlobAlreadyExists) the
 // blob already exists and (false, nil) is returned.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	bbClient := s.client.ServiceClient().NewContainerClient(s.container).NewBlockBlobClient(k)
-	body := newReadSeekCloser(value)
+	body := streaming.NopCloser(bytes.NewReader(value))
 	_, err := bbClient.Upload(ctx, body, &blockblob.UploadOptions{
 		AccessConditions: &blob.AccessConditions{
 			ModifiedAccessConditions: &blob.ModifiedAccessConditions{
@@ -214,7 +237,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := joinKey(s.prefix, key)
+	k := cloudstore.JoinKey(s.prefix, key)
 	_, err := s.client.DeleteBlob(ctx, s.container, k, nil)
 	if err != nil {
 		if isNotFound(err) {
@@ -227,23 +250,14 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k := joinKey(s.prefix, key)
-	bbClient := s.client.ServiceClient().NewContainerClient(s.container).NewBlockBlobClient(k)
-	_, err := bbClient.GetProperties(ctx, nil)
-	if err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("azblob: GetProperties %q: %w", k, err)
-	}
-	return true, nil
+	return s.blobExists(ctx, cloudstore.JoinKey(s.prefix, key))
 }
 
 // List implements store.Store. The supplied prefix is joined with the
 // store's configured prefix; yielded keys have the configured prefix
 // stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := joinKey(s.prefix, prefix)
+	full := cloudstore.JoinKey(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		opts := &azblob.ListBlobsFlatOptions{}
 		if full != "" {
@@ -267,7 +281,7 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 				if item == nil || item.Name == nil {
 					continue
 				}
-				k := stripPrefix(s.prefix, *item.Name)
+				k := cloudstore.StripPrefix(s.prefix, *item.Name)
 				if !yield(k, nil) {
 					return
 				}
@@ -275,47 +289,6 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 		}
 	}
 }
-
-// readSeekCloser adapts an in-memory byte slice to io.ReadSeekCloser, which
-// blockblob.Client.Upload requires.
-type readSeekCloser struct {
-	data []byte
-	pos  int64
-}
-
-func newReadSeekCloser(b []byte) *readSeekCloser {
-	return &readSeekCloser{data: b}
-}
-
-func (r *readSeekCloser) Read(p []byte) (int, error) {
-	if r.pos >= int64(len(r.data)) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.data[r.pos:])
-	r.pos += int64(n)
-	return n, nil
-}
-
-func (r *readSeekCloser) Seek(offset int64, whence int) (int64, error) {
-	var abs int64
-	switch whence {
-	case io.SeekStart:
-		abs = offset
-	case io.SeekCurrent:
-		abs = r.pos + offset
-	case io.SeekEnd:
-		abs = int64(len(r.data)) + offset
-	default:
-		return 0, errors.New("azblob: invalid whence")
-	}
-	if abs < 0 {
-		return 0, errors.New("azblob: negative seek position")
-	}
-	r.pos = abs
-	return abs, nil
-}
-
-func (r *readSeekCloser) Close() error { return nil }
 
 // Compile-time checks that *Store satisfies the store interfaces.
 var (

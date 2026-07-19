@@ -1,12 +1,18 @@
 package fs
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rkm/zarr-go/store"
+	"github.com/rkm/zarr-go/store/storetest"
 )
 
 func newStore(t *testing.T) *Store {
@@ -16,6 +22,12 @@ func newStore(t *testing.T) *Store {
 		t.Fatalf("New: %v", err)
 	}
 	return s
+}
+
+func TestConformance(t *testing.T) {
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return newStore(t)
+	}, storetest.Options{})
 }
 
 func TestNewRequiresExistingDirectory(t *testing.T) {
@@ -173,6 +185,219 @@ func TestSetIfNotExists(t *testing.T) {
 	}
 	if string(got) != "first" {
 		t.Fatalf("Get after CAS: got %q, want %q", got, "first")
+	}
+}
+
+// TestSetDoesNotClobberSiblingTmpKey guards against the old fixed
+// key+".tmp" temp-file scheme: Set("a") must not disturb an unrelated,
+// legitimately-named key "a.tmp".
+func TestSetDoesNotClobberSiblingTmpKey(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.Set(ctx, "a.tmp", []byte("sibling")); err != nil {
+		t.Fatalf("Set a.tmp: %v", err)
+	}
+	if err := s.Set(ctx, "a", []byte("main")); err != nil {
+		t.Fatalf("Set a: %v", err)
+	}
+	got, err := s.Get(ctx, "a.tmp")
+	if err != nil {
+		t.Fatalf("Get a.tmp: %v", err)
+	}
+	if string(got) != "sibling" {
+		t.Fatalf("Get a.tmp = %q, want %q (Set(\"a\") clobbered a sibling key)", got, "sibling")
+	}
+}
+
+// TestConcurrentSetSameKeyNeverTorn guards against the old fixed-temp-path
+// scheme, where two concurrent Set calls to the same key could share one
+// temp file and interleave, producing a torn (neither-old-nor-new) value at
+// the final path. Each writer now gets its own unique temp file via
+// os.CreateTemp, so every observed value must be byte-identical to exactly
+// one writer's full payload.
+func TestConcurrentSetSameKeyNeverTorn(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	const writers = 8
+	const size = 64 * 1024
+	payloads := make([][]byte, writers)
+	for i := range payloads {
+		payloads[i] = make([]byte, size)
+		for j := range payloads[i] {
+			payloads[i][j] = byte(i)
+		}
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if err := s.Set(ctx, "shared", payloads[i]); err != nil {
+				t.Errorf("Set (writer %d): %v", i, err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	got, err := s.Get(ctx, "shared")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	matched := -1
+	for i, p := range payloads {
+		if bytes.Equal(got, p) {
+			matched = i
+			break
+		}
+	}
+	if matched == -1 {
+		t.Fatalf("final value (len %d) does not match any single writer's payload — torn write", len(got))
+	}
+}
+
+// TestListFiltersStagingFiles guards against a crash-leaked temp file (or
+// one observed mid-write) ever surfacing as a phantom store key.
+func TestListFiltersStagingFiles(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.Set(ctx, "real", []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	path, err := s.resolve("real")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(filepath.Dir(path), tempPrefix+"leaked123")
+	if err := os.WriteFile(stray, []byte("leaked"), 0o644); err != nil {
+		t.Fatalf("plant stray temp file: %v", err)
+	}
+
+	var got []string
+	for k, err := range s.List(ctx, "") {
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		got = append(got, k)
+	}
+	if len(got) != 1 || got[0] != "real" {
+		t.Fatalf("List = %v, want [\"real\"] (staging file leaked into results)", got)
+	}
+}
+
+// TestResolveRejectsReservedTempSegment checks that a user-supplied key
+// colliding with the reserved staging namespace is rejected outright,
+// rather than being silently treated as an ordinary key that List then
+// filters away.
+func TestResolveRejectsReservedTempSegment(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.Set(ctx, tempPrefix+"whatever", []byte("x")); err == nil {
+		t.Fatal("expected error for a key using the reserved temp-file prefix")
+	}
+}
+
+// TestSetIfNotExistsNoTornVisibility uses testHookBeforeCommit to pause
+// SetIfNotExists after the temp file is fully written but before the
+// publishing hard-link, and checks that a concurrent Exists/Get sees no
+// trace of the key — the old O_EXCL-in-place scheme could expose a
+// zero-byte or partially-written file at this point.
+func TestSetIfNotExistsNoTornVisibility(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	release := make(chan struct{})
+	reached := make(chan struct{})
+	testHookBeforeCommit = func() {
+		close(reached)
+		<-release
+	}
+	t.Cleanup(func() { testHookBeforeCommit = nil })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ok, err := s.SetIfNotExists(ctx, "pending", []byte("full-value"))
+		if err != nil || !ok {
+			t.Errorf("SetIfNotExists: ok=%v err=%v", ok, err)
+		}
+	}()
+
+	<-reached
+	if ok, err := s.Exists(ctx, "pending"); err != nil || ok {
+		t.Fatalf("Exists mid-write: ok=%v err=%v, want false,nil (key must not be visible before commit)", ok, err)
+	}
+	close(release)
+	<-done
+
+	got, err := s.Get(ctx, "pending")
+	if err != nil || string(got) != "full-value" {
+		t.Fatalf("Get after commit: got %q err=%v, want %q,nil", got, err, "full-value")
+	}
+}
+
+// TestSetIfNotExistsConcurrentRaceExactlyOneWinner runs many concurrent
+// SetIfNotExists calls for the same key with distinct large payloads and
+// checks exactly one wins and the final value is byte-identical to that
+// winner's payload (no interleaving between the loser's temp write and the
+// winner's link).
+func TestSetIfNotExistsConcurrentRaceExactlyOneWinner(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	const n = 16
+	const size = 64 * 1024
+	payloads := make([][]byte, n)
+	for i := range payloads {
+		payloads[i] = make([]byte, size)
+		for j := range payloads[i] {
+			payloads[i][j] = byte(i + 1)
+		}
+	}
+
+	var wins int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ok, err := s.SetIfNotExists(ctx, "race", payloads[i])
+			if err != nil {
+				t.Errorf("SetIfNotExists (%d): %v", i, err)
+				return
+			}
+			if ok {
+				atomic.AddInt32(&wins, 1)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if wins != 1 {
+		t.Fatalf("wins = %d, want exactly 1", wins)
+	}
+	got, err := s.Get(ctx, "race")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	matched := false
+	for _, p := range payloads {
+		if bytes.Equal(got, p) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("final value (len %d) does not match any candidate payload — torn write", len(got))
 	}
 }
 

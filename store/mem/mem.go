@@ -44,21 +44,17 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return out, nil
 }
 
-// GetRange returns n bytes starting at off from the value at key. The result
-// is clamped to whatever bytes lie at or after off; if off >= len(value), an
-// empty slice is returned (not an error). Negative off or n is rejected.
-//
-// The empty-on-off-past-EOF semantics match the cloud backends (s3/gcs/azblob)
-// and the fs backend, so codec range-reads see uniform behavior across stores.
+// GetRange returns n bytes starting at off from the value at key, per the
+// store.Store GetRange contract: negative off/n is rejected with
+// ErrInvalidRange; a missing key is ErrKeyNotFound (checked even when n==0);
+// off at or past EOF returns an empty slice; off+n past EOF clamps to
+// whatever bytes are available at or after off.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if off < 0 {
-		return nil, fmt.Errorf("mem: GetRange: negative offset %d", off)
-	}
-	if n < 0 {
-		return nil, fmt.Errorf("mem: GetRange: negative length %d", n)
+	if off < 0 || n < 0 {
+		return nil, fmt.Errorf("mem: GetRange(off=%d, n=%d): %w", off, n, store.ErrInvalidRange)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -76,6 +72,31 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	}
 	out := make([]byte, end-off)
 	copy(out, v[off:end])
+	return out, nil
+}
+
+// GetSuffix returns the last n bytes of the value at key, per the
+// store.SuffixReader contract.
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if n < 0 {
+		return nil, fmt.Errorf("mem: GetSuffix(n=%d): %w", n, store.ErrInvalidRange)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.data[key]
+	if !ok {
+		return nil, store.ErrKeyNotFound
+	}
+	length := int64(len(v))
+	start := length - n
+	if start < 0 {
+		start = 0
+	}
+	out := make([]byte, length-start)
+	copy(out, v[start:])
 	return out, nil
 }
 
@@ -159,3 +180,10 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 	s.data[key] = cp
 	return true, nil
 }
+
+// Compile-time interface assertions.
+var (
+	_ store.Store         = (*Store)(nil)
+	_ store.WritableStore = (*Store)(nil)
+	_ store.SuffixReader  = (*Store)(nil)
+)
