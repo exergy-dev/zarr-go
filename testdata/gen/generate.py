@@ -64,6 +64,10 @@ def make_data(rng: np.random.Generator, dtype: str, shape: tuple[int, ...]) -> n
         return rng.integers(0, high, size=shape, dtype=np_dtype)
     if np_dtype.kind == "b":
         return rng.integers(0, 2, size=shape).astype(bool)
+    if np_dtype.kind == "c":
+        real = rng.standard_normal(shape)
+        imag = rng.standard_normal(shape)
+        return (real + 1j * imag).astype(np_dtype)
     raise ValueError(f"unsupported dtype: {dtype}")
 
 
@@ -71,30 +75,37 @@ def make_data(rng: np.random.Generator, dtype: str, shape: tuple[int, ...]) -> n
 # Codec pipeline construction
 # ---------------------------------------------------------------------------
 
-def build_codecs(spec: list[dict[str, Any]]) -> list[Any]:
-    """Translate a manifest-friendly codec spec list into zarr codec objects."""
-    codecs: list[Any] = []
+def build_serializer_and_compressors(spec: list[dict[str, Any]]) -> tuple[Any, list[Any]]:
+    """Split a manifest-friendly codec spec list (ordered array->bytes plus
+    zero or more bytes->bytes codecs, matching the v3 spec's flat `codecs`
+    array) into the (serializer, compressors) pair the current zarr-python
+    stable API wants — zarr.create_array no longer accepts a single flat
+    `codecs` list; the array->bytes codec is `serializer` and the
+    bytes->bytes codecs are `compressors`, applied in list order.
+    """
+    serializer: Any = None
+    compressors: list[Any] = []
     for item in spec:
         name = item["name"]
         if name == "bytes":
-            codecs.append(BytesCodec())
+            serializer = BytesCodec()
         elif name == "gzip":
-            codecs.append(GzipCodec(level=item.get("level", 5)))
+            compressors.append(GzipCodec(level=item.get("level", 5)))
         elif name == "zstd":
-            codecs.append(ZstdCodec(level=item.get("level", 3)))
+            compressors.append(ZstdCodec(level=item.get("level", 3)))
         elif name == "crc32c":
-            codecs.append(Crc32cCodec())
+            compressors.append(Crc32cCodec())
         elif name == "sharding_indexed":
-            inner = build_codecs(item["codecs"])
-            codecs.append(
-                ShardingCodec(
-                    chunk_shape=tuple(item["chunk_shape"]),
-                    codecs=inner,
-                )
+            inner_serializer, inner_compressors = build_serializer_and_compressors(item["codecs"])
+            serializer = ShardingCodec(
+                chunk_shape=tuple(item["chunk_shape"]),
+                codecs=[inner_serializer, *inner_compressors],
             )
         else:
             raise ValueError(f"unknown codec: {name}")
-    return codecs
+    if serializer is None:
+        raise ValueError("codec_spec must include exactly one array->bytes codec (bytes or sharding_indexed)")
+    return serializer, compressors
 
 
 def codec_names(spec: list[dict[str, Any]]) -> list[str]:
@@ -210,6 +221,70 @@ CASES: list[dict[str, Any]] = [
         "chunks": [4],
         "codec_spec": [{"name": "bytes"}],
     },
+    {
+        "name": "i8_1d_bytes_only",
+        "dtype": "int8",
+        "shape": [32],
+        "chunks": [8],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "i64_2d_bytes_only",
+        "dtype": "int64",
+        "shape": [8, 8],
+        "chunks": [4, 4],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "u16_2d_bytes_only",
+        "dtype": "uint16",
+        "shape": [8, 8],
+        "chunks": [4, 4],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "u32_2d_bytes_only",
+        "dtype": "uint32",
+        "shape": [8, 8],
+        "chunks": [4, 4],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "u64_2d_bytes_only",
+        "dtype": "uint64",
+        "shape": [8, 8],
+        "chunks": [4, 4],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "f16_1d_bytes_only",
+        "dtype": "float16",
+        "shape": [32],
+        "chunks": [8],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "c64_1d_bytes_only",
+        "dtype": "complex64",
+        "shape": [16],
+        "chunks": [4],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    {
+        "name": "c128_2d_bytes_only",
+        "dtype": "complex128",
+        "shape": [4, 4],
+        "chunks": [2, 2],
+        "codec_spec": [{"name": "bytes"}],
+    },
+    # Rank-0 (scalar) array coverage.
+    {
+        "name": "f64_rank0",
+        "dtype": "float64",
+        "shape": [],
+        "chunks": [],
+        "codec_spec": [{"name": "bytes"}],
+    },
 ]
 
 
@@ -230,27 +305,44 @@ def generate_case(case: dict[str, Any], rng: np.random.Generator) -> dict[str, A
     case_dir.mkdir(parents=True, exist_ok=True)
 
     data = make_data(rng, dtype, shape)
-    codecs = build_codecs(codec_spec)
+    serializer, compressors = build_serializer_and_compressors(codec_spec)
 
-    if hasattr(zarr, "create_array"):
+    try:
+        # Current zarr-python stable API (zarr>=3.1): the array->bytes codec
+        # is `serializer`, bytes->bytes codecs are `compressors`. There is no
+        # single flat `codecs` kwarg anymore.
         arr = zarr.create_array(
             store=LocalStore(str(zarr_dir)),
             shape=shape,
             chunks=chunks,
             dtype=np.dtype(dtype),
-            codecs=codecs,
+            serializer=serializer,
+            compressors=compressors,
         )
-    else:
-        # zarr 3 alpha API: use zarr.create with mode='w'.
-        arr = zarr.create(
-            store=LocalStore(str(zarr_dir), mode="w"),
-            shape=shape,
-            chunks=chunks,
-            dtype=np.dtype(dtype),
-            codecs=codecs,
-            zarr_format=3,
-        )
-    arr[:] = data
+    except TypeError:
+        # Older zarr-python (3.0.x alpha/beta) accepted a single flat
+        # `codecs` list instead. Reconstruct it: the AB codec first, then
+        # the BB codecs in order (matches the v3 spec's flat `codecs` array;
+        # no AA/filter codecs are used by any case here).
+        flat_codecs = [serializer, *compressors]
+        if hasattr(zarr, "create_array"):
+            arr = zarr.create_array(
+                store=LocalStore(str(zarr_dir)),
+                shape=shape,
+                chunks=chunks,
+                dtype=np.dtype(dtype),
+                codecs=flat_codecs,
+            )
+        else:
+            arr = zarr.create(
+                store=LocalStore(str(zarr_dir), mode="w"),
+                shape=shape,
+                chunks=chunks,
+                dtype=np.dtype(dtype),
+                codecs=flat_codecs,
+                zarr_format=3,
+            )
+    arr[...] = data  # [...] (not [:]) so rank-0 (scalar) shapes work too
 
     np.save(npy_path, data, allow_pickle=False)
 

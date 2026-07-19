@@ -16,4 +16,5 @@ tidy:
 	go mod tidy
 
 fixtures:
-	cd testdata/gen && python generate.py
+	cd testdata/gen && uv run --python 3.11 --with-requirements requirements-v3.txt generate.py
+	cd testdata/gen && uv run --python 3.11 --with-requirements requirements-v2.txt generate_v2.py

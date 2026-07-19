@@ -115,7 +115,7 @@ func main() {
 | S3                               | `store/s3`                           | aws-sdk-go-v2; If-None-Match for atomic create |
 | Google Cloud Storage             | `store/gcs`                          |                                         |
 | Azure Blob                       | `store/azblob`                       |                                         |
-| LRU cache decorator              | `store/cache`                        | Bytes + entry caps, singleflight        |
+| LRU cache decorator              | `store/cache`                        | Bytes + entry caps, coalesces concurrent misses |
 
 Stores all satisfy `store.Store`; writable backends additionally satisfy
 `store.WritableStore`. A backend that supports atomic creates implements
@@ -147,14 +147,13 @@ automatic when the array-bytes codec implements `codec.PartialDecoder`
 
 ### Decompression cap
 
-`internal/declimit` enforces a global cap on decompressed output for the
-`gzip`, `zlib`, and `zstd` codecs. Default 1 GiB; tune with:
+A global cap on decompressed output guards `gzip`, `zlib`, `zstd`, and
+`blosc` against decompression bombs — a small encoded chunk that declares
+(or expands to) an enormous decoded size. Default 1 GiB; tune with:
 
 ```go
-import "github.com/rkm/zarr-go/internal/declimit"
-
-declimit.SetMax(8 << 30) // 8 GiB
-declimit.SetMax(0)        // disable
+zarr.SetMaxDecodedBytes(8 << 30) // 8 GiB
+zarr.SetMaxDecodedBytes(0)       // disable
 ```
 
 ## Concurrency

@@ -1,6 +1,4 @@
-run:
-  timeout: 3m
-
+version: "2"
 linters:
   enable:
     - errcheck
@@ -8,10 +6,39 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - misspell
+  settings:
+    errcheck:
+      # Deferred cleanup on an already-successful read path: the Close/Remove
+      # error is not actionable there (the primary result is already decided)
+      # and checking it would just add noise. Every other errcheck finding
+      # (a real, unhandled error) stays enabled.
+      exclude-functions:
+        - (*os.File).Close
+        - os.Remove
+        - (*cloud.google.com/go/storage.Reader).Close
+        - (io.ReadCloser).Close
+        - (io.Closer).Close
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - testdata
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-
-issues:
-  exclude-dirs:
-    - testdata
+  exclusions:
+    generated: lax
+    paths:
+      - testdata
+      - third_party$
+      - builtin$
+      - examples$
