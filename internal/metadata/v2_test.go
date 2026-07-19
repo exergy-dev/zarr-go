@@ -301,6 +301,94 @@ func TestDecodeArrayV2_FillValuePassthrough(t *testing.T) {
 	}
 }
 
+// TestDecodeArrayV2_FillValueLeniency checks normalizeV2FillValue rewrites
+// the lenient encodings real-world v2 writers emit — float-formatted ints,
+// 0/1 for bool — into the strict form the shared v3 fill-value parser
+// expects, while leaving float/complex/null encodings untouched.
+func TestDecodeArrayV2_FillValueLeniency(t *testing.T) {
+	cases := []struct {
+		name  string
+		dtype string
+		fv    string
+		want  string
+	}{
+		{"int_float_formatted", "<i4", `0.0`, `0`},
+		{"int_float_formatted_nonzero", "<i4", `5.0`, `5`},
+		{"bool_zero", "|b1", `0`, `false`},
+		{"bool_one", "|b1", `1`, `true`},
+		{"bool_already_strict", "|b1", `true`, `true`},
+		{"int_already_strict", "<i4", `7`, `7`},
+		{"float_untouched", "<f4", `3.14`, `3.14`},
+		{"null_untouched", "<i4", `null`, `null`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{
+				"zarr_format": 2,
+				"shape": [1],
+				"chunks": [1],
+				"dtype": "` + tc.dtype + `",
+				"compressor": null,
+				"filters": null,
+				"fill_value": ` + tc.fv + `,
+				"order": "C"
+			}`)
+			m, err := DecodeArrayV2(raw)
+			if err != nil {
+				t.Fatalf("DecodeArrayV2: %v", err)
+			}
+			if string(m.FillValue) != tc.want {
+				t.Errorf("FillValue = %q, want %q", string(m.FillValue), tc.want)
+			}
+		})
+	}
+}
+
+// TestDecodeArrayV2_RejectNegativeShape checks that v2's shared validation
+// (routed through validateArrayMeta, the same validator DecodeArray uses)
+// catches a negative shape dimension — a gap that existed when v2 had its
+// own, less thorough, inline checks.
+func TestDecodeArrayV2_RejectNegativeShape(t *testing.T) {
+	raw := []byte(`{
+		"zarr_format": 2,
+		"shape": [-4],
+		"chunks": [1],
+		"dtype": "<f4",
+		"compressor": null,
+		"filters": null,
+		"fill_value": 0,
+		"order": "C"
+	}`)
+	if _, err := DecodeArrayV2(raw); err == nil {
+		t.Fatal("expected error for negative shape")
+	}
+}
+
+// TestDecodeArrayV2_Rank0 checks a v2 document with an empty ("[]") shape —
+// zarr-python's convention for a scalar array — is accepted.
+func TestDecodeArrayV2_Rank0(t *testing.T) {
+	raw := []byte(`{
+		"zarr_format": 2,
+		"shape": [],
+		"chunks": [],
+		"dtype": "<f8",
+		"compressor": null,
+		"filters": null,
+		"fill_value": 0,
+		"order": "C"
+	}`)
+	m, err := DecodeArrayV2(raw)
+	if err != nil {
+		t.Fatalf("DecodeArrayV2 rank-0: %v", err)
+	}
+	if len(m.Shape) != 0 {
+		t.Fatalf("Shape = %v, want empty", m.Shape)
+	}
+	if got := ChunkKey("scalar", m.ChunkKeyEnc, nil); got != "scalar/0" {
+		t.Fatalf("ChunkKey = %q, want \"scalar/0\"", got)
+	}
+}
+
 func TestDecodeGroupV2(t *testing.T) {
 	raw := []byte(`{"zarr_format": 2}`)
 	g, err := DecodeGroupV2(raw)

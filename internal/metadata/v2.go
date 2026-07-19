@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 
 	"github.com/rkm/zarr-go/codec"
 )
@@ -93,16 +95,11 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 	if v.ZarrFormat != 2 {
 		return nil, fmt.Errorf("not a v2 array document (zarr_format=%d)", v.ZarrFormat)
 	}
-	if len(v.Shape) == 0 {
+	if v.Shape == nil {
 		return nil, fmt.Errorf("v2 array shape missing")
 	}
 	if len(v.Chunks) != len(v.Shape) {
 		return nil, fmt.Errorf("v2 chunks rank %d != shape rank %d", len(v.Chunks), len(v.Shape))
-	}
-	for i, n := range v.Chunks {
-		if n <= 0 {
-			return nil, fmt.Errorf("v2 chunks[%d] must be positive, got %d", i, n)
-		}
 	}
 
 	// Order: only "C" supported in M2. Empty defaults to "C" per the v2 spec.
@@ -160,23 +157,28 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 		return nil, fmt.Errorf("v2 dimension_separator %q invalid (must be \".\" or \"/\")", sep)
 	}
 
-	// Fill value: pass-through. v2 special encodings ("NaN", "Infinity",
-	// "-Infinity") happen to also be the v3 form for floats; numeric/null
-	// values pass through unchanged. If absent, default to JSON null.
+	// Fill value: v2 special encodings ("NaN", "Infinity", "-Infinity")
+	// happen to also be the v3 form for floats and pass through unchanged.
+	// If absent, default to JSON null (v2's "no fill" convention — unlike
+	// v3, DecodeArrayV2 does not require fill_value to be present/non-null).
+	// normalizeV2FillValue additionally rewrites the lenient encodings some
+	// real-world v2 writers emit (float-formatted ints, 0/1 for bool) into
+	// the strict form the shared fill-value parser expects.
 	fill := v.FillValue
 	if len(fill) == 0 {
 		fill = json.RawMessage("null")
 	}
+	fill = normalizeV2FillValue(fill, entry.v3Name)
 
 	out := &ArrayMeta{
 		ZarrFormat: 3,
 		NodeType:   "array",
-		Shape:      append([]int64(nil), v.Shape...),
+		Shape:      cloneInt64(v.Shape),
 		DataType:   entry.v3Name,
 		ChunkGrid: ChunkGrid{
 			Name: "regular",
 			Configuration: ChunkGridRegularCfg{
-				ChunkShape: append([]int64(nil), v.Chunks...),
+				ChunkShape: cloneInt64(v.Chunks),
 			},
 		},
 		ChunkKeyEnc: ChunkKeyEncoding{
@@ -188,7 +190,40 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 		FillValue: fill,
 		Codecs:    codecs,
 	}
+	if err := validateArrayMeta(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// normalizeV2FillValue rewrites lenient v2-style fill_value encodings into
+// the strict v3 form zarr.parseFillValue expects, matching real-world v2
+// writers: some emit integer fill values as float literals (e.g. "0.0" for
+// an int32 array) or bool fill values as 0/1 rather than false/true. null
+// and anything that doesn't match one of these lenient shapes passes through
+// unchanged (float/complex dtypes already use the v3-compatible encoding).
+func normalizeV2FillValue(raw json.RawMessage, v3Dtype string) json.RawMessage {
+	if isJSONNull(raw) {
+		return raw
+	}
+	switch v3Dtype {
+	case "bool":
+		var f float64
+		if err := json.Unmarshal(raw, &f); err == nil {
+			switch f {
+			case 0:
+				return json.RawMessage("false")
+			case 1:
+				return json.RawMessage("true")
+			}
+		}
+	case "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64":
+		var f float64
+		if err := json.Unmarshal(raw, &f); err == nil && f == math.Trunc(f) {
+			return json.RawMessage(strconv.FormatInt(int64(f), 10))
+		}
+	}
+	return raw
 }
 
 // DecodeGroupV2 parses a .zgroup document and returns a v3-shaped GroupMeta.

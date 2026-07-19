@@ -124,6 +124,78 @@ var knownGroupFields = map[string]struct{}{
 	"attributes":  {},
 }
 
+// cloneInt64 returns a non-nil copy of s, even when s is empty or nil. Used
+// for Shape/ChunkShape so a rank-0 array's dims marshal as JSON "[]" rather
+// than "null" — append([]int64(nil), s...) would silently stay nil when s
+// has zero elements (nil or not), and DecodeArray's shape-presence check
+// treats a null shape the same as a missing one.
+func cloneInt64(s []int64) []int64 {
+	out := make([]int64, len(s))
+	copy(out, s)
+	return out
+}
+
+// defaultSeparator returns the spec default chunk-key separator for the
+// given chunk_key_encoding name: "." for "v2", "/" for everything else
+// (including "default" and the zero value).
+func defaultSeparator(encName string) string {
+	if encName == "v2" {
+		return "."
+	}
+	return "/"
+}
+
+// validateArrayMeta checks structural invariants shared by v2 and v3 array
+// metadata: non-negative shape, a supported chunk_grid whose rank and
+// positivity match the array shape. Called by DecodeArray after its
+// v3-JSON-specific field validation and by DecodeArrayV2 after v2->v3
+// translation, so a validation gap fixed for one format can't silently
+// persist for the other.
+func validateArrayMeta(m *ArrayMeta) error {
+	for i, d := range m.Shape {
+		if d < 0 {
+			return fmt.Errorf("shape[%d] must be non-negative, got %d", i, d)
+		}
+	}
+	if m.ChunkGrid.Name != "regular" {
+		return fmt.Errorf("unsupported chunk_grid %q (only the regular grid is supported)", m.ChunkGrid.Name)
+	}
+	if len(m.ChunkGrid.Configuration.ChunkShape) != len(m.Shape) {
+		return fmt.Errorf("chunk_shape rank %d != array rank %d",
+			len(m.ChunkGrid.Configuration.ChunkShape), len(m.Shape))
+	}
+	for i, n := range m.ChunkGrid.Configuration.ChunkShape {
+		if n <= 0 {
+			return fmt.Errorf("chunk_shape[%d] must be positive, got %d", i, n)
+		}
+	}
+	return nil
+}
+
+// checkMustUnderstand enforces the v3 spec's extension-field contract: any
+// top-level field this implementation doesn't recognize must be a JSON
+// object carrying "must_understand": false, signaling that it is safe to
+// ignore. Anything else — a non-object value, or an object without an
+// explicit "must_understand": false — is rejected, since silently ignoring
+// it could mean missing an extension that changes how the data must be
+// interpreted.
+func checkMustUnderstand(key string, raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("unknown field %q: unrecognized extensions must be an object with \"must_understand\": false", key)
+	}
+	var obj struct {
+		MustUnderstand *bool `json:"must_understand"`
+	}
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return fmt.Errorf("unknown field %q: %w", key, err)
+	}
+	if obj.MustUnderstand == nil || *obj.MustUnderstand {
+		return fmt.Errorf("unknown field %q: unrecognized extension requires explicit \"must_understand\": false", key)
+	}
+	return nil
+}
+
 // DecodeArray parses a zarr.json array document and validates required fields.
 func DecodeArray(raw []byte) (*ArrayMeta, error) {
 	fields, err := parseTopLevel(raw)
@@ -138,6 +210,9 @@ func DecodeArray(raw []byte) (*ArrayMeta, error) {
 		if _, ok := knownArrayFields[k]; ok {
 			continue
 		}
+		if err := checkMustUnderstand(k, v); err != nil {
+			return nil, fmt.Errorf("parse array meta: %w", err)
+		}
 		if m.Extra == nil {
 			m.Extra = make(map[string]json.RawMessage, 4)
 		}
@@ -146,35 +221,31 @@ func DecodeArray(raw []byte) (*ArrayMeta, error) {
 	if m.ZarrFormat != 3 || m.NodeType != "array" {
 		return nil, fmt.Errorf("not a v3 array document")
 	}
-	if len(m.Shape) == 0 {
+	if m.Shape == nil {
 		return nil, fmt.Errorf("array shape missing")
 	}
-	for i, d := range m.Shape {
-		if d < 0 {
-			return nil, fmt.Errorf("shape[%d] must be non-negative, got %d", i, d)
-		}
+	if m.FillValue == nil || isJSONNull(m.FillValue) {
+		return nil, fmt.Errorf("fill_value is required")
 	}
-	if m.ChunkGrid.Name != "regular" {
-		return nil, fmt.Errorf("unsupported chunk_grid %q (only the regular grid is supported)", m.ChunkGrid.Name)
+	if len(m.Dimensions) > 0 && len(m.Dimensions) != len(m.Shape) {
+		return nil, fmt.Errorf("dimension_names length %d != array rank %d", len(m.Dimensions), len(m.Shape))
 	}
-	if len(m.ChunkGrid.Configuration.ChunkShape) != len(m.Shape) {
-		return nil, fmt.Errorf("chunk_shape rank %d != array rank %d",
-			len(m.ChunkGrid.Configuration.ChunkShape), len(m.Shape))
-	}
-	for i, n := range m.ChunkGrid.Configuration.ChunkShape {
-		if n <= 0 {
-			return nil, fmt.Errorf("chunk_shape[%d] must be positive, got %d", i, n)
-		}
+	if err := validateArrayMeta(m); err != nil {
+		return nil, err
 	}
 	if err := validateStorageTransformers(m.StorageTrans); err != nil {
 		return nil, err
 	}
 	if m.ChunkKeyEnc.Name == "" {
 		m.ChunkKeyEnc.Name = "default"
-		m.ChunkKeyEnc.Configuration.Separator = "/"
+	}
+	switch m.ChunkKeyEnc.Name {
+	case "default", "v2":
+	default:
+		return nil, fmt.Errorf("unsupported chunk_key_encoding.name %q (only \"default\" and \"v2\" are supported)", m.ChunkKeyEnc.Name)
 	}
 	if m.ChunkKeyEnc.Configuration.Separator == "" {
-		m.ChunkKeyEnc.Configuration.Separator = "/"
+		m.ChunkKeyEnc.Configuration.Separator = defaultSeparator(m.ChunkKeyEnc.Name)
 	}
 	return m, nil
 }
@@ -248,10 +319,10 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 		out.ChunkKeyEnc.Name = "default"
 	}
 	if out.ChunkKeyEnc.Configuration.Separator == "" {
-		out.ChunkKeyEnc.Configuration.Separator = "/"
+		out.ChunkKeyEnc.Configuration.Separator = defaultSeparator(out.ChunkKeyEnc.Name)
 	}
 	if len(out.FillValue) == 0 {
-		out.FillValue = json.RawMessage("0")
+		out.FillValue = defaultFillValueForDtype(out.DataType)
 	}
 	// Build the raw object as a sorted map[string]json.RawMessage so the
 	// final JSON is reproducible regardless of Go's map-iteration order.
@@ -344,6 +415,23 @@ func assignField(fields map[string]json.RawMessage, key string, v any) error {
 	}
 	fields[key] = raw
 	return nil
+}
+
+// defaultFillValueForDtype returns the v3 JSON literal MarshalArray falls
+// back to when out.FillValue is empty: false for bool, a 2-element zero
+// array for complex dtypes, 0 otherwise. Kept in sync with the zarr package's
+// CreateArray default (zarr.defaultFillValueJSON), which normally supplies a
+// non-empty FillValue before MarshalArray ever sees it — this is a backstop
+// for direct callers of MarshalArray.
+func defaultFillValueForDtype(dataType string) json.RawMessage {
+	switch dataType {
+	case "bool":
+		return json.RawMessage("false")
+	case "complex64", "complex128":
+		return json.RawMessage("[0,0]")
+	default:
+		return json.RawMessage("0")
+	}
 }
 
 // marshalSortedRaw emits a JSON object whose keys appear in sorted order, with
@@ -474,6 +562,9 @@ func DecodeGroup(raw []byte) (*GroupMeta, error) {
 		if _, ok := knownGroupFields[k]; ok {
 			continue
 		}
+		if err := checkMustUnderstand(k, v); err != nil {
+			return nil, fmt.Errorf("parse group meta: %w", err)
+		}
 		if m.Extra == nil {
 			m.Extra = make(map[string]json.RawMessage, 4)
 		}
@@ -487,10 +578,19 @@ func DecodeGroup(raw []byte) (*GroupMeta, error) {
 func ChunkKey(arrayPath string, enc ChunkKeyEncoding, coord []int64) string {
 	sep := enc.Configuration.Separator
 	if sep == "" {
-		sep = "/"
+		sep = defaultSeparator(enc.Name)
 	}
 	// v3 default: <array>/c/i0/i1/.../iN with sep between indices
 	// v3 v2-compat: <array>/<i0><sep><i1>...
+	// Rank-0 (scalar) arrays have no coordinate components at all: the
+	// default encoding's key is just ".../c" and the v2 encoding's is the
+	// single literal index "0", matching zarr-python's convention.
+	if len(coord) == 0 {
+		if enc.Name == "v2" {
+			return arrayPath + "/0"
+		}
+		return arrayPath + "/c"
+	}
 	var prefix string
 	switch enc.Name {
 	case "v2":

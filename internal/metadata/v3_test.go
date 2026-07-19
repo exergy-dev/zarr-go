@@ -54,7 +54,9 @@ func TestMarshalArrayDeterministic(t *testing.T) {
 }
 
 // TestRoundTripExtraField checks that unknown top-level v3 fields survive a
-// decode→marshal cycle and end up in the rendered JSON.
+// decode→marshal cycle and end up in the rendered JSON. Per the v3 spec,
+// unrecognized extension fields are only accepted when they carry an
+// explicit "must_understand": false.
 func TestRoundTripExtraField(t *testing.T) {
 	src := []byte(`{
 		"zarr_format": 3,
@@ -65,7 +67,7 @@ func TestRoundTripExtraField(t *testing.T) {
 		"chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
 		"fill_value": 0,
 		"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
-		"future_field": {"version": 99, "knobs": [1, 2, 3]}
+		"future_field": {"must_understand": false, "version": 99, "knobs": [1, 2, 3]}
 	}`)
 	m, err := DecodeArray(src)
 	if err != nil {
@@ -88,6 +90,173 @@ func TestRoundTripExtraField(t *testing.T) {
 	}
 	if _, ok := m2.Extra["future_field"]; !ok {
 		t.Fatalf("Extra missing on round-trip: %v", m2.Extra)
+	}
+}
+
+// TestRejectMustUnderstandExtension checks the negative side of the v3
+// extension-field contract: an unrecognized field without an explicit
+// "must_understand": false must fail to open, since silently ignoring it
+// could mean missing an extension that changes how the data is interpreted.
+func TestRejectMustUnderstandExtension(t *testing.T) {
+	base := `{
+		"zarr_format": 3,
+		"node_type": "array",
+		"shape": [4],
+		"data_type": "float32",
+		"chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2]}},
+		"fill_value": 0,
+		"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+	`
+	cases := []struct {
+		name string
+		tail string
+	}{
+		{"no must_understand key", `, "future_field": {"version": 99}}`},
+		{"must_understand true", `, "future_field": {"must_understand": true}}`},
+		{"non-object value", `, "future_field": "opaque"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeArray([]byte(base + tc.tail)); err == nil {
+				t.Fatal("expected error for unrecognized extension field, got nil")
+			}
+		})
+	}
+}
+
+// v3ArrayDoc builds a minimal valid v3 array document, with chunk_key_encoding
+// and fill_value overridable so tests can probe those fields specifically.
+func v3ArrayDoc(t *testing.T, chunkKeyEnc, fillValue string) []byte {
+	t.Helper()
+	tail := ""
+	if chunkKeyEnc != "" {
+		tail = `, "chunk_key_encoding": ` + chunkKeyEnc
+	}
+	fv := `0`
+	if fillValue != "" {
+		fv = fillValue
+	}
+	return []byte(`{
+		"zarr_format": 3,
+		"node_type": "array",
+		"shape": [4],
+		"data_type": "float32",
+		"chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2]}},
+		"fill_value": ` + fv + tail + `,
+		"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+	}`)
+}
+
+// TestDecodeArrayV2ChunkKeyDefaultSeparator checks that a v3 document
+// selecting the "v2" chunk_key_encoding with no explicit separator defaults
+// to "." (the v2 convention), not "/" (the "default" encoding's separator).
+// Getting this wrong means chunks written by another v3 implementation at
+// "arr/0.1" are looked up at "arr/0/1", missed, and silently read back as
+// fill — no error.
+func TestDecodeArrayV2ChunkKeyDefaultSeparator(t *testing.T) {
+	m, err := DecodeArray(v3ArrayDoc(t, `{"name": "v2"}`, ""))
+	if err != nil {
+		t.Fatalf("DecodeArray: %v", err)
+	}
+	if m.ChunkKeyEnc.Configuration.Separator != "." {
+		t.Fatalf("separator = %q, want \".\"", m.ChunkKeyEnc.Configuration.Separator)
+	}
+	if got := ChunkKey("arr", m.ChunkKeyEnc, []int64{0, 1}); got != "arr/0.1" {
+		t.Fatalf("ChunkKey = %q, want \"arr/0.1\"", got)
+	}
+}
+
+// TestDecodeArrayRejectsUnknownChunkKeyEncoding checks that an unrecognized
+// chunk_key_encoding.name errors instead of silently falling back to the
+// "default" layout, which would cause every chunk lookup to miss and the
+// array to read back as all-fill with no error.
+func TestDecodeArrayRejectsUnknownChunkKeyEncoding(t *testing.T) {
+	if _, err := DecodeArray(v3ArrayDoc(t, `{"name": "some_future_encoding"}`, "")); err == nil {
+		t.Fatal("expected error for unknown chunk_key_encoding.name")
+	}
+}
+
+// TestDecodeArrayRequiresFillValue checks that a missing or null fill_value
+// is rejected for v3 documents (fill_value is a required member per spec;
+// null is not a valid value for any core dtype).
+func TestDecodeArrayRequiresFillValue(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		src := []byte(`{
+			"zarr_format": 3,
+			"node_type": "array",
+			"shape": [4],
+			"data_type": "float32",
+			"chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2]}},
+			"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+		}`)
+		if _, err := DecodeArray(src); err == nil {
+			t.Fatal("expected error for missing fill_value")
+		}
+	})
+	t.Run("null", func(t *testing.T) {
+		if _, err := DecodeArray(v3ArrayDoc(t, "", "null")); err == nil {
+			t.Fatal("expected error for null fill_value")
+		}
+	})
+}
+
+// TestDecodeArrayRank0 checks a v3 document with an empty ("[]") shape —
+// legal per spec as a rank-0 (scalar) array — is accepted, not rejected as
+// "shape missing".
+func TestDecodeArrayRank0(t *testing.T) {
+	src := []byte(`{
+		"zarr_format": 3,
+		"node_type": "array",
+		"shape": [],
+		"data_type": "float64",
+		"chunk_grid": {"name": "regular", "configuration": {"chunk_shape": []}},
+		"fill_value": 0,
+		"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+	}`)
+	m, err := DecodeArray(src)
+	if err != nil {
+		t.Fatalf("DecodeArray rank-0: %v", err)
+	}
+	if len(m.Shape) != 0 {
+		t.Fatalf("Shape = %v, want empty", m.Shape)
+	}
+	if got := ChunkKey("scalar", m.ChunkKeyEnc, nil); got != "scalar/c" {
+		t.Fatalf("ChunkKey = %q, want \"scalar/c\"", got)
+	}
+}
+
+// TestDecodeArrayShapeMissingVsEmpty checks the distinction DecodeArrayRank0
+// relies on: shape absent entirely must still be rejected (only an explicit
+// "[]" is a valid rank-0 shape).
+func TestDecodeArrayShapeMissingVsEmpty(t *testing.T) {
+	src := []byte(`{
+		"zarr_format": 3,
+		"node_type": "array",
+		"data_type": "float64",
+		"chunk_grid": {"name": "regular", "configuration": {"chunk_shape": []}},
+		"fill_value": 0,
+		"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+	}`)
+	if _, err := DecodeArray(src); err == nil {
+		t.Fatal("expected error for missing shape")
+	}
+}
+
+// TestDecodeArrayDimensionNamesLengthMismatch checks dimension_names is
+// validated against the array rank when present.
+func TestDecodeArrayDimensionNamesLengthMismatch(t *testing.T) {
+	src := []byte(`{
+		"zarr_format": 3,
+		"node_type": "array",
+		"shape": [4, 4],
+		"data_type": "float32",
+		"chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [2, 2]}},
+		"fill_value": 0,
+		"codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+		"dimension_names": ["x"]
+	}`)
+	if _, err := DecodeArray(src); err == nil {
+		t.Fatal("expected error for dimension_names length != rank")
 	}
 }
 
