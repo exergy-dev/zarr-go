@@ -12,8 +12,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/rkm/zarr-go/codec"
+	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/rkm/zarr-go/internal/ndcopy"
 )
 
 // emptyMarker is the (offset, length) value used in the index for an inner
@@ -38,6 +41,9 @@ type Codec struct {
 
 	inner *codec.Pipeline
 	index *codec.Pipeline
+
+	idxSizeMu    sync.Mutex
+	idxSizeCache map[int64]int64 // n inner chunks -> encoded index trailer size
 }
 
 type configJSON struct {
@@ -99,6 +105,12 @@ func (c *Codec) Configure(raw json.RawMessage) error {
 	if err != nil {
 		return fmt.Errorf("sharding_indexed: build index pipeline: %w", err)
 	}
+	if len(index.AA) != 0 {
+		// encodeIndex/decodeIndex only ever invoke index.AB and index.BB —
+		// an array→array codec here would be silently skipped rather than
+		// applied, which is worse than rejecting it up front.
+		return fmt.Errorf("sharding_indexed: array→array codecs are not supported in index_codecs")
+	}
 	c.index = index
 
 	return nil
@@ -111,23 +123,6 @@ func defaultIndexCodecs() []codec.Spec {
 		{Name: "bytes", Configuration: json.RawMessage(`{"endian":"little"}`)},
 		{Name: "crc32c"},
 	}
-}
-
-// elemSize returns the byte size of one element of the named dtype.
-func elemSize(dtype string) int {
-	switch dtype {
-	case "bool", "int8", "uint8":
-		return 1
-	case "int16", "uint16", "float16":
-		return 2
-	case "int32", "uint32", "float32":
-		return 4
-	case "int64", "uint64", "float64", "complex64":
-		return 8
-	case "complex128":
-		return 16
-	}
-	return 0
 }
 
 // elementCount returns product(shape). An empty shape (scalar) yields 1.
@@ -169,9 +164,25 @@ func numInner(grid []int64) int64 {
 
 // indexEncodedSize returns the byte length of the encoded index trailer for n
 // inner chunks. It encodes a dummy index of the right plain size to discover
-// the trailer length added by the index pipeline.
+// the trailer length added by the index pipeline, caching the result per n
+// since a given Codec only ever sees a handful of distinct n (the full grid
+// size, plus edge-shard grid sizes).
 func (c *Codec) indexEncodedSize(n int64) (int64, error) {
-	dummy := make([]byte, n*16)
+	c.idxSizeMu.Lock()
+	if v, ok := c.idxSizeCache[n]; ok {
+		c.idxSizeMu.Unlock()
+		return v, nil
+	}
+	c.idxSizeMu.Unlock()
+
+	if n < 0 || n > math.MaxInt64/16 {
+		return 0, fmt.Errorf("sharding_indexed: index entry count %d out of range", n)
+	}
+	plainSize := n * 16
+	if err := declimit.CheckDeclaredSize(plainSize); err != nil {
+		return 0, fmt.Errorf("sharding_indexed: index plain size: %w", err)
+	}
+	dummy := make([]byte, plainSize)
 	chunk := codec.ArrayChunk{
 		Shape: []int64{n * 2},
 		Dtype: "uint64",
@@ -181,7 +192,16 @@ func (c *Codec) indexEncodedSize(n int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int64(len(encoded)), nil
+	size := int64(len(encoded))
+
+	c.idxSizeMu.Lock()
+	if c.idxSizeCache == nil {
+		c.idxSizeCache = make(map[int64]int64)
+	}
+	c.idxSizeCache[n] = size
+	c.idxSizeMu.Unlock()
+
+	return size, nil
 }
 
 // encodeIndex runs the index pipeline (AB + BB) on an ArrayChunk view of the
@@ -270,106 +290,34 @@ func nextCoord(coord, grid []int64) bool {
 	return false
 }
 
-// copyRegion copies an inner chunk's element bytes into the outer shard buffer
-// at the given grid coordinate. Both buffers are row-major; the inner chunk has
-// shape innerShape, the outer has shape outerShape, and elements are esz bytes.
-func copyRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape []int64, inner []byte, esz int) {
-	rank := len(outerShape)
-	// Compute element strides.
-	outerStrides := make([]int64, rank)
-	innerStrides := make([]int64, rank)
-	outerStrides[rank-1] = 1
-	innerStrides[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		outerStrides[i] = outerStrides[i+1] * outerShape[i+1]
-		innerStrides[i] = innerStrides[i+1] * innerShape[i+1]
+// copyRegion copies an inner chunk's element bytes into the outer shard
+// buffer at the given grid coordinate, via the shared ndcopy kernel. Both
+// buffers are row-major; the inner chunk has shape innerShape, the outer has
+// shape outerShape, and elements are esz bytes. sc/dstRegion/srcRegion are
+// caller-owned scratch (sized for outerShape's rank), reused across many
+// calls in a DecodeAB loop to avoid a per-inner-chunk allocation.
+func copyRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape []int64, inner []byte, esz int, sc *ndcopy.Scratch, dstRegion, srcRegion []ndcopy.Region) {
+	for i := range outerShape {
+		origin := coord[i] * chunkShape[i]
+		dstRegion[i] = ndcopy.Region{Start: origin, Stop: origin + innerShape[i], Step: 1}
+		srcRegion[i] = ndcopy.Region{Start: 0, Stop: innerShape[i], Step: 1}
 	}
-	// Origin element offset of this inner chunk inside the outer buffer.
-	var originElems int64
-	for i := 0; i < rank; i++ {
-		originElems += coord[i] * chunkShape[i] * outerStrides[i]
-	}
-	// Walk the inner chunk in row-major order, copying contiguous rows
-	// (the innermost dim) at a time.
-	rowElems := innerShape[rank-1]
-	rowBytes := rowElems * int64(esz)
-	pos := make([]int64, rank-1) // per-axis position within the inner chunk
-	for {
-		// Compute the element offsets for this row.
-		var innerElemOff, outerElemOff int64
-		for i := 0; i < rank-1; i++ {
-			innerElemOff += pos[i] * innerStrides[i]
-			outerElemOff += pos[i] * outerStrides[i]
-		}
-		outerElemOff += originElems
-		copy(outer[outerElemOff*int64(esz):outerElemOff*int64(esz)+rowBytes],
-			inner[innerElemOff*int64(esz):innerElemOff*int64(esz)+rowBytes])
-		// Advance the position vector (row-major over the leading dims).
-		if rank == 1 {
-			return
-		}
-		i := rank - 2
-		for i >= 0 {
-			pos[i]++
-			if pos[i] < innerShape[i] {
-				break
-			}
-			pos[i] = 0
-			i--
-		}
-		if i < 0 {
-			return
-		}
-	}
+	ndcopy.Copy(outer, outerShape, dstRegion, inner, innerShape, srcRegion, esz, sc)
 }
 
 // extractRegion does the inverse of copyRegion: it pulls an inner chunk's
-// bytes out of the outer shard buffer.
-func extractRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape []int64, esz int) []byte {
-	rank := len(outerShape)
-	innerElems := elementCount(innerShape)
-	out := make([]byte, innerElems*int64(esz))
-
-	outerStrides := make([]int64, rank)
-	innerStrides := make([]int64, rank)
-	outerStrides[rank-1] = 1
-	innerStrides[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		outerStrides[i] = outerStrides[i+1] * outerShape[i+1]
-		innerStrides[i] = innerStrides[i+1] * innerShape[i+1]
+// bytes out of the outer shard buffer. sc/dstRegion/srcRegion are
+// caller-owned scratch (sized for outerShape's rank), reused across many
+// calls in an EncodeAB loop.
+func extractRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape []int64, esz int, sc *ndcopy.Scratch, dstRegion, srcRegion []ndcopy.Region) []byte {
+	out := make([]byte, elementCount(innerShape)*int64(esz))
+	for i := range outerShape {
+		origin := coord[i] * chunkShape[i]
+		srcRegion[i] = ndcopy.Region{Start: origin, Stop: origin + innerShape[i], Step: 1}
+		dstRegion[i] = ndcopy.Region{Start: 0, Stop: innerShape[i], Step: 1}
 	}
-	var originElems int64
-	for i := 0; i < rank; i++ {
-		originElems += coord[i] * chunkShape[i] * outerStrides[i]
-	}
-	rowElems := innerShape[rank-1]
-	rowBytes := rowElems * int64(esz)
-	pos := make([]int64, rank-1)
-	for {
-		var innerElemOff, outerElemOff int64
-		for i := 0; i < rank-1; i++ {
-			innerElemOff += pos[i] * innerStrides[i]
-			outerElemOff += pos[i] * outerStrides[i]
-		}
-		outerElemOff += originElems
-		copy(out[innerElemOff*int64(esz):innerElemOff*int64(esz)+rowBytes],
-			outer[outerElemOff*int64(esz):outerElemOff*int64(esz)+rowBytes])
-		if rank == 1 {
-			return out
-		}
-		i := rank - 2
-		for i >= 0 {
-			pos[i]++
-			if pos[i] < innerShape[i] {
-				break
-			}
-			pos[i] = 0
-			i--
-		}
-		if i < 0 {
-			return out
-		}
-	}
+	ndcopy.Copy(out, innerShape, dstRegion, outer, outerShape, srcRegion, esz, sc)
+	return out
 }
 
 // isZero reports whether b is all zero bytes.
@@ -428,7 +376,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	if c.inner == nil || c.index == nil {
 		return fmt.Errorf("sharding_indexed: codec not configured")
 	}
-	esz := elemSize(out.Dtype)
+	esz := codec.DtypeSize(out.Dtype)
 	if esz == 0 {
 		return fmt.Errorf("sharding_indexed: unsupported dtype %q", out.Dtype)
 	}
@@ -477,7 +425,11 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	}
 	writeFill(out.Data, fill)
 
-	coord := make([]int64, len(grid))
+	rank := len(grid)
+	ndSc := ndcopy.NewScratch(rank)
+	dstRegion := make([]ndcopy.Region, rank)
+	srcRegion := make([]ndcopy.Region, rank)
+	coord := make([]int64, rank)
 	for i := int64(0); i < n; i++ {
 		off := entries[2*i]
 		ln := entries[2*i+1]
@@ -506,7 +458,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 			return fmt.Errorf("sharding_indexed: inner chunk %d data size %d != expected %d",
 				i, len(innerChunk.Data), expected)
 		}
-		copyRegion(out.Data, out.Shape, coord, c.ChunkShape, innerShape, innerChunk.Data, esz)
+		copyRegion(out.Data, out.Shape, coord, c.ChunkShape, innerShape, innerChunk.Data, esz, ndSc, dstRegion, srcRegion)
 		if !nextCoord(coord, grid) && i != n-1 {
 			return fmt.Errorf("sharding_indexed: ran out of grid coords")
 		}
@@ -527,7 +479,7 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	if c.inner == nil || c.index == nil {
 		return nil, fmt.Errorf("sharding_indexed: codec not configured")
 	}
-	esz := elemSize(in.Dtype)
+	esz := codec.DtypeSize(in.Dtype)
 	if esz == 0 {
 		return nil, fmt.Errorf("sharding_indexed: unsupported dtype %q", in.Dtype)
 	}
@@ -566,10 +518,14 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 		return nil, fmt.Errorf("sharding_indexed: fill size %d != element size %d", len(fill), esz)
 	}
 
-	coord := make([]int64, len(grid))
+	rank := len(grid)
+	ndSc := ndcopy.NewScratch(rank)
+	dstRegion := make([]ndcopy.Region, rank)
+	srcRegion := make([]ndcopy.Region, rank)
+	coord := make([]int64, rank)
 	for i := int64(0); i < n; i++ {
 		innerShape := innerShapeAt(coord, c.ChunkShape, in.Shape)
-		innerBytes := extractRegion(in.Data, in.Shape, coord, c.ChunkShape, innerShape, esz)
+		innerBytes := extractRegion(in.Data, in.Shape, coord, c.ChunkShape, innerShape, esz, ndSc, dstRegion, srcRegion)
 		if matchesFill(innerBytes, fill) {
 			entries[2*i] = emptyMarker
 			entries[2*i+1] = emptyMarker
@@ -580,7 +536,7 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 				Data:  innerBytes,
 				Fill:  fill,
 			}
-			encoded, err := c.encodeInner(innerChunk)
+			encoded, err := c.inner.Encode(innerChunk)
 			if err != nil {
 				return nil, fmt.Errorf("sharding_indexed: encode inner chunk %d: %w", i, err)
 			}
@@ -612,30 +568,6 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 		out = append(out, indexBytes...)
 	}
 	return out, nil
-}
-
-// encodeInner runs the inner pipeline in forward order on a single inner chunk.
-// (The Pipeline type only exposes Decode publicly, so we implement Encode here.)
-func (c *Codec) encodeInner(in codec.ArrayChunk) ([]byte, error) {
-	cur := in
-	for _, aa := range c.inner.AA {
-		next := codec.ArrayChunk{Shape: cur.Shape, Dtype: cur.Dtype}
-		if err := aa.EncodeAA(cur, &next); err != nil {
-			return nil, fmt.Errorf("inner %s: %w", aa.Name(), err)
-		}
-		cur = next
-	}
-	buf, err := c.inner.AB.EncodeAB(cur)
-	if err != nil {
-		return nil, fmt.Errorf("inner %s: %w", c.inner.AB.Name(), err)
-	}
-	for _, bb := range c.inner.BB {
-		buf, err = bb.EncodeBB(buf)
-		if err != nil {
-			return nil, fmt.Errorf("inner %s: %w", bb.Name(), err)
-		}
-	}
-	return buf, nil
 }
 
 func init() {

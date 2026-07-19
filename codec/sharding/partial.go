@@ -10,9 +10,9 @@
 //  4. Coalesces their byte ranges (using internal/scheduler.CoalesceRanges)
 //     and issues one range read per coalesced span.
 //  5. Decodes only those inner chunks via the configured inner pipeline.
-//  6. Copies their intersecting sub-regions into outBuf.
+//  6. Copies their intersecting sub-regions into req.Out.
 //
-// outBuf must be pre-sized to product(region lengths) * element_size(dtype),
+// req.Out must be pre-sized to product(region lengths) * element_size(dtype),
 // and is written in row-major order matching the region's dense shape.
 
 package sharding
@@ -20,44 +20,34 @@ package sharding
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/rkm/zarr-go/codec"
+	"github.com/rkm/zarr-go/internal/ndcopy"
 	"github.com/rkm/zarr-go/internal/scheduler"
 )
 
-// coalesceGapBytes is the maximum gap between two inner chunk byte ranges
-// that will still be merged into a single fetch.
-//
-// Inner chunks are stored contiguously in the shard body in row-major grid
-// order. For a 2D rectangular sub-region the intersecting inner chunks are
-// usually NOT contiguous in that order — between two needed rows of inner
-// chunks lie one or more unneeded inner chunks. The cost trade-off: paying
-// for a few KB of extra payload is cheaper than paying for the latency of
-// another round trip on a high-RTT object store. 4 MiB is a generous cap
-// that comfortably covers most "skip past an unneeded chunk row" gaps while
-// still bounding the worst-case wasted bandwidth.
-const coalesceGapBytes int64 = 4 * 1024 * 1024
-
 // DecodePartial implements codec.PartialDecoder.
 //
-// fill, when non-nil, is one element's worth of native-LE bytes representing
-// the array's fill value; outBuf is pre-filled with it before decoding so any
-// region overlapping an absent inner chunk reads back as fill.
-func (c *Codec) DecodePartial(
-	ctx context.Context,
-	fetcher codec.RangeFetcher,
-	key string,
-	fullShape []int64,
-	dtype string,
-	region []codec.DimRange,
-	outBuf []byte,
-	fill []byte,
-) error {
+// req.Fill, when non-nil, is one element's worth of native-LE bytes
+// representing the array's fill value; req.Out is pre-filled with it before
+// decoding so any region overlapping an absent inner chunk reads back as
+// fill.
+func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, req *codec.PartialReadRequest) error {
 	if c.inner == nil || c.index == nil {
 		return fmt.Errorf("sharding_indexed: codec not configured")
 	}
 	if c.IndexLocation != IndexEnd && c.IndexLocation != IndexStart {
 		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.IndexLocation)
+	}
+	fullShape := req.FullShape
+	region := req.Region
+	dtype := req.Dtype
+	fill := req.Fill
+	outBuf := req.Out
+	gapBytes := req.GapBytes
+	if gapBytes < 0 {
+		gapBytes = 0
 	}
 	if len(region) != len(fullShape) {
 		return fmt.Errorf("sharding_indexed: region rank %d != chunk rank %d", len(region), len(fullShape))
@@ -71,7 +61,7 @@ func (c *Codec) DecodePartial(
 				i, r.Start, r.Stop, fullShape[i])
 		}
 	}
-	esz := elemSize(dtype)
+	esz := codec.DtypeSize(dtype)
 	if esz == 0 {
 		return fmt.Errorf("sharding_indexed: unsupported dtype %q", dtype)
 	}
@@ -100,6 +90,7 @@ func (c *Codec) DecodePartial(
 		return err
 	}
 	n := numInner(grid)
+	key := req.Key
 
 	// 1) Fetch the index payload at the configured location.
 	idxLen, err := c.indexEncodedSize(n)
@@ -109,7 +100,7 @@ func (c *Codec) DecodePartial(
 
 	var indexBytes []byte
 	if c.IndexLocation == IndexEnd {
-		if sf, ok := fetcher.(SuffixRangeFetcher); ok {
+		if sf, ok := fetcher.(codec.SuffixRangeFetcher); ok {
 			indexBytes, err = sf.GetSuffix(ctx, key, idxLen)
 			if err != nil {
 				return fmt.Errorf("sharding_indexed: fetch index trailer: %w", err)
@@ -181,6 +172,13 @@ func (c *Codec) DecodePartial(
 			if off == emptyMarker && ln == emptyMarker {
 				// All-zero inner chunk: outBuf is already zeroed; skip.
 			} else {
+				// off/ln come from untrusted stored metadata; reject values
+				// that don't fit in an int64 before ever casting them (a
+				// silent uint64->int64 wrap could otherwise produce a
+				// negative offset/length downstream).
+				if off > math.MaxInt64 || ln > math.MaxInt64 {
+					return fmt.Errorf("sharding_indexed: index entry %d out of range (off=%d len=%d)", i, off, ln)
+				}
 				innerShape := innerShapeAt(coord, c.ChunkShape, fullShape)
 				lr := make([]innerRange, rank)
 				for d := 0; d < rank; d++ {
@@ -221,7 +219,7 @@ func (c *Codec) DecodePartial(
 	for i, nd := range needs {
 		ranges[i] = scheduler.Range{Off: nd.off, N: nd.ln}
 	}
-	merged := scheduler.CoalesceRanges(ranges, coalesceGapBytes)
+	merged := scheduler.CoalesceRanges(ranges, gapBytes)
 
 	// Pre-allocate per-need raw bytes slot.
 	rawByIdx := make([][]byte, len(needs))
@@ -242,7 +240,7 @@ func (c *Codec) DecodePartial(
 	// 4) Decode each needed inner chunk and copy its intersection into outBuf.
 	for i, nd := range needs {
 		raw := rawByIdx[i]
-		innerChunk := codec.ArrayChunk{Shape: nd.innerShape, Dtype: dtype}
+		innerChunk := codec.ArrayChunk{Shape: nd.innerShape, Dtype: dtype, Fill: fill}
 		if err := c.inner.Decode(raw, &innerChunk); err != nil {
 			return fmt.Errorf("sharding_indexed: decode inner chunk %v: %w", nd.coord, err)
 		}
@@ -259,15 +257,6 @@ func (c *Codec) DecodePartial(
 // fallback range reads when the fetcher doesn't expose a suffix API. All
 // in-tree store backends clamp n to the remaining blob length.
 const maxRangeBytes int64 = 1 << 62
-
-// SuffixRangeFetcher is an optional extension implemented by stores that can
-// natively serve a "last N bytes" request without knowing the blob length up
-// front. HTTP and S3-style object stores can serve this via the
-// `Range: bytes=-N` header. Local stores typically can; mem currently can't,
-// so this codepath is taken when wired by the engine through a shim.
-type SuffixRangeFetcher interface {
-	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
-}
 
 // slicedFetcher serves range reads against an already-fetched whole blob.
 // It's used as a fallback when we had to fetch the whole shard to find the
@@ -300,74 +289,19 @@ type innerRange struct {
 }
 
 // copySubregion copies the inner-chunk-local rectangle described by lr from
-// inner (shape innerShape) into outBuf (shape regionShape). All buffers are
-// row-major; elements are esz bytes.
+// inner (shape innerShape) into outBuf (shape regionShape), via the shared
+// ndcopy kernel. All buffers are row-major; elements are esz bytes.
 func copySubregion(
 	outBuf []byte, regionShape []int64,
 	inner []byte, innerShape []int64,
 	lr []innerRange, esz int,
 ) {
 	rank := len(regionShape)
-	innerStrides := make([]int64, rank)
-	outStrides := make([]int64, rank)
-	innerStrides[rank-1] = 1
-	outStrides[rank-1] = 1
-	for i := rank - 2; i >= 0; i-- {
-		innerStrides[i] = innerStrides[i+1] * innerShape[i+1]
-		outStrides[i] = outStrides[i+1] * regionShape[i+1]
+	srcRegion := make([]ndcopy.Region, rank)
+	dstRegion := make([]ndcopy.Region, rank)
+	for d := 0; d < rank; d++ {
+		srcRegion[d] = ndcopy.Region{Start: lr[d].innerStart, Stop: lr[d].innerStop, Step: 1}
+		dstRegion[d] = ndcopy.Region{Start: lr[d].outStart, Stop: lr[d].outStart + (lr[d].innerStop - lr[d].innerStart), Step: 1}
 	}
-	rowElems := lr[rank-1].innerStop - lr[rank-1].innerStart
-	if rowElems <= 0 {
-		return
-	}
-	rowBytes := rowElems * int64(esz)
-	innerRowBase := lr[rank-1].innerStart
-	outRowBase := lr[rank-1].outStart
-
-	if rank == 1 {
-		copy(
-			outBuf[outRowBase*int64(esz):outRowBase*int64(esz)+rowBytes],
-			inner[innerRowBase*int64(esz):innerRowBase*int64(esz)+rowBytes],
-		)
-		return
-	}
-
-	// Iterate over the leading rank-1 dims.
-	pos := make([]int64, rank-1)
-	for d := 0; d < rank-1; d++ {
-		pos[d] = 0
-	}
-	regionLens := make([]int64, rank-1)
-	for d := 0; d < rank-1; d++ {
-		regionLens[d] = lr[d].innerStop - lr[d].innerStart
-		if regionLens[d] <= 0 {
-			return
-		}
-	}
-	for {
-		var innerElemOff, outElemOff int64
-		for d := 0; d < rank-1; d++ {
-			innerElemOff += (lr[d].innerStart + pos[d]) * innerStrides[d]
-			outElemOff += (lr[d].outStart + pos[d]) * outStrides[d]
-		}
-		innerElemOff += innerRowBase
-		outElemOff += outRowBase
-		copy(
-			outBuf[outElemOff*int64(esz):outElemOff*int64(esz)+rowBytes],
-			inner[innerElemOff*int64(esz):innerElemOff*int64(esz)+rowBytes],
-		)
-		// Advance pos in row-major (last leading dim fastest).
-		i := rank - 2
-		for i >= 0 {
-			pos[i]++
-			if pos[i] < regionLens[i] {
-				break
-			}
-			pos[i] = 0
-			i--
-		}
-		if i < 0 {
-			return
-		}
-	}
+	ndcopy.Copy(outBuf, regionShape, dstRegion, inner, innerShape, srcRegion, esz, nil)
 }

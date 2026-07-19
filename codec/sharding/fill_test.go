@@ -202,8 +202,11 @@ func TestDecodePartialRespectsFill(t *testing.T) {
 	f := &slicedFetcher{key: "shard", base: encoded}
 	region := []codec.DimRange{{Start: 0, Stop: 4, Step: 1}, {Start: 0, Stop: 4, Step: 1}}
 	out := make([]byte, 4*4*elem)
-	if err := c.DecodePartial(context.Background(), f, "shard",
-		[]int64{4, 4}, "uint32", region, out, fill); err != nil {
+	req := codec.PartialReadRequest{
+		Key: "shard", FullShape: []int64{4, 4}, Dtype: "uint32",
+		Region: region, Out: out, Fill: fill, GapBytes: 4 << 20,
+	}
+	if err := c.DecodePartial(context.Background(), f, &req); err != nil {
 		t.Fatalf("DecodePartial: %v", err)
 	}
 	// Top-left must be fill bytes; the rest must be 1..16 except those four.

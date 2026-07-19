@@ -24,6 +24,12 @@ import (
 // ErrCodecRequiresCGO.
 var ErrRequiresCGO = errors.New("codec requires cgo build")
 
+// ErrUnknownCodec is returned by BuildPipeline when metadata references a
+// codec name that isn't in the registry. The top-level zarr package
+// re-exports it as ErrUnknownCodec so callers can errors.Is against either
+// form.
+var ErrUnknownCodec = errors.New("codec: unknown codec")
+
 // ArrayChunk is the in-memory representation of one chunk during decode/encode.
 // Data is the typed element buffer in row-major order; its byte length must
 // equal product(Shape) * Dtype.Size().
@@ -78,6 +84,18 @@ type RangeFetcher interface {
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 }
 
+// SuffixRangeFetcher is an optional extension implemented by fetchers that
+// can natively serve a "last N bytes" request without knowing the blob
+// length up front (e.g. via an HTTP `Range: bytes=-N` header). A
+// PartialDecoder probes for this on its RangeFetcher and, when absent, falls
+// back to a positional GetRange strategy of its own choosing.
+//
+// Mirrors store.SuffixReader; duplicated here (like RangeFetcher/DimRange)
+// so codec packages have no dependency on store.
+type SuffixRangeFetcher interface {
+	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
+}
+
 // DimRange describes a half-open range [Start, Stop) along one dimension,
 // optionally with a positive Step. It mirrors the engine's selection.DimRange
 // but is duplicated here so the codec package has no dependency on the engine.
@@ -91,33 +109,47 @@ type DimRange struct {
 	Start, Stop, Step int64
 }
 
+// PartialReadRequest bundles the arguments to PartialDecoder.DecodePartial.
+type PartialReadRequest struct {
+	// Key identifies the outer chunk blob in the store.
+	Key string
+	// FullShape is the outer chunk's FULL stored shape — the configured
+	// chunk_shape, never clipped to array bounds. Chunks (including shards)
+	// are always encoded at the full configured chunk_shape; clipping to
+	// array bounds is a read-time concern the engine handles separately by
+	// bounding Region. Passing a clipped shape here corrupts the inner
+	// chunk grid computation (wrong index size, garbage entries).
+	FullShape []int64
+	// Dtype is the array's canonical v3 dtype name.
+	Dtype string
+	// Region is the chunk-local sub-region to decode (Step must be 1 along
+	// every dim).
+	Region []DimRange
+	// Out is the pre-sized output buffer: product(region lengths) *
+	// elementSize(Dtype) bytes, populated in row-major order matching the
+	// region shape.
+	Out []byte
+	// Fill, when non-nil, is one element's worth of native-LE bytes
+	// representing the array's fill value. Sharded codecs use it to fill
+	// regions corresponding to missing inner chunks; codecs that don't care
+	// MAY ignore it.
+	Fill []byte
+	// GapBytes is the maximum byte gap between two inner-chunk ranges that
+	// will still be coalesced into a single fetch. Negative values are
+	// treated as 0 (no coalescing beyond exact adjacency).
+	GapBytes int64
+}
+
 // PartialDecoder is implemented by ArrayToBytesCodec implementations that
 // can decode a sub-region of an outer chunk without materializing the full
 // chunk. The engine probes for it on the AB codec; if present and the read
 // is partial (and there are no BB codecs on top of the AB codec), the engine
 // calls DecodePartial in place of fetching the whole chunk + Decode.
 //
-// The codec uses fetcher to issue range reads against the underlying store
-// (key identifies the outer chunk blob). fullShape is the outer chunk's
-// shape (already clipped to the array bounds at edge chunks). region is the
-// chunk-local sub-region to decode (Step must be 1 along every dim). outBuf
-// must be pre-sized to product(region lengths) * elementSize(dtype) and is
-// populated in row-major order matching the region shape.
-//
-// fill, when non-nil, is one element's worth of native-LE bytes representing
-// the array's fill value. Sharded codecs use it to fill regions corresponding
-// to missing inner chunks; codecs that don't care MAY ignore it.
+// fetcher issues range reads against the underlying store; req.Key
+// identifies the outer chunk blob.
 type PartialDecoder interface {
-	DecodePartial(
-		ctx context.Context,
-		fetcher RangeFetcher,
-		key string,
-		fullShape []int64,
-		dtype string,
-		region []DimRange,
-		outBuf []byte,
-		fill []byte,
-	) error
+	DecodePartial(ctx context.Context, fetcher RangeFetcher, req *PartialReadRequest) error
 }
 
 // Spec describes one codec entry as it appears in v3 metadata.
@@ -174,7 +206,7 @@ func BuildPipeline(specs []Spec) (*Pipeline, error) {
 	for _, s := range specs {
 		f := Lookup(s.Name)
 		if f == nil {
-			return nil, fmt.Errorf("codec %q not registered", s.Name)
+			return nil, fmt.Errorf("%w: %q", ErrUnknownCodec, s.Name)
 		}
 		c := f()
 		if err := c.Configure(s.Configuration); err != nil {
