@@ -7,7 +7,7 @@
 //  1. Range-fetches the index trailer (small, few KB).
 //  2. Decodes the index to recover (offset, length) for every inner chunk.
 //  3. Identifies the inner chunks intersecting the requested region.
-//  4. Coalesces their byte ranges (using internal/scheduler.CoalesceRanges)
+//  4. Coalesces their byte ranges (see coalesceRanges)
 //     and issues one range read per coalesced span.
 //  5. Decodes only those inner chunks via the configured inner pipeline.
 //  6. Copies their intersecting sub-regions into req.Out.
@@ -24,7 +24,6 @@ import (
 
 	"github.com/exergy-dev/zarr-go/codec"
 	"github.com/exergy-dev/zarr-go/internal/ndcopy"
-	"github.com/exergy-dev/zarr-go/internal/scheduler"
 )
 
 // DecodePartial implements codec.PartialDecoder.
@@ -224,29 +223,29 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	}
 
 	// 3) Coalesce ranges and fetch.
-	ranges := make([]scheduler.Range, len(needs))
+	ranges := make([]byteRange, len(needs))
 	for i, nd := range needs {
-		ranges[i] = scheduler.Range{Off: nd.off, N: nd.ln}
+		ranges[i] = byteRange{off: nd.off, n: nd.ln}
 	}
-	merged := scheduler.CoalesceRanges(ranges, gapBytes)
+	merged := coalesceRanges(ranges, gapBytes)
 
 	// Pre-allocate per-need raw bytes slot.
 	rawByIdx := make([][]byte, len(needs))
 	for _, m := range merged {
-		blob, err := fetcher.GetRange(ctx, key, m.Off, m.N)
+		blob, err := fetcher.GetRange(ctx, key, m.off, m.n)
 		if err != nil {
-			return fmt.Errorf("sharding_indexed: fetch inner range [%d,%d): %w", m.Off, m.Off+m.N, err)
+			return fmt.Errorf("sharding_indexed: fetch inner range [%d,%d): %w", m.off, m.off+m.n, err)
 		}
-		if int64(len(blob)) < m.N {
-			return fmt.Errorf("sharding_indexed: short read [%d,%d): got %d", m.Off, m.Off+m.N, len(blob))
+		if int64(len(blob)) < m.n {
+			return fmt.Errorf("sharding_indexed: short read [%d,%d): got %d", m.off, m.off+m.n, len(blob))
 		}
-		for _, mem := range m.Members {
-			start := mem.OffInMerged
-			if start < 0 || mem.N < 0 || mem.N > int64(len(blob))-start {
+		for _, mem := range m.members {
+			start := mem.offInMerged
+			if start < 0 || mem.n < 0 || mem.n > int64(len(blob))-start {
 				return fmt.Errorf("sharding_indexed: inner range [%d,+%d) exceeds fetched span [%d,+%d)",
-					m.Off+start, mem.N, m.Off, len(blob))
+					m.off+start, mem.n, m.off, len(blob))
 			}
-			rawByIdx[mem.OriginalIndex] = blob[start : start+mem.N]
+			rawByIdx[mem.idx] = blob[start : start+mem.n]
 		}
 	}
 

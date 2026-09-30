@@ -325,7 +325,7 @@ func TestDecodePartialRejectsBadIndexEntries(t *testing.T) {
 		name    string
 		entries []uint64 // (off, len) for inner chunks 0 and 1
 	}{
-		// off+len wraps int64: CoalesceRanges used to treat the range as
+		// off+len wraps int64: coalesceRanges used to treat the range as
 		// fully contained, then blob[start:start+N] panicked.
 		{"overflow", []uint64{0, 4, 1000, math.MaxInt64}},
 		{"overflow-first", []uint64{1, math.MaxInt64, 0, 2}},
