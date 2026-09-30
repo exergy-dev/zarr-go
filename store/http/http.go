@@ -214,16 +214,9 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (range fallback): read body: %w", u, err)
 		}
-		length := int64(len(body))
-		if off >= length {
-			return []byte{}, nil
-		}
-		end := off + n
-		if end > length {
-			end = length
-		}
-		out := make([]byte, end-off)
-		copy(out, body[off:end])
+		clamped := store.ClampRange(body, off, n)
+		out := make([]byte, len(clamped))
+		copy(out, clamped)
 		return out, nil
 	case http.StatusNotFound:
 		return nil, fmt.Errorf("http store: GET %s (range): %w", u, store.ErrKeyNotFound)

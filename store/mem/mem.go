@@ -62,16 +62,9 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	if !ok {
 		return nil, store.ErrKeyNotFound
 	}
-	length := int64(len(v))
-	if off >= length || n == 0 {
-		return []byte{}, nil
-	}
-	end := off + n
-	if end > length || end < off { // clamp + overflow guard
-		end = length
-	}
-	out := make([]byte, end-off)
-	copy(out, v[off:end])
+	clamped := store.ClampRange(v, off, n)
+	out := make([]byte, len(clamped))
+	copy(out, clamped)
 	return out, nil
 }
 

@@ -157,6 +157,32 @@ func toRegions(dst []ndcopy.Region, src []DimRange) {
 	}
 }
 
+// newChunkScratch returns rank-sized working slices for one chunk's
+// selection-to-region conversion, backed by scratch's stack-allocated
+// arrays when rank fits (the common case), or heap-allocated otherwise.
+// Shared by partialDecodeAndCopy, decodeAndCopy, and writeOneChunk.
+func newChunkScratch(scratch *chunkScratch, rank int) (srcSlice, dstSlice []DimRange, srcRegion, dstRegion []ndcopy.Region, ndSc ndcopy.Scratch) {
+	if rank <= maxStackRank {
+		srcSlice = scratch.chunkSrc[:rank]
+		dstSlice = scratch.outDst[:rank]
+		srcRegion = scratch.srcRegion[:rank]
+		dstRegion = scratch.dstRegion[:rank]
+		ndSc = ndcopy.Scratch{
+			SrcStrides: scratch.srcStrides[:rank],
+			DstStrides: scratch.dstStrides[:rank],
+			RegionLen:  scratch.regionLen[:rank],
+			Idx:        scratch.idx[:rank],
+		}
+		return
+	}
+	srcSlice = make([]DimRange, rank)
+	dstSlice = make([]DimRange, rank)
+	srcRegion = make([]ndcopy.Region, rank)
+	dstRegion = make([]ndcopy.Region, rank)
+	ndSc = *ndcopy.NewScratch(rank)
+	return
+}
+
 // Read materializes the selection into dst. dst must hold sel.NumElements()
 // elements; layout is row-major (C order).
 func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
@@ -343,29 +369,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 ) error {
 	rank := len(chunkShape)
 	var scratch chunkScratch
-	var (
-		srcSlice, dstSlice   []DimRange
-		srcRegion, dstRegion []ndcopy.Region
-		ndSc                 ndcopy.Scratch
-	)
-	if rank <= maxStackRank {
-		srcSlice = scratch.chunkSrc[:rank]
-		dstSlice = scratch.outDst[:rank]
-		srcRegion = scratch.srcRegion[:rank]
-		dstRegion = scratch.dstRegion[:rank]
-		ndSc = ndcopy.Scratch{
-			SrcStrides: scratch.srcStrides[:rank],
-			DstStrides: scratch.dstStrides[:rank],
-			RegionLen:  scratch.regionLen[:rank],
-			Idx:        scratch.idx[:rank],
-		}
-	} else {
-		srcSlice = make([]DimRange, rank)
-		dstSlice = make([]DimRange, rank)
-		srcRegion = make([]ndcopy.Region, rank)
-		dstRegion = make([]ndcopy.Region, rank)
-		ndSc = *ndcopy.NewScratch(rank)
-	}
+	srcSlice, dstSlice, srcRegion, dstRegion, ndSc := newChunkScratch(&scratch, rank)
 	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, srcSlice, dstSlice)
 
 	// Partial decode requires step==1; bail to the full path if any dim is stepped.
@@ -495,29 +499,7 @@ func (a *Array[T]) decodeAndCopy(
 ) error {
 	rank := len(chunkShape)
 	var scratch chunkScratch
-	var (
-		srcSlice, dstSlice   []DimRange
-		srcRegion, dstRegion []ndcopy.Region
-		ndSc                 ndcopy.Scratch
-	)
-	if rank <= maxStackRank {
-		srcSlice = scratch.chunkSrc[:rank]
-		dstSlice = scratch.outDst[:rank]
-		srcRegion = scratch.srcRegion[:rank]
-		dstRegion = scratch.dstRegion[:rank]
-		ndSc = ndcopy.Scratch{
-			SrcStrides: scratch.srcStrides[:rank],
-			DstStrides: scratch.dstStrides[:rank],
-			RegionLen:  scratch.regionLen[:rank],
-			Idx:        scratch.idx[:rank],
-		}
-	} else {
-		srcSlice = make([]DimRange, rank)
-		dstSlice = make([]DimRange, rank)
-		srcRegion = make([]ndcopy.Region, rank)
-		dstRegion = make([]ndcopy.Region, rank)
-		ndSc = *ndcopy.NewScratch(rank)
-	}
+	srcSlice, dstSlice, srcRegion, dstRegion, ndSc := newChunkScratch(&scratch, rank)
 	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, srcSlice, dstSlice)
 	toRegions(srcRegion, srcSlice)
 	toRegions(dstRegion, dstSlice)
@@ -613,29 +595,10 @@ func (a *Array[T]) writeOneChunk(
 ) error {
 	rank := len(chunkShape)
 	var scratch chunkScratch
-	var (
-		chunkSrcSlice, outDstSlice []DimRange
-		dstRegion, srcRegion       []ndcopy.Region
-		ndSc                       ndcopy.Scratch
-	)
-	if rank <= maxStackRank {
-		chunkSrcSlice = scratch.chunkSrc[:rank]
-		outDstSlice = scratch.outDst[:rank]
-		dstRegion = scratch.dstRegion[:rank] // chunk side (write destination) may be stepped
-		srcRegion = scratch.srcRegion[:rank] // user src side (read source) is always step1
-		ndSc = ndcopy.Scratch{
-			SrcStrides: scratch.srcStrides[:rank],
-			DstStrides: scratch.dstStrides[:rank],
-			RegionLen:  scratch.regionLen[:rank],
-			Idx:        scratch.idx[:rank],
-		}
-	} else {
-		chunkSrcSlice = make([]DimRange, rank)
-		outDstSlice = make([]DimRange, rank)
-		dstRegion = make([]ndcopy.Region, rank)
-		srcRegion = make([]ndcopy.Region, rank)
-		ndSc = *ndcopy.NewScratch(rank)
-	}
+	// dstRegion is the chunk side (write destination; may be stepped),
+	// srcRegion is the user src side (read source; always step1) — see
+	// newChunkScratch's doc for how these map onto the shared scratch.
+	chunkSrcSlice, outDstSlice, srcRegion, dstRegion, ndSc := newChunkScratch(&scratch, rank)
 	chunkSelectionInto(a.meta.Shape, chunkShape, sel, coord, chunkSrcSlice, outDstSlice)
 
 	totalChunkBytes := int64(elemSize)
@@ -750,6 +713,13 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 		}
 		chunkShape := a.meta.ChunkGrid.Configuration.ChunkShape
 		elemSize := int(unsafe.Sizeof(*new(T)))
+		// Scratch for the edge-chunk extraction branch below. chunkShape
+		// (hence rank) is constant for the whole Stream call, so these are
+		// allocated once and reused across every edge chunk instead of
+		// per-chunk.
+		edgeRank := len(chunkShape)
+		edgeScratch := ndcopy.NewScratch(edgeRank)
+		edgeRegion := make([]ndcopy.Region, edgeRank)
 		for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
 			coord := c.Clone()
 			actualChunk := make([]int64, len(chunkShape))
@@ -806,21 +776,19 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 				// the yielded Shape is clipped to the array bounds. Extract the
 				// in-bounds region into a dense buffer so Data's layout matches
 				// Shape (same layout the missing-chunk branch produces).
-				rank := len(chunkShape)
 				n := int64(1)
 				for _, d := range actualChunk {
 					n *= d
 				}
 				data = make([]T, n)
-				region := make([]ndcopy.Region, rank)
-				for i := 0; i < rank; i++ {
-					region[i] = ndcopy.Region{Start: 0, Stop: actualChunk[i], Step: 1}
+				for i := 0; i < edgeRank; i++ {
+					edgeRegion[i] = ndcopy.Region{Start: 0, Stop: actualChunk[i], Step: 1}
 				}
 				var dataBytes []byte
 				if n > 0 {
 					dataBytes = unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data)*elemSize)
 				}
-				ndcopy.Copy(dataBytes, actualChunk, region, ck.Data, chunkShape, region, elemSize, nil)
+				ndcopy.Copy(dataBytes, actualChunk, edgeRegion, ck.Data, chunkShape, edgeRegion, elemSize, edgeScratch)
 			} else {
 				data = unsafe.Slice((*T)(unsafe.Pointer(&ck.Data[0])), len(ck.Data)/elemSize)
 			}

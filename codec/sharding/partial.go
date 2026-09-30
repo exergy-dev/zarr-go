@@ -238,6 +238,9 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	}
 
 	// 4) Decode each needed inner chunk and copy its intersection into outBuf.
+	ndSc := ndcopy.NewScratch(rank)
+	dstRegion := make([]ndcopy.Region, rank)
+	srcRegion := make([]ndcopy.Region, rank)
 	for i, nd := range needs {
 		raw := rawByIdx[i]
 		innerChunk := codec.ArrayChunk{Shape: nd.innerShape, Dtype: dtype, Fill: fill}
@@ -248,6 +251,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 			outBuf, regionShape,
 			innerChunk.Data, nd.innerShape,
 			nd.localRegion, esz,
+			ndSc, dstRegion, srcRegion,
 		)
 	}
 	return nil
@@ -290,18 +294,21 @@ type innerRange struct {
 
 // copySubregion copies the inner-chunk-local rectangle described by lr from
 // inner (shape innerShape) into outBuf (shape regionShape), via the shared
-// ndcopy kernel. All buffers are row-major; elements are esz bytes.
+// ndcopy kernel. All buffers are row-major; elements are esz bytes. sc/
+// dstRegion/srcRegion are caller-owned scratch (sized for regionShape's
+// rank), reused across many calls in DecodePartial's per-inner-chunk loop to
+// avoid a per-call allocation — mirrors copyRegion/extractRegion in
+// sharding.go.
 func copySubregion(
 	outBuf []byte, regionShape []int64,
 	inner []byte, innerShape []int64,
 	lr []innerRange, esz int,
+	sc *ndcopy.Scratch, dstRegion, srcRegion []ndcopy.Region,
 ) {
 	rank := len(regionShape)
-	srcRegion := make([]ndcopy.Region, rank)
-	dstRegion := make([]ndcopy.Region, rank)
 	for d := 0; d < rank; d++ {
 		srcRegion[d] = ndcopy.Region{Start: lr[d].innerStart, Stop: lr[d].innerStop, Step: 1}
 		dstRegion[d] = ndcopy.Region{Start: lr[d].outStart, Stop: lr[d].outStart + (lr[d].innerStop - lr[d].innerStart), Step: 1}
 	}
-	ndcopy.Copy(outBuf, regionShape, dstRegion, inner, innerShape, srcRegion, esz, nil)
+	ndcopy.Copy(outBuf, regionShape, dstRegion, inner, innerShape, srcRegion, esz, sc)
 }

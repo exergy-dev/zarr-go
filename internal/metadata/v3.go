@@ -124,12 +124,12 @@ var knownGroupFields = map[string]struct{}{
 	"attributes":  {},
 }
 
-// cloneInt64 returns a non-nil copy of s, even when s is empty or nil. Used
+// CloneInt64 returns a non-nil copy of s, even when s is empty or nil. Used
 // for Shape/ChunkShape so a rank-0 array's dims marshal as JSON "[]" rather
 // than "null" — append([]int64(nil), s...) would silently stay nil when s
 // has zero elements (nil or not), and DecodeArray's shape-presence check
 // treats a null shape the same as a missing one.
-func cloneInt64(s []int64) []int64 {
+func CloneInt64(s []int64) []int64 {
 	out := make([]int64, len(s))
 	copy(out, s)
 	return out
@@ -322,7 +322,7 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 		out.ChunkKeyEnc.Configuration.Separator = defaultSeparator(out.ChunkKeyEnc.Name)
 	}
 	if len(out.FillValue) == 0 {
-		out.FillValue = defaultFillValueForDtype(out.DataType)
+		out.FillValue = codec.DefaultFillValueJSON(out.DataType)
 	}
 	// Build the raw object as a sorted map[string]json.RawMessage so the
 	// final JSON is reproducible regardless of Go's map-iteration order.
@@ -415,23 +415,6 @@ func assignField(fields map[string]json.RawMessage, key string, v any) error {
 	}
 	fields[key] = raw
 	return nil
-}
-
-// defaultFillValueForDtype returns the v3 JSON literal MarshalArray falls
-// back to when out.FillValue is empty: false for bool, a 2-element zero
-// array for complex dtypes, 0 otherwise. Kept in sync with the zarr package's
-// CreateArray default (zarr.defaultFillValueJSON), which normally supplies a
-// non-empty FillValue before MarshalArray ever sees it — this is a backstop
-// for direct callers of MarshalArray.
-func defaultFillValueForDtype(dataType string) json.RawMessage {
-	switch dataType {
-	case "bool":
-		return json.RawMessage("false")
-	case "complex64", "complex128":
-		return json.RawMessage("[0,0]")
-	default:
-		return json.RawMessage("0")
-	}
 }
 
 // marshalSortedRaw emits a JSON object whose keys appear in sorted order, with

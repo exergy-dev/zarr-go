@@ -49,6 +49,23 @@ func (errKeyNotFound) Is(target error) bool {
 // the whole object instead of erroring).
 var ErrInvalidRange = errors.New("store: invalid range")
 
+// ClampRange returns the sub-slice of v covering [off, off+n), clamped to
+// len(v) per the GetRange contract: off >= len(v) or n == 0 returns an empty
+// slice; off+n > len(v) (including int64 overflow) clamps to len(v). Callers
+// are responsible for the off < 0 / n < 0 -> ErrInvalidRange check
+// separately, since backends wrap that error differently.
+func ClampRange(v []byte, off, n int64) []byte {
+	length := int64(len(v))
+	if off >= length || n == 0 {
+		return []byte{}
+	}
+	end := off + n
+	if end > length || end < off {
+		end = length
+	}
+	return v[off:end]
+}
+
 // Store is the read/write key-value abstraction over the underlying object/file
 // store. Keys are forward-slash separated; backends translate as needed.
 //

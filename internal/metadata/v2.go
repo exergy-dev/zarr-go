@@ -173,12 +173,12 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 	out := &ArrayMeta{
 		ZarrFormat: 3,
 		NodeType:   "array",
-		Shape:      cloneInt64(v.Shape),
+		Shape:      CloneInt64(v.Shape),
 		DataType:   entry.v3Name,
 		ChunkGrid: ChunkGrid{
 			Name: "regular",
 			Configuration: ChunkGridRegularCfg{
-				ChunkShape: cloneInt64(v.Chunks),
+				ChunkShape: CloneInt64(v.Chunks),
 			},
 		},
 		ChunkKeyEnc: ChunkKeyEncoding{

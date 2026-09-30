@@ -306,15 +306,7 @@ func sliceRange(v []byte, off, n int64) ([]byte, error) {
 	if off < 0 || n < 0 {
 		return nil, store.ErrInvalidRange
 	}
-	length := int64(len(v))
-	if off >= length || n == 0 {
-		return []byte{}, nil
-	}
-	end := off + n
-	if end > length || end < off {
-		end = length
-	}
-	return cloneBytes(v[off:end]), nil
+	return cloneBytes(store.ClampRange(v, off, n)), nil
 }
 
 // sliceSuffix applies the store.SuffixReader contract to an in-memory value.

@@ -166,7 +166,7 @@ func CreateArray[T Numeric](
 		return nil, err
 	}
 	if len(co.fillValue) == 0 {
-		co.fillValue = defaultFillValueJSON(dt)
+		co.fillValue = codec.DefaultFillValueJSON(dt.String())
 	}
 	fill, err := parseFillValue(co.fillValue, dt)
 	if err != nil {
@@ -176,12 +176,12 @@ func CreateArray[T Numeric](
 	meta := &metadata.ArrayMeta{
 		ZarrFormat: 3,
 		NodeType:   "array",
-		Shape:      cloneInt64(shape),
+		Shape:      metadata.CloneInt64(shape),
 		DataType:   dt.String(),
 		ChunkGrid: metadata.ChunkGrid{
 			Name: "regular",
 			Configuration: metadata.ChunkGridRegularCfg{
-				ChunkShape: cloneInt64(chunks),
+				ChunkShape: metadata.CloneInt64(chunks),
 			},
 		},
 		ChunkKeyEnc: metadata.ChunkKeyEncoding{
@@ -266,17 +266,6 @@ func cloneAttrs(attrs map[string]any) map[string]any {
 	for k, v := range attrs {
 		out[k] = v
 	}
-	return out
-}
-
-// cloneInt64 returns a non-nil copy of s, even when s is empty or nil. Used
-// for Shape/ChunkShape so a rank-0 array's dims marshal as JSON "[]" rather
-// than "null" — append([]int64(nil), s...) would silently stay nil when s
-// has zero elements (nil or not), and DecodeArray's shape-presence check
-// treats a null shape the same as a missing one.
-func cloneInt64(s []int64) []int64 {
-	out := make([]int64, len(s))
-	copy(out, s)
 	return out
 }
 

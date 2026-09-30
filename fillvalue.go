@@ -195,21 +195,3 @@ func float32ToFloat16Bits(f float32) uint16 {
 	}
 	return sign | uint16(exp<<10) | uint16(mant>>13)
 }
-
-// defaultFillValueJSON returns the v3 JSON literal CreateArray uses as the
-// implicit fill_value when the caller doesn't pass WithFillValue: false for
-// bool, a 2-element zero array for complex dtypes, 0 otherwise. The blanket
-// literal "0" is invalid JSON for bool ("cannot unmarshal number into bool")
-// and for complex (which needs a 2-element array), so CreateArray[bool] and
-// CreateArray[complex64/128] would otherwise always fail without an explicit
-// WithFillValue.
-func defaultFillValueJSON(dt Dtype) json.RawMessage {
-	switch dt {
-	case DtypeBool:
-		return json.RawMessage("false")
-	case DtypeComplex64, DtypeComplex128:
-		return json.RawMessage("[0,0]")
-	default:
-		return json.RawMessage("0")
-	}
-}
