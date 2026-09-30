@@ -491,6 +491,23 @@ func TestResolveLeadingSlashIsRootRelative(t *testing.T) {
 	}
 }
 
+// TestExistsFalseForDirectory checks that an intermediate directory (a key
+// prefix, not a key) is not reported as an existing key — Get on it fails,
+// so Exists must agree.
+func TestExistsFalseForDirectory(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.Set(ctx, "dir/leaf", []byte("x")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if ok, err := s.Exists(ctx, "dir"); err != nil || ok {
+		t.Fatalf("Exists(dir) = %v, %v; want false, nil", ok, err)
+	}
+	if ok, err := s.Exists(ctx, "dir/leaf"); err != nil || !ok {
+		t.Fatalf("Exists(dir/leaf) = %v, %v; want true, nil", ok, err)
+	}
+}
+
 func TestDeleteMissingNoError(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)

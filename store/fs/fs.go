@@ -344,7 +344,8 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// Exists reports whether key is present.
+// Exists reports whether key is present. A directory (a prefix of other
+// keys, not a key itself) is not present.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -353,13 +354,14 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		if errors.Is(err, stdfs.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
 	}
-	return true, nil
+	return !info.IsDir(), nil
 }
 
 // List yields every key for which strings.HasPrefix(key, prefix) holds,

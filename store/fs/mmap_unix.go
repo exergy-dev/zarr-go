@@ -19,8 +19,9 @@ import (
 func noopRelease() {}
 
 // GetMmap returns the contents of key via mmap. The returned slice is valid
-// until release() is called; callers MUST call release() to unmap and close
-// the underlying file. release is always non-nil on success.
+// until release() is called; callers MUST call release() to unmap it. The
+// underlying file is closed before GetMmap returns (the mapping outlives
+// it). release is always non-nil on success.
 //
 // When the Store was constructed without WithMmap(), this falls back to Get
 // and returns a no-op release so callers can probe MmapStore unconditionally.
@@ -49,32 +50,30 @@ func (s *Store) GetMmap(ctx context.Context, key string) ([]byte, func(), error)
 		}
 		return nil, noopRelease, err
 	}
+	// The mapping stays valid after its fd is closed, so close on every
+	// path, success included: live mappings must not pin fds.
+	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		_ = f.Close()
 		return nil, noopRelease, err
 	}
 	size := info.Size()
 	if size == 0 {
-		// mmap of size 0 is invalid on Linux; close immediately and return empty.
-		_ = f.Close()
+		// mmap of size 0 is invalid on Linux; return empty.
 		return []byte{}, noopRelease, nil
 	}
 	if size > int64(^uint(0)>>1) {
-		_ = f.Close()
 		return nil, noopRelease, fmt.Errorf("fs.GetMmap: file %q too large for mmap (%d bytes)", path, size)
 	}
 	data, err := unix.Mmap(int(f.Fd()), 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
 	if err != nil {
-		_ = f.Close()
 		return nil, noopRelease, fmt.Errorf("fs.GetMmap: mmap %q: %w", path, err)
 	}
-	// Wrap the unmap+close pair so a buggy double-call from the engine
-	// cannot Munmap freed pages or Close a closed fd — both are silent UB
+	// Wrap the unmap so a buggy double-call from the engine cannot Munmap
+	// already-freed pages (possibly reused by a later mapping) — silent UB
 	// on Linux otherwise.
 	release := sync.OnceFunc(func() {
 		_ = unix.Munmap(data)
-		_ = f.Close()
 	})
 	return data, release, nil
 }
