@@ -7,21 +7,18 @@ import (
 	"github.com/exergy-dev/zarr-go/codec"
 )
 
-// Float16 is the IEEE 754 binary16 type. Stored as the raw bit pattern;
-// conversion helpers (Float16ToFloat32, float32ToFloat16Bits) live in this
-// file and fillvalue.go.
+// Float16 is the IEEE 754 binary16 type, stored as its raw bit pattern. Use
+// Float16ToFloat32 to convert.
 type Float16 uint16
 
 // Numeric is the type constraint for all dtypes the typed Array[T] supports.
 //
 // bool is included to match the Zarr v3 spec; one byte per element.
 //
-// Deliberately exact (no ~), not approximate: DtypeOf and the byte-level
-// codecs (bytes, transpose, ...) all switch/reinterpret on T's concrete
-// type, not its underlying type, so a defined type like `type MyF32
-// float32` would satisfy an approximate constraint but silently misbehave
-// (DtypeOf would return DtypeInvalid instead of DtypeFloat32). Excluding
-// such types from the constraint turns that into a compile error instead.
+// Deliberately exact (no ~): DtypeOf switches on T's concrete type, so a
+// defined type like `type MyF32 float32` would satisfy an approximate
+// constraint but map to DtypeInvalid. The exact constraint makes that a
+// compile error instead.
 type Numeric interface {
 	bool |
 		int8 | int16 | int32 | int64 |

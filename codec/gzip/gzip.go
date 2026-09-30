@@ -8,8 +8,7 @@
 // 9 = BestCompression). When the field is absent the default level (5) is
 // used; level == -1 explicitly selects gzip.DefaultCompression.
 //
-// The package name shadows the gzip package; this file imports it under the
-// alias "kpgzip".
+// The package name shadows the library's; this file imports it as "kpgzip".
 package gzip
 
 import (
@@ -29,8 +28,7 @@ import (
 // Codec is the v3 "gzip" bytes→bytes codec. Construct it with New; its
 // configuration is fixed at construction and it is safe for concurrent use.
 type Codec struct {
-	// level is the compression level passed to compress/gzip: -1 (default)
-	// or 0..9.
+	// level is the gzip compression level: -1 (library default) or 0..9.
 	level int
 }
 

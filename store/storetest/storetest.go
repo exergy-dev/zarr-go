@@ -1,10 +1,7 @@
 // Package storetest is a shared conformance test suite for store.Store
-// implementations. Every backend's own test file should call RunConformance
-// against a fresh instance so the store.Store contract (documented in
-// store/store.go) is enforced identically across all of them — the
-// divergences this suite exists to catch (inconsistent GetRange/List
-// semantics between backends) are exactly the kind of bug that a per-backend
-// test suite, written independently, tends to miss.
+// implementations. Every backend's own tests should call RunConformance so
+// the store.Store contract (documented in store/store.go) is enforced
+// identically across backends.
 package storetest
 
 import (
@@ -41,14 +38,11 @@ type Options struct {
 }
 
 // RunConformance runs the shared store.Store contract test matrix. newStore
-// is called once per subtest (and once per table-driven case within some
-// subtests) to obtain a store instance; backends that share persistent state
-// across "fresh" instances (e.g. a real bucket reused between calls) must
-// use collision-free key names, which RunConformance ensures by namespacing
-// every key it writes under t.Name(). Every seeded key is deleted via
-// t.Cleanup after use (best-effort, ignoring errors) when the store is
-// writable, so repeated runs against a persistent real backend (e.g. a
-// shared test bucket) don't collide with leftover state from a prior run.
+// is called once per subtest (and per table-driven case within some) to
+// obtain a store instance. Every key the suite writes is namespaced under
+// t.Name() and, when the store is writable, deleted best-effort via
+// t.Cleanup, so backends whose instances share persistent state (e.g. a
+// reused test bucket) don't collide across subtests or runs.
 func RunConformance(t *testing.T, newStore func(t *testing.T) store.Store, opts Options) {
 	t.Helper()
 	// writer returns s as a store.Writer the suite may write through.
@@ -295,13 +289,9 @@ func testList(t *testing.T, newStore func(t *testing.T) store.Store, seed func(*
 	s := newStore(t)
 	ctx := context.Background()
 	root := t.Name() + "/"
-	// Deliberately avoid a key that is both a leaf (e.g. "dir") and, via a
-	// slash, a directory prefix of another key (e.g. "dir/a") — flat
-	// object-store backends (mem/s3/gcs/azblob) support that fine, but a
-	// filesystem-backed store cannot represent both a file and a directory
-	// at the same path simultaneously. "dirx" tests the pure-string-prefix
-	// case (it shares the literal prefix "dir" without being nested under
-	// it) without creating that collision.
+	// No key is both a leaf ("dir") and a directory prefix of another
+	// ("dir/a"): the fs store cannot represent a file and a directory at the
+	// same path. "dirx" covers the pure-string-prefix case instead.
 	suffixes := []string{"x", "xy", "dir/a", "dir/ab", "dirx"}
 	for _, suf := range suffixes {
 		seed(t, s, root+suf, []byte("v"))
@@ -313,9 +303,8 @@ func testList(t *testing.T, newStore func(t *testing.T) store.Store, seed func(*
 		want   []string
 	}{
 		{"sibling_prefix", root + "x", []string{root + "x", root + "xy"}},
-		// The original bug this guards: a prefix that is a partial path
-		// segment (not ending in "/") must still match via plain string
-		// prefix, not just exact-directory matching.
+		// A prefix that is a partial path segment must still match via
+		// plain string prefix, not just exact-directory matching.
 		{"partial_segment_after_slash", root + "dir/a", []string{root + "dir/a", root + "dir/ab"}},
 		{"segment_with_slash", root + "dir/", []string{root + "dir/a", root + "dir/ab"}},
 		{"prefix_spans_leaf_and_dir", root + "dir", []string{root + "dir/a", root + "dir/ab", root + "dirx"}},

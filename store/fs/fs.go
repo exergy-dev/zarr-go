@@ -60,9 +60,8 @@ func New(root string, opts ...Option) (*Store, error) {
 	return s, nil
 }
 
-// MmapEnabled reports whether GetMmap is available on this Store. When false,
-// the Store still satisfies the MmapStore interface but GetMmap falls back to
-// Get + a no-op release.
+// MmapEnabled reports whether GetMmap memory-maps (see WithMmap). When false,
+// GetMmap falls back to Get with a no-op release.
 func (s *Store) MmapEnabled() bool { return s.mmapEnabled }
 
 // resolve translates a forward-slash key into an absolute path under the root,
@@ -75,7 +74,7 @@ func (s *Store) resolve(key string) (string, error) {
 	if key == "" {
 		return s.root, nil
 	}
-	// Reject "..": split on '/' so we catch it regardless of OS separator.
+	// Split on '/' so ".." is caught regardless of OS separator.
 	for _, seg := range strings.Split(key, "/") {
 		if seg == ".." {
 			return "", fmt.Errorf("fs: key %q contains a \"..\" segment: %w", key, store.ErrInvalidKey)
@@ -233,10 +232,9 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	return nil
 }
 
-// writeAndCommit writes value to tmp, syncs and closes it (unless noSync),
-// and invokes testHookBeforeCommit — the shared prefix of Set and
-// SetIfNotExists between "temp file created" and "temp file published".
-// Removes the temp file and returns the error on any failure.
+// writeAndCommit writes value to tmp, syncs it (unless noSync), closes it,
+// and invokes testHookBeforeCommit. On any failure it removes the temp file
+// and returns the error.
 func (s *Store) writeAndCommit(tmp *os.File, tmpPath string, value []byte) error {
 	// os.CreateTemp creates files 0600; widen to the usual 0644 so the
 	// published key isn't owner-only.
@@ -285,14 +283,12 @@ func syncDir(dir string) error {
 // SetIfNotExists writes value at key only if the key does not already exist.
 // Returns false (without error) if the key was already present.
 //
-// Unlike Set, this writes the full content to a temp file first and
-// publishes it via a hard link (not a direct O_EXCL write), so a concurrent
-// reader can never observe a partially-written file at key, and a crash
-// between the temp write and the link leaves no trace at key at all (the
-// pre-fix O_EXCL approach could leave a permanently-empty file at key,
-// wedging it as "already exists" forever). Requires the store's filesystem
-// to support hard links within a directory (true for essentially all
-// POSIX/NTFS filesystems; not FAT/exFAT).
+// The full content goes to a temp file first and is published via a hard
+// link, which fails if key exists. A concurrent reader never observes a
+// partially-written file, and a crash before the link leaves nothing at key
+// (a direct O_EXCL write could leave an empty file that then reads as
+// "already exists" forever). Requires hard-link support within a directory
+// (POSIX filesystems and NTFS; not FAT/exFAT).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -365,18 +361,12 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // List yields every key for which strings.HasPrefix(key, prefix) holds,
-// per the store.Store List contract (pure string-prefix, not path-prefix —
-// a prefix that isn't a complete path segment, e.g. "foo/ba", still matches
-// "foo/bar"). Reserved staging-file entries (see tempPrefix) are never
+// per the store.Store List contract (a string prefix, not a path prefix:
+// "foo/ba" matches "foo/bar"). Staging files (see tempPrefix) are never
 // yielded.
 //
-// Implementation: starts the filesystem walk from the parent directory of
-// prefix's last "/"-separated segment (an optimization — the walk needs
-// only ever look inside directories whose path is a prefix of, or is
-// prefixed by, that starting point) and prunes subtrees during the walk
-// that can't possibly contain a match, so the full store is only walked
-// when the prefix supplies no path segment at all (e.g. "" or a single
-// top-level partial name).
+// The walk starts at the directory named by prefix up to its last "/" and
+// prunes subtrees that can't contain a match.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		dirKey := ""

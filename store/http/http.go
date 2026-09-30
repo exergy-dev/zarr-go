@@ -7,9 +7,7 @@
 // zarr write paths reject it with store.ErrReadOnly.
 //
 // Listing is not supported because HTTP has no portable directory-listing
-// protocol; consumers that require listing should rely on consolidated zarr
-// metadata. List therefore yields a single (string, error) pair where the
-// error is ErrListUnsupported.
+// protocol: List yields only ErrListUnsupported.
 package http
 
 import (
@@ -41,11 +39,9 @@ type Config struct {
 	// http.DefaultClient is used.
 	Client *http.Client
 
-	// Headers are merged into every outgoing request. Use this to set auth
-	// tokens, custom user agents, etc. The header map is cloned once, at
-	// construction time (see New) — mutating cfg.Headers afterward has no
-	// effect on the constructed Store; build a new Store if headers need to
-	// change (e.g. to rotate a token).
+	// Headers are merged into every outgoing request (auth tokens, user
+	// agent, etc.). New clones the map, so later changes to it have no
+	// effect; build a new Store to rotate a token.
 	Headers http.Header
 }
 
@@ -90,8 +86,8 @@ func New(cfg Config) (*Store, error) {
 	}, nil
 }
 
-// resolve joins key onto the base URL and rejects keys containing ".."
-// segments. This prevents callers from escaping the configured base.
+// resolve joins key onto the base URL, rejecting keys with a ".." segment so
+// callers can't escape the configured base.
 //
 // The returned URL may carry BaseURL credentials: format it in errors with
 // u.Redacted(), never u.String() or %s/%v on u directly.
@@ -173,9 +169,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		return nil, err
 	}
 	if n == 0 {
-		// Asking for zero bytes; skip building the GET request entirely,
-		// but still validate the key exists so callers see consistent
-		// errors.
+		// The contract still requires ErrKeyNotFound for a missing key.
 		ok, exErr := s.Exists(ctx, key)
 		if exErr != nil {
 			return nil, exErr
@@ -203,19 +197,16 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		// A server that honors Range is expected to report the actual
-		// range served via Content-Range; if it disagrees with what we
-		// asked for, the body isn't what the caller thinks it is (a proxy
-		// or misconfigured origin serving the wrong bytes) — fail loudly
-		// rather than silently returning mismatched data.
+		// A Content-Range start that disagrees with off means the body is
+		// not the requested bytes (e.g. a misbehaving proxy): fail rather
+		// than return mismatched data.
 		if cr := resp.Header.Get("Content-Range"); cr != "" {
 			if start, ok := parseContentRangeStart(cr); ok && start != off {
 				return nil, fmt.Errorf("http store: GET %s (range): server returned Content-Range %q for requested offset %d", u.Redacted(), cr, off)
 			}
 		}
-		// Bound the read at n: a misbehaving server streaming more than
-		// the requested range (or an endless body) must not grow memory
-		// without limit.
+		// Bound the read at n: a misbehaving server's oversized or endless
+		// body must not grow memory without limit.
 		body, err := io.ReadAll(io.LimitReader(resp.Body, n))
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (range): read body: %w", u.Redacted(), err)
@@ -241,19 +232,17 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	case http.StatusNotFound:
 		return nil, fmt.Errorf("http store: GET %s (range): %w", u.Redacted(), store.ErrKeyNotFound)
 	case http.StatusRequestedRangeNotSatisfiable:
-		// Treat as empty slice; the key might exist but the requested range
-		// is past EOF. Return a zero-length slice rather than an error so
-		// callers reading optional trailing bytes don't see a failure.
+		// off is past EOF: the contract returns an empty slice.
 		return []byte{}, nil
 	default:
 		return nil, fmt.Errorf("http store: GET %s (range): unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
 }
 
-// GetSuffix implements store.Store using an HTTP suffix range
-// request (Range: bytes=-N). Falls back to a whole-body fetch and manual
-// slice if the server returns 200 (ignoring Range) or 416 (rejecting a
-// suffix longer than the resource).
+// GetSuffix implements store.Store using an HTTP suffix range request
+// (Range: bytes=-N). It falls back to slicing the whole body if the server
+// returns 200 (ignoring Range) or 416 (rejecting a suffix longer than the
+// resource).
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("http store: GetSuffix(n=%d): %w", n, store.ErrInvalidRange)

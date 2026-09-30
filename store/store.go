@@ -1,7 +1,8 @@
 // Package store defines the Store interface that backs all zarr arrays.
 //
-// Backends in subpackages (fs, s3, mem, ...) implement Store. Everything in
-// the rest of the library depends only on this interface.
+// Backends in subpackages (fs, s3, mem, ...) implement Store, and Writer when
+// they can be written. The rest of the library depends only on these
+// interfaces.
 package store
 
 import (
@@ -11,18 +12,13 @@ import (
 	"iter"
 )
 
-// ErrKeyNotFound is returned by Store.Get/GetRange/Delete/Exists when the key
-// is missing. It wraps os.ErrNotExist so errors.Is(err, os.ErrNotExist) works.
+// ErrKeyNotFound is returned by Get, GetRange, GetSuffix and GetMmap when the
+// key is missing. errors.Is(err, os.ErrNotExist) also matches it.
 var ErrKeyNotFound = errKeyNotFound{}
 
-// ErrAlreadyExists is returned by higher-level helpers (e.g. CreateArray /
-// CreateGroup) when an atomic SetIfNotExists fails because the target key
-// already exists. Backends do not return this directly — they signal the
-// race by returning (false, nil) from SetIfNotExists; the engine wraps that
-// into ErrAlreadyExists at the API surface.
-//
-// Wraps os.ErrExist so errors.Is(err, os.ErrExist) works for callers that
-// already handle that family.
+// ErrAlreadyExists is returned by CreateArray / CreateGroup when the target
+// already exists. Backends do not return it: SetIfNotExists reports the
+// conflict as (false, nil). errors.Is(err, os.ErrExist) also matches it.
 var ErrAlreadyExists = errAlreadyExists{}
 
 type errAlreadyExists struct{}
@@ -42,11 +38,9 @@ func (errKeyNotFound) Is(target error) bool {
 }
 
 // ErrInvalidRange is returned by GetRange/GetSuffix when off or n is
-// negative. Backends must perform this check client-side, before issuing any
-// request — an unvalidated negative offset can silently turn into a
-// different (and wrong) request on some backends (e.g. a negative S3 Range
-// header offset is reinterpreted as a suffix range by the S3 API, returning
-// the whole object instead of erroring).
+// negative. Backends must check this client-side, before issuing any
+// request: some backends reinterpret a negative offset as a different
+// request (S3 treats a negative Range offset as a suffix range).
 var ErrInvalidRange = errors.New("store: invalid range")
 
 // ErrInvalidKey is returned (wrapped with the backend and key) for a key the
@@ -64,8 +58,8 @@ var ErrReadOnly = errors.New("store is read-only")
 // ClampRange returns the sub-slice of v covering [off, off+n), clamped to
 // len(v) per the GetRange contract: off >= len(v) or n == 0 returns an empty
 // slice; off+n > len(v) (including int64 overflow) clamps to len(v). Callers
-// are responsible for the off < 0 / n < 0 -> ErrInvalidRange check
-// separately, since backends wrap that error differently.
+// check off < 0 / n < 0 themselves, since backends wrap ErrInvalidRange
+// differently.
 func ClampRange(v []byte, off, n int64) []byte {
 	length := int64(len(v))
 	if off >= length || n == 0 {
@@ -115,16 +109,16 @@ type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 
 	// GetRange returns n bytes starting at off from the value at key. See
-	// the Store-level "GetRange contract" doc for the full behavior matrix.
+	// "GetRange contract" above.
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 
 	// GetSuffix returns the last n bytes of the value at key without
 	// knowing its size up front (the sharding codec reads a shard's index
-	// trailer this way). See the Store-level "GetSuffix contract" doc.
+	// trailer this way). See "GetSuffix contract" above.
 	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
 
-	// List yields all keys under prefix. See the Store-level "List contract"
-	// doc. Errors during pagination are surfaced via the second tuple value.
+	// List yields all keys under prefix. See "List contract" above. Errors
+	// (e.g. during pagination) are yielded as the second value.
 	List(ctx context.Context, prefix string) iter.Seq2[string, error]
 
 	// Exists reports whether key is present.
@@ -149,13 +143,9 @@ type Writer interface {
 }
 
 // MmapStore is implemented by Stores that can return chunk bytes via memory
-// mapping. The returned slice is valid only until release() is called; the
-// engine must call release() when it's done with the bytes (typically right
-// after pipeline.Decode finishes).
-//
-// Callers that don't probe for MmapStore continue using Get() unchanged.
-// release is always non-nil, even on error paths where it's a no-op, so callers
-// can defer it unconditionally after a successful call.
+// mapping. The returned slice is valid only until release is called, which
+// the caller must do once it is done with the bytes. release is always
+// non-nil, even on error.
 type MmapStore interface {
 	GetMmap(ctx context.Context, key string) (data []byte, release func(), err error)
 }

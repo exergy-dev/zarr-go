@@ -1,8 +1,5 @@
 // Package zarr is a pure-Go implementation of the Zarr v2 (read) and v3
 // (read/write) chunked, compressed, N-dimensional array format.
-//
-// See the design document for the rationale; this file holds the top-level
-// public API surface (Open, OpenArray, Group).
 package zarr
 
 import (
@@ -25,7 +22,7 @@ type Node interface {
 	zarrNode()
 }
 
-// Group is a v3 group node.
+// Group is a group node (v3 zarr.json or v2 .zgroup).
 type Group struct {
 	store store.Store
 	path  string
@@ -42,9 +39,8 @@ func (g *Group) Path() string { return g.path }
 // Attrs returns the group's user attributes.
 func (g *Group) Attrs() map[string]any { return cloneAttrs(g.meta.Attributes) }
 
-// wrapCorrupt tags a metadata decode failure with ErrCorruptMetadata so
-// callers can errors.Is against it, while keeping the underlying error in
-// the chain for errors.Is/As.
+// wrapCorrupt tags a metadata decode failure with ErrCorruptMetadata while
+// keeping the underlying error in the chain.
 func wrapCorrupt(err error) error {
 	return fmt.Errorf("%w: %w", ErrCorruptMetadata, err)
 }
@@ -229,7 +225,7 @@ func newTypedArray[T Numeric](s store.Store, path string, am *metadata.ArrayMeta
 }
 
 // openArrayDynamic returns a Node-typed array whose concrete T matches the
-// metadata dtype. Caller can type-switch.
+// metadata dtype.
 func openArrayDynamic(s store.Store, path string, am *metadata.ArrayMeta, o arrayOptions) (Node, error) {
 	dt, pipe, fill, err := resolveArray(am)
 	if err != nil {

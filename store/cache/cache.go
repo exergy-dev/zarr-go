@@ -1,24 +1,17 @@
 // Package cache provides an in-memory LRU caching decorator for store.Store.
 //
-// Real workloads (xarray, dashboards, training pipelines) re-read the same
-// chunks repeatedly. Wrapping a Store with cache.New eliminates the
-// network/disk round-trip on warm hits.
-//
 // New returns a read-only *Store (not a store.Writer, even over a writable
 // store), so the zarr write paths reject it with store.ErrReadOnly.
 // NewWriter wraps a store.Writer and returns a *Writer, which writes
 // through and invalidates.
 //
-// Concurrent misses on the same key are coalesced by a small hand-rolled
-// flight tracker (see flight below) so a single underlying Get is performed
-// and the result fans out to all waiters. Unlike golang.org/x/sync's
-// singleflight, each waiter blocks on its own context (a short-deadline
-// caller can't fail out every other waiter, and a waiter's own cancellation
-// doesn't block on the leader), and a Set/Delete that completes while a
-// fetch is in flight poisons that fetch so its result is never admitted —
-// closing a stale-cache window a naive invalidate-then-write has — and
-// detaches it, so a Get that starts after the Set/Delete returns fetches
-// afresh and sees the write.
+// Concurrent misses on the same key are coalesced into one underlying Get
+// (see flight). Unlike golang.org/x/sync's singleflight, each waiter blocks
+// on its own context, so a short-deadline caller can't fail out the other
+// waiters and a cancelled waiter doesn't wait for the leader. A Set/Delete
+// that completes while a fetch is in flight poisons that fetch, so its
+// possibly stale result is never admitted, and detaches it, so a Get that
+// starts after the write fetches afresh and sees it.
 //
 // GetRange/GetSuffix consult a cached whole value first (sliced in memory)
 // before falling back to the underlying store, so a cached shard serves
@@ -79,18 +72,13 @@ type flight struct {
 	poisoned bool
 }
 
-// testHookWaiterJoined, when non-nil, is called each time Get finds an
-// existing in-flight fetch for a key and joins it as a waiter (as opposed
-// to becoming the leader). Used by tests to deterministically wait for N
-// waiters to join a flight before releasing the leader, instead of racing
-// on goroutine scheduling. Never set outside tests.
+// testHookWaiterJoined, when non-nil, is called each time Get joins an
+// existing flight as a waiter rather than leading it. Test-only.
 var testHookWaiterJoined func()
 
 // testHookFetchPublished, when non-nil, is called by a fetch leader right
 // after the locked section that retires its flight (removes it, reads
-// poisoned, admits the result), before fl.done is closed. Used by tests to
-// land a Set/Delete in that window and check that it can't leave a stale
-// value cached. Never set outside tests.
+// poisoned, admits the result), before fl.done is closed. Test-only.
 var testHookFetchPublished func()
 
 // New constructs a read-only cache wrapping underlying. The result is not a
@@ -111,10 +99,8 @@ func New(underlying store.Store, cfg Config) *Store {
 	}
 }
 
-// lookup returns the cached value for key, if present, WITHOUT copying —
-// callers that hand the result to another goroutine or retain it past the
-// call must copy it themselves. Internal helper; see Get/GetRange for the
-// copying public-facing accessors.
+// lookup returns the cached value for key, if present, WITHOUT copying:
+// callers must not mutate it or hand it out uncopied.
 func (s *Store) lookup(key string) ([]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,11 +113,10 @@ func (s *Store) lookup(key string) ([]byte, bool) {
 }
 
 // admitLocked installs (key,val) into the cache, evicting older entries as
-// needed to satisfy MaxBytes / MaxEntries. Caller must hold s.mu. The
-// provided val is taken by reference and MUST NOT be mutated by the caller
-// after admission; callers should pass freshly-allocated buffers. A value
-// larger than MaxBytes is not admitted: it could never fit, and admitting it
-// would evict every other entry first.
+// needed to satisfy MaxBytes / MaxEntries. Caller must hold s.mu. val is
+// retained by reference and must not be mutated afterwards. A value larger
+// than MaxBytes is not admitted: it could never fit, and admitting it would
+// evict every other entry first.
 func (s *Store) admitLocked(key string, val []byte) {
 	size := int64(len(val))
 	if s.maxBytes > 0 && size > s.maxBytes {
@@ -139,7 +124,6 @@ func (s *Store) admitLocked(key string, val []byte) {
 	}
 
 	if el, ok := s.index[key]; ok {
-		// Replace existing.
 		old := el.Value.(*entry)
 		s.bytes -= old.size
 		old.val = val
@@ -254,10 +238,9 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // leaderCtxErr reports whether err is (possibly wrapped) a context
-// cancellation/deadline error, i.e. the leader's fetch failed because of ITS
-// ctx, not because the underlying store legitimately errored. Cloud SDKs
-// typically wrap context errors (e.g. "get object: %w") rather than
-// returning the bare sentinel, so this must use errors.Is, not ==.
+// cancellation/deadline error, i.e. the leader's fetch failed because of its
+// own ctx rather than a store error. Backends wrap context errors, hence
+// errors.Is.
 func leaderCtxErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

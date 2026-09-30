@@ -115,7 +115,6 @@ func (c *Codec) transpose(in codec.ArrayChunk, out *codec.ArrayChunk, perm []int
 		return fmt.Errorf("transpose: unsupported dtype %q", in.Dtype)
 	}
 
-	// Total element count and input byte length sanity check.
 	var nElems int64 = 1
 	for _, d := range in.Shape {
 		if d < 0 {
@@ -129,13 +128,11 @@ func (c *Codec) transpose(in codec.ArrayChunk, out *codec.ArrayChunk, perm []int
 			len(in.Data), in.Shape, elemSize, wantBytes)
 	}
 
-	// Compute output shape.
 	outShape := make([]int64, rank)
 	for i, p := range perm {
 		outShape[i] = in.Shape[p]
 	}
 
-	// Prepare output buffer.
 	if cap(out.Data) >= int(wantBytes) {
 		out.Data = out.Data[:wantBytes]
 	} else {
@@ -144,24 +141,21 @@ func (c *Codec) transpose(in codec.ArrayChunk, out *codec.ArrayChunk, perm []int
 	out.Shape = outShape
 	out.Dtype = in.Dtype
 
-	// Zero-element chunk: nothing to copy.
 	if nElems == 0 {
 		return nil
 	}
 
-	// Row-major strides (in elements) for input and output.
 	inStrides := rowMajorStrides(in.Shape)
 	outStrides := rowMajorStrides(outShape)
 
-	// Walk every logical position in the output via mixed-radix counter
-	// over outShape, computing the corresponding input flat index using
-	// inStrides indexed by the permutation.
+	// Walk every output position with a mixed-radix counter over outShape
+	// (last axis fastest), tracking the matching input offset: output axis i
+	// steps inStrides[perm[i]] in the input.
 	idx := make([]int64, rank)
 	src := in.Data
 	dst := out.Data
 	es := int64(elemSize)
 
-	// Precompute mapping: at axis i of output, we step inStrides[perm[i]] in input.
 	inStepPerOutAxis := make([]int64, rank)
 	for i := 0; i < rank; i++ {
 		inStepPerOutAxis[i] = inStrides[perm[i]]
@@ -170,12 +164,10 @@ func (c *Codec) transpose(in codec.ArrayChunk, out *codec.ArrayChunk, perm []int
 	var srcOff int64
 	var dstOff int64
 	for {
-		// Copy one element.
 		s := srcOff * es
 		d := dstOff * es
 		copy(dst[d:d+es], src[s:s+es])
 
-		// Increment mixed-radix index over outShape, last axis fastest.
 		axis := rank - 1
 		for axis >= 0 {
 			idx[axis]++
@@ -184,7 +176,6 @@ func (c *Codec) transpose(in codec.ArrayChunk, out *codec.ArrayChunk, perm []int
 			if idx[axis] < outShape[axis] {
 				break
 			}
-			// Carry: reset this axis to 0 and propagate.
 			srcOff -= inStepPerOutAxis[axis] * outShape[axis]
 			dstOff -= outStrides[axis] * outShape[axis]
 			idx[axis] = 0

@@ -29,10 +29,8 @@ import (
 
 // DecodePartial implements codec.PartialDecoder.
 //
-// req.Fill, when non-nil, is one element's worth of native-LE bytes
-// representing the array's fill value; req.Out is pre-filled with it before
-// decoding so any region overlapping an absent inner chunk reads back as
-// fill.
+// req.Out is pre-filled with req.Fill (or zeros) before decoding, so any
+// region overlapping an absent inner chunk reads back as the fill value.
 func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, req *codec.PartialReadRequest) error {
 	if c.indexLocation != indexEnd && c.indexLocation != indexStart {
 		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.indexLocation)
@@ -71,9 +69,6 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	if int64(len(outBuf)) != expectedOut {
 		return fmt.Errorf("sharding_indexed: outBuf size %d != expected %d", len(outBuf), expectedOut)
 	}
-	// Pre-fill outBuf with fill so any region overlapping an absent inner
-	// chunk reads as the array's fill_value (not zero). Empty/nil fill
-	// degenerates to zero-fill via writeFill.
 	if len(fill) != esz {
 		fill = nil
 	}
@@ -89,7 +84,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	n := numInner(grid)
 	key := req.Key
 
-	// 1) Fetch the index payload at the configured location.
+	// Fetch and decode the index.
 	idxLen, err := c.indexEncodedSize(n)
 	if err != nil {
 		return fmt.Errorf("sharding_indexed: compute index size: %w", err)
@@ -105,7 +100,6 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 			return fmt.Errorf("sharding_indexed: index trailer short: got %d want %d", len(indexBytes), idxLen)
 		}
 	} else { // indexStart
-		// The index sits at offset 0; one positional range read is enough.
 		indexBytes, err = fetcher.GetRange(ctx, key, 0, idxLen)
 		if err != nil {
 			return fmt.Errorf("sharding_indexed: fetch index header: %w", err)
@@ -120,9 +114,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		return err
 	}
 
-	// 2) Identify inner chunks intersecting the region.
-	// For each inner chunk grid coord, compute its element-space extent in
-	// chunk-local coordinates and intersect with region.
+	// Identify inner chunks intersecting the region.
 	type needed struct {
 		coord      []int64
 		off        int64
@@ -137,7 +129,6 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	for i := int64(0); i < n; i++ {
 		off := entries[2*i]
 		ln := entries[2*i+1]
-		// Compute this inner chunk's element extents in chunk-local space.
 		var origin = make([]int64, rank)
 		var end = make([]int64, rank)
 		intersects := true
@@ -155,12 +146,10 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 			if off == emptyMarker && ln == emptyMarker {
 				// Absent inner chunk: outBuf is already pre-filled with fill; skip.
 			} else {
-				// off/ln come from untrusted stored metadata; reject values
-				// that don't fit in an int64 before ever casting them (a
-				// silent uint64->int64 wrap could otherwise produce a
-				// negative offset/length downstream), and ranges whose end
-				// overflows int64. A range past the end of the shard is
-				// caught as a short read below.
+				// off/ln are untrusted: reject values that would wrap
+				// negative when cast to int64, and ranges whose end
+				// overflows. A range past the end of the shard is caught as
+				// a short read below.
 				if off == emptyMarker || ln == emptyMarker {
 					return fmt.Errorf("sharding_indexed: index entry %d half-empty (off=%d len=%d)", i, off, ln)
 				}
@@ -202,14 +191,13 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		return nil
 	}
 
-	// 3) Coalesce ranges and fetch.
+	// Coalesce ranges and fetch.
 	ranges := make([]byteRange, len(needs))
 	for i, nd := range needs {
 		ranges[i] = byteRange{off: nd.off, n: nd.ln}
 	}
 	merged := coalesceRanges(ranges, gapBytes)
 
-	// Pre-allocate per-need raw bytes slot.
 	rawByIdx := make([][]byte, len(needs))
 	for _, m := range merged {
 		blob, err := fetcher.GetRange(ctx, key, m.off, m.n)
@@ -229,7 +217,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		}
 	}
 
-	// 4) Decode each needed inner chunk and copy its intersection into outBuf.
+	// Decode each needed inner chunk and copy its intersection into outBuf.
 	ndSc := ndcopy.NewScratch(rank)
 	dstRegion := make([]ndcopy.Region, rank)
 	srcRegion := make([]ndcopy.Region, rank)
@@ -261,12 +249,8 @@ type innerRange struct {
 }
 
 // copySubregion copies the inner-chunk-local rectangle described by lr from
-// inner (shape innerShape) into outBuf (shape regionShape), via the shared
-// ndcopy kernel. All buffers are row-major; elements are esz bytes. sc/
-// dstRegion/srcRegion are caller-owned scratch (sized for regionShape's
-// rank), reused across many calls in DecodePartial's per-inner-chunk loop to
-// avoid a per-call allocation — mirrors copyRegion/extractRegion in
-// sharding.go.
+// inner (shape innerShape) into outBuf (shape regionShape). sc/dstRegion/
+// srcRegion are caller-owned scratch sized for regionShape's rank.
 func copySubregion(
 	outBuf []byte, regionShape []int64,
 	inner []byte, innerShape []int64,

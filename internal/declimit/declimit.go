@@ -1,10 +1,9 @@
 // Package declimit hosts the shared decompression-output size cap consulted
-// by the gzip / zlib / zstd codecs.
+// by the gzip, zlib, zstd and blosc codecs and the sharding index decoder.
 //
-// The cap defends against decompression bombs: hostile metadata can declare
-// a small encoded chunk that expands to gigabytes. A single shared default
-// keeps all three codecs in sync and lets callers raise/disable the limit
-// once at process start.
+// The cap defends against decompression bombs: a small hostile payload that
+// expands to gigabytes. One shared value lets callers raise or disable the
+// limit for every codec at once.
 package declimit
 
 import (
