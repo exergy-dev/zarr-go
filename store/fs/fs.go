@@ -66,9 +66,12 @@ func New(root string, opts ...Option) (*Store, error) {
 func (s *Store) MmapEnabled() bool { return s.mmapEnabled }
 
 // resolve translates a forward-slash key into an absolute path under the root,
-// rejecting any key that contains a ".." segment or a segment in the
-// reserved temp-file namespace.
+// rejecting any key that contains a ".." segment, a segment in the reserved
+// temp-file namespace, or anything else that isn't a local path on this OS
+// (e.g. `..\x` or a volume name on windows). Leading slashes are ignored, so
+// "/a" and "a" name the same key.
 func (s *Store) resolve(key string) (string, error) {
+	key = strings.TrimLeft(key, "/")
 	if key == "" {
 		return s.root, nil
 	}
@@ -81,7 +84,11 @@ func (s *Store) resolve(key string) (string, error) {
 			return "", fmt.Errorf("fs: key %q contains reserved segment %q (prefix %q is reserved for staging files)", key, seg, tempPrefix)
 		}
 	}
-	return filepath.Join(s.root, filepath.FromSlash(key)), nil
+	rel := filepath.FromSlash(key)
+	if !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("fs: key %q is not a local path beneath the store root", key)
+	}
+	return filepath.Join(s.root, rel), nil
 }
 
 // Get returns the full value at key.
