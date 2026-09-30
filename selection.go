@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+
+	"github.com/exergy-dev/zarr-go/internal/ndcopy"
 )
 
 // Selection identifies a contiguous (with stride) hyperrectangle of an array.
@@ -112,13 +114,16 @@ func ChunksIntersecting(arrayShape, chunkShape []int64, sel Selection) iter.Seq[
 	}
 }
 
-// chunkSelectionInto fills caller-supplied chunkSrc and outDst slices (each of
-// len rank) with, for the chunk at coord, (a) the source region inside the
-// chunk and (b) the destination region inside the selection's output. Both
-// have the same length per dim: chunkSrc is in chunk-local coordinates with
-// the selection's Step, outDst in output-element coordinates with Step=1.
-func chunkSelectionInto(arrayShape, chunkShape []int64, sel Selection, coord ChunkCoord, chunkSrc, outDst []DimRange) {
+// chunkSelection returns, for the chunk at coord, (a) the source region
+// inside the chunk and (b) the destination region inside the selection's
+// output. Both have the same length per dim: chunkSrc is in chunk-local
+// coordinates with the selection's Step, outDst in output-element
+// coordinates with Step=1. They are ndcopy.Regions, ready for ndcopy.Copy,
+// and share one allocation.
+func chunkSelection(arrayShape, chunkShape []int64, sel Selection, coord ChunkCoord) (chunkSrc, outDst []ndcopy.Region) {
 	rank := len(arrayShape)
+	buf := make([]ndcopy.Region, 2*rank)
+	chunkSrc, outDst = buf[:rank:rank], buf[rank:]
 	for i := 0; i < rank; i++ {
 		r := sel.Ranges[i]
 		chunkOrigin := coord[i] * chunkShape[i]
@@ -138,9 +143,10 @@ func chunkSelectionInto(arrayShape, chunkShape []int64, sel Selection, coord Chu
 		if stop > chunkEnd {
 			stop = chunkEnd
 		}
-		chunkSrc[i] = DimRange{Start: first - chunkOrigin, Stop: stop - chunkOrigin, Step: r.Step}
+		chunkSrc[i] = ndcopy.Region{Start: first - chunkOrigin, Stop: stop - chunkOrigin, Step: r.Step}
 		outStart := (first - r.Start) / r.Step
-		outStop := outStart + chunkSrc[i].Length()
-		outDst[i] = DimRange{Start: outStart, Stop: outStop, Step: 1}
+		outStop := outStart + DimRange(chunkSrc[i]).Length()
+		outDst[i] = ndcopy.Region{Start: outStart, Stop: outStop, Step: 1}
 	}
+	return chunkSrc, outDst
 }

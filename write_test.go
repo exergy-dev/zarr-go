@@ -3,6 +3,7 @@ package zarr_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/exergy-dev/zarr-go"
@@ -170,5 +171,120 @@ func TestCreateArrayRejectsBadShape(t *testing.T) {
 	}
 	if _, err := zarr.CreateArray[float32](ctx, s, "arr", []int64{4, 4}, []int64{4}); err == nil {
 		t.Fatal("expected error for rank mismatch")
+	}
+}
+
+// selFlatIndices returns, in the selection's row-major output order, the
+// flat row-major index into an array of the given shape of every element
+// sel covers: an independent reference for what Read/Write touch.
+func selFlatIndices(shape []int64, sel zarr.Selection) []int64 {
+	out := []int64{0}
+	for d, r := range sel.Ranges {
+		var next []int64
+		for _, base := range out {
+			for i := r.Start; i < r.Stop; i += r.Step {
+				next = append(next, base*shape[d]+i)
+			}
+		}
+		out = next
+	}
+	return out
+}
+
+// TestReadErrorAmongManyChunks checks that one corrupt chunk among many,
+// read with a single I/O and decode worker, surfaces as a DecodeError
+// naming that chunk rather than hanging or being lost.
+func TestReadErrorAmongManyChunks(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	shape := []int64{64}
+	a, err := zarr.CreateArray[int32](ctx, s, "arr", shape, []int64{1},
+		zarr.WithCodecs(
+			codec.Spec{Name: "bytes", Configuration: json.RawMessage(`{"endian":"little"}`)},
+			codec.Spec{Name: "gzip", Configuration: json.RawMessage(`{"level":1}`)},
+		),
+		zarr.WithConcurrency(1), zarr.WithIOConcurrency(1))
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	if err := a.Write(ctx, zarr.All(shape), make([]int32, 64)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := s.Set(ctx, "arr/c/37", []byte("corrupt")); err != nil {
+		t.Fatal(err)
+	}
+	err = a.Read(ctx, zarr.All(shape), make([]int32, 64))
+	var de *zarr.DecodeError
+	if !errors.As(err, &de) {
+		t.Fatalf("Read: got %v, want *zarr.DecodeError", err)
+	}
+	if len(de.Coord) != 1 || de.Coord[0] != 37 {
+		t.Errorf("DecodeError.Coord = %v, want [37]", de.Coord)
+	}
+}
+
+// TestWriteReadHighRankStrided round-trips strided writes and reads through
+// a rank-9 array with hundreds of chunks, many edge-clipped, under tight
+// concurrency limits (more chunks than workers), and checks every element
+// against an in-memory reference. Rank 9 exceeds any small fixed-size
+// per-chunk scratch, so this pins the general-rank Read/Write path.
+func TestWriteReadHighRankStrided(t *testing.T) {
+	ctx := context.Background()
+	const rank = 9
+	shape := make([]int64, rank)
+	chunks := make([]int64, rank)
+	for i := range shape {
+		shape[i], chunks[i] = 3, 2
+	}
+	a, err := zarr.CreateArray[int32](ctx, mem.New(), "arr", shape, chunks,
+		zarr.WithConcurrency(2), zarr.WithIOConcurrency(3))
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	full := zarr.All(shape)
+	ref := make([]int32, full.NumElements())
+	for i := range ref {
+		ref[i] = int32(i + 1)
+	}
+	if err := a.Write(ctx, full, ref); err != nil {
+		t.Fatalf("Write(all): %v", err)
+	}
+
+	strided := make([]zarr.DimRange, rank)
+	for i := range strided {
+		strided[i] = zarr.DimRange{Start: int64(i % 2), Stop: 3, Step: 2}
+	}
+	sel := zarr.Selection{Ranges: strided}
+	patch := make([]int32, sel.NumElements())
+	for i, flat := range selFlatIndices(shape, sel) {
+		patch[i] = -int32(i + 1)
+		ref[flat] = patch[i]
+	}
+	if err := a.Write(ctx, sel, patch); err != nil {
+		t.Fatalf("Write(strided): %v", err)
+	}
+
+	got := make([]int32, len(ref))
+	if err := a.Read(ctx, full, got); err != nil {
+		t.Fatalf("Read(all): %v", err)
+	}
+	for i := range ref {
+		if got[i] != ref[i] {
+			t.Fatalf("Read(all)[%d] = %d, want %d", i, got[i], ref[i])
+		}
+	}
+
+	for i := range strided {
+		strided[i] = zarr.DimRange{Start: int64(i % 3), Stop: 3, Step: 1 + int64(i%2)}
+	}
+	sel = zarr.Selection{Ranges: strided}
+	got = make([]int32, sel.NumElements())
+	if err := a.Read(ctx, sel, got); err != nil {
+		t.Fatalf("Read(strided): %v", err)
+	}
+	for i, flat := range selFlatIndices(shape, sel) {
+		if got[i] != ref[flat] {
+			t.Fatalf("Read(strided)[%d] = %d, want %d", i, got[i], ref[flat])
+		}
 	}
 }
