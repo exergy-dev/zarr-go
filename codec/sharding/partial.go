@@ -99,6 +99,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	}
 
 	var indexBytes []byte
+	shardLen := int64(-1) // known only when the whole shard was fetched
 	if c.IndexLocation == IndexEnd {
 		if sf, ok := fetcher.(codec.SuffixRangeFetcher); ok {
 			indexBytes, err = sf.GetSuffix(ctx, key, idxLen)
@@ -113,7 +114,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 			if err != nil {
 				return fmt.Errorf("sharding_indexed: fetch shard: %w", err)
 			}
-			shardLen := int64(len(whole))
+			shardLen = int64(len(whole))
 			if shardLen < idxLen {
 				return fmt.Errorf("sharding_indexed: shard too short: %d < %d", shardLen, idxLen)
 			}
@@ -170,14 +171,22 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		}
 		if intersects {
 			if off == emptyMarker && ln == emptyMarker {
-				// All-zero inner chunk: outBuf is already zeroed; skip.
+				// Absent inner chunk: outBuf is already pre-filled with fill; skip.
 			} else {
 				// off/ln come from untrusted stored metadata; reject values
 				// that don't fit in an int64 before ever casting them (a
 				// silent uint64->int64 wrap could otherwise produce a
-				// negative offset/length downstream).
-				if off > math.MaxInt64 || ln > math.MaxInt64 {
+				// negative offset/length downstream), and ranges whose end
+				// overflows int64 or runs past a known shard length.
+				if off == emptyMarker || ln == emptyMarker {
+					return fmt.Errorf("sharding_indexed: index entry %d half-empty (off=%d len=%d)", i, off, ln)
+				}
+				if off > math.MaxInt64 || ln > math.MaxInt64 || off > math.MaxInt64-ln {
 					return fmt.Errorf("sharding_indexed: index entry %d out of range (off=%d len=%d)", i, off, ln)
+				}
+				if shardLen >= 0 && off+ln > uint64(shardLen) {
+					return fmt.Errorf("sharding_indexed: index entry %d out of bounds (off=%d len=%d shard=%d)",
+						i, off, ln, shardLen)
 				}
 				innerShape := innerShapeAt(coord, c.ChunkShape, fullShape)
 				lr := make([]innerRange, rank)
@@ -233,6 +242,10 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		}
 		for _, mem := range m.Members {
 			start := mem.OffInMerged
+			if start < 0 || mem.N < 0 || mem.N > int64(len(blob))-start {
+				return fmt.Errorf("sharding_indexed: inner range [%d,+%d) exceeds fetched span [%d,+%d)",
+					m.Off+start, mem.N, m.Off, len(blob))
+			}
 			rawByIdx[mem.OriginalIndex] = blob[start : start+mem.N]
 		}
 	}

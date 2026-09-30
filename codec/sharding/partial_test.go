@@ -3,6 +3,8 @@ package sharding_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	_ "github.com/rkm/zarr-go/codec/bytes"
 	_ "github.com/rkm/zarr-go/codec/crc32c"
 	_ "github.com/rkm/zarr-go/codec/gzip"
+	"github.com/rkm/zarr-go/store/mem"
 )
 
 // countingFetcher serves range and suffix reads from an in-memory blob and
@@ -289,6 +292,73 @@ func TestDecodePartialEdgeCases(t *testing.T) {
 		if b != 0 {
 			t.Errorf("expected zero region from empty inner chunk, got %v", bytesAsInt32(out2))
 			break
+		}
+	}
+}
+
+// cfgRawIndex has no crc32c on the index, so tests can hand-write index
+// entries without recomputing a checksum.
+const cfgRawIndex = `{
+  "chunk_shape": [2],
+  "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+  "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+}`
+
+// rawShard lays out data followed by a little-endian uint64 index trailer.
+func rawShard(data []byte, entries ...uint64) []byte {
+	out := append([]byte(nil), data...)
+	for _, e := range entries {
+		out = binary.LittleEndian.AppendUint64(out, e)
+	}
+	return out
+}
+
+// TestDecodePartialRejectsBadIndexEntries feeds hostile (offset, length)
+// index entries through both fetch paths (suffix read via the mem store,
+// and the whole-blob fallback). Each must produce an error, never a panic:
+// Array.Read runs DecodePartial in a goroutine, so a panic here takes down
+// the process.
+func TestDecodePartialRejectsBadIndexEntries(t *testing.T) {
+	const empty = math.MaxUint64
+	data := []byte{1, 2, 3, 4}
+	cases := []struct {
+		name    string
+		entries []uint64 // (off, len) for inner chunks 0 and 1
+	}{
+		// off+len wraps int64: CoalesceRanges used to treat the range as
+		// fully contained, then blob[start:start+N] panicked.
+		{"overflow", []uint64{0, 4, 1000, math.MaxInt64}},
+		{"overflow-first", []uint64{1, math.MaxInt64, 0, 2}},
+		{"half-empty-off", []uint64{0, 2, empty, 2}},
+		{"half-empty-len", []uint64{0, 2, 2, empty}},
+		{"past-end", []uint64{0, 2, 30, 10}},
+	}
+	for _, tc := range cases {
+		shard := rawShard(data, tc.entries...)
+		st := mem.New()
+		if err := st.Set(context.Background(), "shard", shard); err != nil {
+			t.Fatal(err)
+		}
+		fetchers := []struct {
+			name string
+			f    codec.RangeFetcher
+		}{
+			{"suffix", st},
+			{"fallback", &rangeOnlyFetcher{key: "shard", blob: shard}},
+		}
+		for _, fc := range fetchers {
+			f := fc.f
+			t.Run(tc.name+"/"+fc.name, func(t *testing.T) {
+				pd := newCodec(t, cfgRawIndex).(codec.PartialDecoder)
+				req := codec.PartialReadRequest{
+					Key: "shard", FullShape: []int64{4}, Dtype: "uint8",
+					Region: []codec.DimRange{{Start: 0, Stop: 3, Step: 1}},
+					Out:    make([]byte, 3), GapBytes: 4 << 20,
+				}
+				if err := pd.DecodePartial(context.Background(), f, &req); err == nil {
+					t.Fatalf("DecodePartial accepted index %v", tc.entries)
+				}
+			})
 		}
 	}
 }

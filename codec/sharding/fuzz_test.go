@@ -1,11 +1,16 @@
 package sharding
 
 import (
+	"context"
+	"encoding/binary"
 	"encoding/json"
+	"math"
 	"testing"
 
+	"github.com/rkm/zarr-go/codec"
 	_ "github.com/rkm/zarr-go/codec/bytes"
 	_ "github.com/rkm/zarr-go/codec/crc32c"
+	"github.com/rkm/zarr-go/store/mem"
 )
 
 // FuzzDecodeIndex feeds arbitrary bytes to decodeIndex, the parser for a
@@ -60,3 +65,71 @@ func FuzzDecodeIndex(f *testing.F) {
 		}
 	})
 }
+
+// FuzzDecodePartial feeds arbitrary shard bytes and region bounds to
+// DecodePartial, through both the suffix-read path (mem store) and the
+// whole-blob fallback (range-only fetcher). The shard blob, and so its
+// index, is untrusted store data; Array.Read runs DecodePartial in a
+// goroutine, so it must return an error rather than panic.
+func FuzzDecodePartial(f *testing.F) {
+	const dim = 8
+	c := &Codec{}
+	// Index without crc32c so mutated index entries reach the range logic
+	// instead of failing the checksum.
+	cfg, _ := json.Marshal(map[string]any{
+		"chunk_shape": []int{2},
+		"codecs": []map[string]any{
+			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
+		},
+		"index_codecs": []map[string]any{
+			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
+		},
+	})
+	if err := c.Configure(cfg); err != nil {
+		f.Fatalf("Configure: %v", err)
+	}
+
+	valid, err := c.EncodeAB(codec.ArrayChunk{
+		Shape: []int64{dim}, Dtype: "uint8",
+		Data: []byte{1, 2, 0, 0, 5, 6, 7, 8}, // inner chunk 1 absent
+	})
+	if err != nil {
+		f.Fatalf("EncodeAB: %v", err)
+	}
+	// Index entry whose off+len overflows int64 (the C1 crasher).
+	malicious := []byte{1, 2, 3, 4}
+	for _, e := range []uint64{0, 4, 1000, math.MaxInt64, 0, 2, 2, 2} {
+		malicious = binary.LittleEndian.AppendUint64(malicious, e)
+	}
+	for _, shard := range [][]byte{valid, malicious} {
+		for _, suffix := range []bool{true, false} {
+			f.Add(shard, int64(0), int64(dim), suffix)
+			f.Add(shard, int64(1), int64(5), suffix)
+		}
+	}
+
+	f.Fuzz(func(t *testing.T, shard []byte, start, stop int64, suffix bool) {
+		st := mem.New()
+		if err := st.Set(context.Background(), "shard", shard); err != nil {
+			t.Fatal(err)
+		}
+		var fetcher codec.RangeFetcher = st
+		if !suffix {
+			fetcher = rangeOnly{st}
+		}
+		var out []byte
+		if 0 <= start && start <= stop && stop <= dim {
+			out = make([]byte, stop-start)
+		}
+		req := codec.PartialReadRequest{
+			Key: "shard", FullShape: []int64{dim}, Dtype: "uint8",
+			Region: []codec.DimRange{{Start: start, Stop: stop, Step: 1}},
+			Out:    out, GapBytes: 4 << 20,
+		}
+		_ = c.DecodePartial(context.Background(), fetcher, &req)
+	})
+}
+
+// rangeOnly hides a store's GetSuffix so DecodePartial takes the whole-blob
+// fallback path.
+type rangeOnly struct{ codec.RangeFetcher }
