@@ -55,29 +55,47 @@ func TestNew_RequiresBucket(t *testing.T) {
 	}
 }
 
+// fakeStore returns a Store for bucket "b" on a cloudstoretest.Server.
+func fakeStore(t *testing.T, url string) *Store {
+	t.Helper()
+	t.Setenv("STORAGE_EMULATOR_HOST", url)
+	client, err := storage.NewClient(context.Background())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return &Store{client: client, bucket: client.Bucket("b"), name: "b"}
+}
+
+// TestFakeConformance runs the read side of the store contract (Basics,
+// GetRange, GetSuffix) against the credential-free fake.
+func TestFakeConformance(t *testing.T) {
+	srv := cloudstoretest.NewServer(t, "Range")
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return fakeStore(t, srv.URL)
+	}, storetest.Options{
+		ReadOnly: true,
+		NoList:   true,
+		Seed:     func(_ *testing.T, _ store.Store, key string, value []byte) { srv.Put(key, value) },
+	})
+}
+
 // TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
 // object size, including when off+n-1 overflows int64 (n = MaxInt64). The
 // GCS HTTP reader builds "bytes=off-(off+length-1)" itself, so an unclamped
 // length overflows inside the SDK.
 func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
-	url, ranges := cloudstoretest.RangeServer(t, "Range", []byte("0123456789"))
-	t.Setenv("STORAGE_EMULATOR_HOST", url)
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
+	srv := cloudstoretest.NewServer(t, "Range")
+	srv.Put("k", []byte("0123456789"))
+	s := fakeStore(t, srv.URL)
+	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	s := &Store{client: client, bucket: client.Bucket("b"), name: "b"}
-
-	got, err := s.GetRange(ctx, "k", 5, math.MaxInt64)
-	if err != nil {
-		t.Fatalf("GetRange(5, MaxInt64): %v (Range headers sent: %q)", err, ranges())
+		t.Fatalf("GetRange(5, MaxInt64): %v (Range headers sent: %q)", err, srv.Ranges())
 	}
 	if string(got) != "56789" {
 		t.Fatalf("GetRange(5, MaxInt64) = %q, want %q", got, "56789")
 	}
-	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
+	if r, want := srv.Ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
 		t.Fatalf("range headers sent = %q, want [%q]", r, want)
 	}
 }
