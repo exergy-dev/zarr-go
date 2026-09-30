@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rkm/zarr-go/store"
@@ -99,6 +101,48 @@ func TestMmapSatisfiesInterface(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var _ store.MmapStore = s
+}
+
+// TestMmapDoesNotHoldFd checks that a live mapping does not pin an open file
+// descriptor: the mapping outlives the fd, so GetMmap closes it immediately
+// and release only unmaps. Holding the fd until release would let a caller
+// with many live mappings exhaust the fd limit.
+func TestMmapDoesNotHoldFd(t *testing.T) {
+	const fdDir = "/proc/self/fd"
+	if _, err := os.Stat(fdDir); err != nil {
+		t.Skipf("%s unavailable: %v", fdDir, err)
+	}
+	ctx := context.Background()
+	s, err := New(t.TempDir(), WithMmap())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	want := bytes.Repeat([]byte("m"), 4096)
+	if err := s.Set(ctx, "k", want); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	path, err := s.resolve("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, release, err := s.GetMmap(ctx, "k")
+	if err != nil {
+		t.Fatalf("GetMmap: %v", err)
+	}
+	defer release()
+
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if target, err := os.Readlink(filepath.Join(fdDir, e.Name())); err == nil && target == path {
+			t.Errorf("fd %s still open on %s while mapping is live", e.Name(), path)
+		}
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatalf("mapping unreadable after fd close: len got=%d want=%d", len(data), len(want))
+	}
 }
 
 // TestMmapNoLeakLoop opens many keys via mmap in a tight loop. If release

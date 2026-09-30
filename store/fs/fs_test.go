@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -418,6 +419,95 @@ func TestRejectDotDotInKey(t *testing.T) {
 	}
 }
 
+// TestResolveRejectsEscapingKeys checks that no key can address a path
+// outside the root, including OS-separator spellings of ".." that a split
+// on "/" alone misses (on windows, `..\x` is a single "/"-segment but
+// filepath.Join treats it as a parent reference).
+func TestResolveRejectsEscapingKeys(t *testing.T) {
+	ctx := context.Background()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	keys := []string{"../x", "a/../../x", "..", "/../x"}
+	if runtime.GOOS == "windows" {
+		keys = append(keys, `..\x`, `a\..\..\x`, `C:x`, `C:\x`, `\x`)
+	}
+	for _, k := range keys {
+		if err := s.Set(ctx, k, []byte("x")); err == nil {
+			t.Errorf("Set %q: expected error, got nil", k)
+		}
+		if ok, err := s.SetIfNotExists(ctx, k, []byte("x")); err == nil {
+			t.Errorf("SetIfNotExists %q: ok=%v, expected error", k, ok)
+		}
+		if _, err := s.Get(ctx, k); err == nil {
+			t.Errorf("Get %q: expected error, got nil", k)
+		}
+		if _, err := s.Exists(ctx, k); err == nil {
+			t.Errorf("Exists %q: expected error, got nil", k)
+		}
+		if err := s.Delete(ctx, k); err == nil {
+			t.Errorf("Delete %q: expected error, got nil", k)
+		}
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "root" {
+			t.Errorf("escaping write created %q outside the store root", e.Name())
+		}
+	}
+}
+
+// TestResolveLeadingSlashIsRootRelative pins the (deliberately kept)
+// behavior that leading slashes are ignored: "/abs" addresses the same
+// value as "abs", inside the root. Callers may pass such keys today (e.g.
+// chunk keys of a root-path array).
+func TestResolveLeadingSlashIsRootRelative(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.Set(ctx, "/abs", []byte("one")); err != nil {
+		t.Fatalf("Set(/abs): %v", err)
+	}
+	if err := s.Set(ctx, "//c/0", []byte("two")); err != nil {
+		t.Fatalf("Set(//c/0): %v", err)
+	}
+	for k, want := range map[string]string{"abs": "one", "/abs": "one", "c/0": "two", "/c/0": "two"} {
+		got, err := s.Get(ctx, k)
+		if err != nil || string(got) != want {
+			t.Errorf("Get(%q) = %q, %v; want %q, nil", k, got, err, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "abs")); err != nil {
+		t.Errorf("Set(/abs) did not land at root/abs: %v", err)
+	}
+}
+
+// TestExistsFalseForDirectory checks that an intermediate directory (a key
+// prefix, not a key) is not reported as an existing key — Get on it fails,
+// so Exists must agree.
+func TestExistsFalseForDirectory(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.Set(ctx, "dir/leaf", []byte("x")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if ok, err := s.Exists(ctx, "dir"); err != nil || ok {
+		t.Fatalf("Exists(dir) = %v, %v; want false, nil", ok, err)
+	}
+	if ok, err := s.Exists(ctx, "dir/leaf"); err != nil || !ok {
+		t.Fatalf("Exists(dir/leaf) = %v, %v; want true, nil", ok, err)
+	}
+}
+
 func TestDeleteMissingNoError(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
@@ -438,5 +528,31 @@ func TestDeleteMissingNoError(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("Exists after Delete: got true, want false")
+	}
+}
+
+// TestStoredFilesAreWorldReadable checks that published keys don't inherit
+// os.CreateTemp's owner-only 0600 mode: a store written by one user must be
+// readable by others (e.g. a web server serving the same directory).
+func TestStoredFilesAreWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on windows")
+	}
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.Set(ctx, "a/set", []byte("x")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if ok, err := s.SetIfNotExists(ctx, "a/sine", []byte("x")); err != nil || !ok {
+		t.Fatalf("SetIfNotExists: ok=%v err=%v", ok, err)
+	}
+	for _, k := range []string{"a/set", "a/sine"} {
+		info, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(k)))
+		if err != nil {
+			t.Fatalf("Stat %q: %v", k, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o044 != 0o044 {
+			t.Errorf("%q mode = %v, want group/other read bits (0o044) set", k, perm)
+		}
 	}
 }

@@ -66,9 +66,12 @@ func New(root string, opts ...Option) (*Store, error) {
 func (s *Store) MmapEnabled() bool { return s.mmapEnabled }
 
 // resolve translates a forward-slash key into an absolute path under the root,
-// rejecting any key that contains a ".." segment or a segment in the
-// reserved temp-file namespace.
+// rejecting any key that contains a ".." segment, a segment in the reserved
+// temp-file namespace, or anything else that isn't a local path on this OS
+// (e.g. `..\x` or a volume name on windows). Leading slashes are ignored, so
+// "/a" and "a" name the same key.
 func (s *Store) resolve(key string) (string, error) {
+	key = strings.TrimLeft(key, "/")
 	if key == "" {
 		return s.root, nil
 	}
@@ -81,7 +84,11 @@ func (s *Store) resolve(key string) (string, error) {
 			return "", fmt.Errorf("fs: key %q contains reserved segment %q (prefix %q is reserved for staging files)", key, seg, tempPrefix)
 		}
 	}
-	return filepath.Join(s.root, filepath.FromSlash(key)), nil
+	rel := filepath.FromSlash(key)
+	if !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("fs: key %q is not a local path beneath the store root", key)
+	}
+	return filepath.Join(s.root, rel), nil
 }
 
 // Get returns the full value at key.
@@ -133,8 +140,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	if off >= size {
 		return []byte{}, nil
 	}
+	// Compare against the remaining length rather than off+n, which can
+	// overflow int64 for n near MaxInt64 and skip the clamp.
 	want := n
-	if off+want > size {
+	if want > size-off {
 		want = size - off
 	}
 	buf := make([]byte, want)
@@ -229,6 +238,13 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // SetIfNotExists between "temp file created" and "temp file published".
 // Removes the temp file and returns the error on any failure.
 func (s *Store) writeAndCommit(tmp *os.File, tmpPath string, value []byte) error {
+	// os.CreateTemp creates files 0600; widen to the usual 0644 so the
+	// published key isn't owner-only.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
 	if _, err := tmp.Write(value); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
@@ -328,7 +344,8 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// Exists reports whether key is present.
+// Exists reports whether key is present. A directory (a prefix of other
+// keys, not a key itself) is not present.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -337,13 +354,14 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		if errors.Is(err, stdfs.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
 	}
-	return true, nil
+	return !info.IsDir(), nil
 }
 
 // List yields every key for which strings.HasPrefix(key, prefix) holds,

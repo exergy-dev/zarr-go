@@ -10,6 +10,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -175,6 +177,19 @@ func testGetRange(t *testing.T, newStore func(t *testing.T) store.Store, seed fu
 			t.Fatalf("GetRange(clamp) = %q, want %q", got, val[5:])
 		}
 	})
+	// n near MaxInt64 must clamp to the tail without off+n overflowing
+	// (an overflowed sum skips the clamp and sizes the read buffer from n).
+	for _, off := range []int64{0, 5} {
+		t.Run(fmt.Sprintf("n=MaxInt64_off=%d", off), func(t *testing.T) {
+			got, err := s.GetRange(ctx, key, off, math.MaxInt64)
+			if err != nil {
+				t.Fatalf("GetRange(off=%d, n=MaxInt64): %v", off, err)
+			}
+			if string(got) != string(val[off:]) {
+				t.Fatalf("GetRange(off=%d, n=MaxInt64) = %q, want %q", off, got, val[off:])
+			}
+		})
+	}
 	t.Run("exact_range", func(t *testing.T) {
 		got, err := s.GetRange(ctx, key, 2, 4)
 		if err != nil {
@@ -248,6 +263,15 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 		}
 		if string(got) != string(val) {
 			t.Fatalf("GetSuffix(n>size) = %q, want %q", got, val)
+		}
+	})
+	t.Run("n=MaxInt64", func(t *testing.T) {
+		got, err := sr.GetSuffix(ctx, key, math.MaxInt64)
+		if err != nil {
+			t.Fatalf("GetSuffix(n=MaxInt64): %v", err)
+		}
+		if string(got) != string(val) {
+			t.Fatalf("GetSuffix(n=MaxInt64) = %q, want %q", got, val)
 		}
 	})
 	t.Run("missing_key", func(t *testing.T) {
