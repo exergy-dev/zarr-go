@@ -8,6 +8,7 @@
 package zstd
 
 import (
+	"bytes"
 	"fmt"
 	"runtime"
 	"sync"
@@ -17,11 +18,12 @@ import (
 	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
-// scratchPool reuses []byte scratch space across Encode/Decode calls. The
-// klauspost EncodeAll/DecodeAll functions append to the dst argument and
-// return the (possibly grown) slice; we hand them a pooled scratch slice
-// and copy the final bytes into a fresh, right-sized buffer so the scratch
-// can return to the pool unobserved by the caller.
+// scratchPool holds EncodeBB's scratch space. The compressed size isn't
+// known up front, so encoding into reused scratch and copying out an
+// exact-size result keeps EncodeBB at one right-sized allocation; with a nil
+// dst, EncodeAll allocates 2.5-4x more (and 9 times per 1 MiB chunk).
+// DecodeBB needs no scratch: DecodeAll sizes its output from the frame
+// header.
 var scratchPool = sync.Pool{
 	New: func() any {
 		// Start at 16 KiB; klauspost will grow on demand.
@@ -105,55 +107,34 @@ func (c *Codec) init() {
 
 // EncodeBB compresses in and returns a freshly allocated buffer of zstd
 // frame bytes.
-//
-// A pooled scratch slice is handed to EncodeAll as the dst argument; the
-// final bytes are copied into a caller-owned slice so the scratch space
-// can return to scratchPool.
 func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
 	c.init()
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
 	scratchP := scratchPool.Get().(*[]byte)
-	scratch := (*scratchP)[:0]
-	encoded := c.enc.EncodeAll(in, scratch)
-	out := make([]byte, len(encoded))
-	copy(out, encoded)
-	// Hand the (possibly grown) scratch buffer back to the pool.
-	*scratchP = encoded
+	*scratchP = c.enc.EncodeAll(in, (*scratchP)[:0])
+	out := bytes.Clone(*scratchP)
 	putScratch(scratchP)
 	return out, nil
 }
 
 // DecodeBB decompresses one or more concatenated zstd frames in `in` and
 // returns the resulting bytes.
-//
-// A pooled scratch slice is handed to DecodeAll as the dst argument; the
-// final bytes are copied into a caller-owned slice so the scratch space
-// can return to scratchPool.
 func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 	c.init()
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
-	scratchP := scratchPool.Get().(*[]byte)
-	scratch := (*scratchP)[:0]
-	decoded, err := c.dec.DecodeAll(in, scratch)
+	// With a nil dst, DecodeAll sizes its output from the frame header's
+	// content size (bounded by WithDecoderMaxMemory), so this is normally a
+	// single right-sized allocation.
+	out, err := c.dec.DecodeAll(in, nil)
 	if err != nil {
-		// decoded may still be partially populated; return the (possibly
-		// grown) backing slice to the pool.
-		*scratchP = decoded
-		putScratch(scratchP)
 		return nil, fmt.Errorf("zstd codec: decode: %w", err)
 	}
-	if maxDec := declimit.Max(); maxDec > 0 && int64(len(decoded)) > maxDec {
-		*scratchP = decoded
-		putScratch(scratchP)
+	if maxDec := declimit.Max(); maxDec > 0 && int64(len(out)) > maxDec {
 		return nil, fmt.Errorf("zstd codec: decompressed output exceeds %d bytes", maxDec)
 	}
-	out := make([]byte, len(decoded))
-	copy(out, decoded)
-	*scratchP = decoded
-	putScratch(scratchP)
 	return out, nil
 }
