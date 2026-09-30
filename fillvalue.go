@@ -181,23 +181,36 @@ func parseSpecialFloat(raw json.RawMessage) (float64, error) {
 	return f, nil
 }
 
-// float32ToFloat16Bits is a minimal IEEE-754 binary32 → binary16 conversion.
-// Subnormals and overflow are clamped/flushed.
+// float32ToFloat16Bits is an IEEE-754 binary32 → binary16 conversion with
+// round-to-nearest-even, including subnormal results. Values too large for
+// binary16 become ±Inf; NaN stays NaN (quiet) and the sign is preserved.
 func float32ToFloat16Bits(f float32) uint16 {
 	bits := math.Float32bits(f)
-	sign := uint16((bits >> 16) & 0x8000)
-	exp := int32((bits>>23)&0xff) - 127 + 15
+	sign := uint16(bits>>16) & 0x8000
+	exp := int(bits>>23) & 0xff
 	mant := bits & 0x7fffff
-	if exp <= 0 {
-		// Underflow to zero (subnormals not handled exactly; M1 fill values
-		// are typically zero/NaN/Inf).
-		return sign
+	switch e := exp - 127 + 15; {
+	case exp == 0xff && mant != 0:
+		return sign | 0x7e00 // NaN
+	case e >= 0x1f:
+		return sign | 0x7c00 // Inf or overflow
+	case e > 0:
+		// Normal: rounding may carry into the exponent, up to Inf.
+		return sign | uint16(roundShiftRNE(uint32(e)<<23|mant, 13))
+	case e >= -10:
+		// Subnormal: shift the explicit leading bit into the mantissa.
+		// Rounding up to 0x0400 correctly yields the smallest normal.
+		return sign | uint16(roundShiftRNE(mant|0x800000, uint(14-e)))
+	default:
+		return sign // below half the smallest subnormal: ±0
 	}
-	if exp >= 0x1f {
-		if mant != 0 && (bits>>23)&0xff == 0xff {
-			return sign | 0x7e00 // NaN
-		}
-		return sign | 0x7c00 // Inf
+}
+
+// roundShiftRNE returns v >> shift rounded to nearest, ties to even.
+func roundShiftRNE(v uint32, shift uint) uint32 {
+	r, rem, half := v>>shift, v&(1<<shift-1), uint32(1)<<(shift-1)
+	if rem > half || (rem == half && r&1 == 1) {
+		r++
 	}
-	return sign | uint16(exp<<10) | uint16(mant>>13)
+	return r
 }

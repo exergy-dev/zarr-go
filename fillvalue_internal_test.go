@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"math"
 	"slices"
 	"testing"
 	"unsafe"
@@ -114,5 +115,51 @@ func TestParseFillValueNativeByteOrder(t *testing.T) {
 				t.Fatalf("parseFillValue(%s, %s) = %x, want native %x", tc.raw, tc.dt, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFloat32ToFloat16Bits checks binary32 → binary16 conversion rounds to
+// nearest-even (including into and out of the subnormal range) and preserves
+// specials. Expected bits match numpy's float16.
+func TestFloat32ToFloat16Bits(t *testing.T) {
+	cases := []struct {
+		in   float32
+		want uint16
+	}{
+		{0, 0x0000},
+		{float32(math.Copysign(0, -1)), 0x8000},
+		{1, 0x3C00},
+		{-2, 0xC000},
+		{0.1, 0x2E66},
+		{0.3, 0x34CD},                     // remainder above half: rounds up
+		{1 + 1.0/2048, 0x3C00},            // exact tie, even stays
+		{1 + 3.0/2048, 0x3C02},            // exact tie, odd rounds up to even
+		{1 + 1.0/2048 + 1.0/4096, 0x3C01}, // above tie
+		{65504, 0x7BFF},                   // max finite
+		{65519, 0x7BFF},                   // just below the overflow tie
+		{65520, 0x7C00},                   // tie rounds up to +Inf
+		{-65520, 0xFC00},
+		{1e6, 0x7C00},
+		{6.103515625e-05, 0x0400}, // 2^-14, min normal
+		{6.1e-05, 0x03FF},         // largest subnormal region
+		{6.1032e-05, 0x0400},      // subnormal rounding up into normal
+		{6e-8, 0x0001},            // ~min subnormal 2^-24
+		{-6e-8, 0x8001},
+		{2.9802322e-08, 0x0000}, // 2^-25 exact tie, rounds to even 0
+		{3e-8, 0x0001},          // just above 2^-25
+		{1e-10, 0x0000},
+		{float32(math.Inf(1)), 0x7C00},
+		{float32(math.Inf(-1)), 0xFC00},
+	}
+	for _, tc := range cases {
+		if got := float32ToFloat16Bits(tc.in); got != tc.want {
+			t.Errorf("float32ToFloat16Bits(%g) = %#04x, want %#04x", tc.in, got, tc.want)
+		}
+	}
+	if got := float32ToFloat16Bits(float32(math.NaN())); got&0x7C00 != 0x7C00 || got&0x03FF == 0 {
+		t.Errorf("float32ToFloat16Bits(NaN) = %#04x, want a NaN", got)
+	}
+	if got := float32ToFloat16Bits(-float32(math.NaN())); got&0x8000 == 0 {
+		t.Errorf("float32ToFloat16Bits(-NaN) = %#04x, want sign preserved", got)
 	}
 }
