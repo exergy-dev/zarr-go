@@ -250,7 +250,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	}
 }
 
-// GetSuffix implements store.SuffixReader using an HTTP suffix range
+// GetSuffix implements store.Store using an HTTP suffix range
 // request (Range: bytes=-N). Falls back to a whole-body fetch and manual
 // slice if the server returns 200 (ignoring Range) or 416 (rejecting a
 // suffix longer than the resource).
@@ -371,8 +371,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time interface assertions.
-var (
-	_ store.Store        = (*Store)(nil)
-	_ store.SuffixReader = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ store.Store = (*Store)(nil)

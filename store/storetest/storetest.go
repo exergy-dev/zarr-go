@@ -222,10 +222,6 @@ func testGetRange(t *testing.T, newStore func(t *testing.T) store.Store, seed fu
 
 func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed func(*testing.T, store.Store, string, []byte)) {
 	s := newStore(t)
-	sr, ok := s.(store.SuffixReader)
-	if !ok {
-		t.Skip("store does not implement store.SuffixReader")
-	}
 	ctx := context.Background()
 	key := t.Name() + "/key"
 	val := []byte("0123456789")
@@ -233,12 +229,12 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 	missing := t.Name() + "/missing"
 
 	t.Run("negative_n", func(t *testing.T) {
-		if _, err := sr.GetSuffix(ctx, key, -1); !errors.Is(err, store.ErrInvalidRange) {
+		if _, err := s.GetSuffix(ctx, key, -1); !errors.Is(err, store.ErrInvalidRange) {
 			t.Fatalf("GetSuffix(n=-1) = %v, want ErrInvalidRange", err)
 		}
 	})
 	t.Run("n=0_existing_key", func(t *testing.T) {
-		got, err := sr.GetSuffix(ctx, key, 0)
+		got, err := s.GetSuffix(ctx, key, 0)
 		if err != nil {
 			t.Fatalf("GetSuffix(n=0): %v", err)
 		}
@@ -247,12 +243,12 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 		}
 	})
 	t.Run("n=0_missing_key", func(t *testing.T) {
-		if _, err := sr.GetSuffix(ctx, missing, 0); !errors.Is(err, store.ErrKeyNotFound) {
+		if _, err := s.GetSuffix(ctx, missing, 0); !errors.Is(err, store.ErrKeyNotFound) {
 			t.Fatalf("GetSuffix(missing,n=0) = %v, want ErrKeyNotFound", err)
 		}
 	})
 	t.Run("interior", func(t *testing.T) {
-		got, err := sr.GetSuffix(ctx, key, 4)
+		got, err := s.GetSuffix(ctx, key, 4)
 		if err != nil {
 			t.Fatalf("GetSuffix(4): %v", err)
 		}
@@ -262,7 +258,7 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 		}
 	})
 	t.Run("n=size", func(t *testing.T) {
-		got, err := sr.GetSuffix(ctx, key, int64(len(val)))
+		got, err := s.GetSuffix(ctx, key, int64(len(val)))
 		if err != nil {
 			t.Fatalf("GetSuffix(size): %v", err)
 		}
@@ -271,7 +267,7 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 		}
 	})
 	t.Run("n>size", func(t *testing.T) {
-		got, err := sr.GetSuffix(ctx, key, int64(len(val))+100)
+		got, err := s.GetSuffix(ctx, key, int64(len(val))+100)
 		if err != nil {
 			t.Fatalf("GetSuffix(n>size): %v", err)
 		}
@@ -280,7 +276,7 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 		}
 	})
 	t.Run("n=MaxInt64", func(t *testing.T) {
-		got, err := sr.GetSuffix(ctx, key, math.MaxInt64)
+		got, err := s.GetSuffix(ctx, key, math.MaxInt64)
 		if err != nil {
 			t.Fatalf("GetSuffix(n=MaxInt64): %v", err)
 		}
@@ -289,7 +285,7 @@ func testGetSuffix(t *testing.T, newStore func(t *testing.T) store.Store, seed f
 		}
 	})
 	t.Run("missing_key", func(t *testing.T) {
-		if _, err := sr.GetSuffix(ctx, missing, 4); !errors.Is(err, store.ErrKeyNotFound) {
+		if _, err := s.GetSuffix(ctx, missing, 4); !errors.Is(err, store.ErrKeyNotFound) {
 			t.Fatalf("GetSuffix(missing) = %v, want ErrKeyNotFound", err)
 		}
 	})

@@ -308,26 +308,14 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return s.underlying.GetRange(ctx, key, off, n)
 }
 
-// GetSuffix returns the last n bytes of the value at key, consulting a
-// cached whole value first. Falls back to the underlying store's
-// GetSuffix if it implements store.SuffixReader, else to a full Get (which
-// admits the value, so subsequent range/suffix reads on the same key are
-// then served from cache).
+// GetSuffix returns the last n bytes of the value at key. Like GetRange, it
+// slices a cached whole value in memory and otherwise delegates to the
+// underlying store's GetSuffix without admitting anything.
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
 	if v, ok := s.lookup(key); ok {
 		return sliceSuffix(v, n)
 	}
-	if n < 0 {
-		return nil, store.ErrInvalidRange
-	}
-	if sr, ok := s.underlying.(store.SuffixReader); ok {
-		return sr.GetSuffix(ctx, key, n)
-	}
-	whole, err := s.Get(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	return sliceSuffix(whole, n)
+	return s.underlying.GetSuffix(ctx, key, n)
 }
 
 // sliceRange applies the store.Store GetRange contract to an in-memory
@@ -339,7 +327,8 @@ func sliceRange(v []byte, off, n int64) ([]byte, error) {
 	return cloneBytes(store.ClampRange(v, off, n)), nil
 }
 
-// sliceSuffix applies the store.SuffixReader contract to an in-memory value.
+// sliceSuffix applies the store.Store GetSuffix contract to an in-memory
+// value.
 func sliceSuffix(v []byte, n int64) ([]byte, error) {
 	if n < 0 {
 		return nil, store.ErrInvalidRange

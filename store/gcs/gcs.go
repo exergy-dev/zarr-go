@@ -153,7 +153,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
-// GetSuffix implements store.SuffixReader. GCS's NewRangeReader overloads a
+// GetSuffix implements store.Store. GCS's NewRangeReader overloads a
 // negative offset to mean "read the last abs(offset) bytes" (with length
 // forced to -1), which is exactly GetSuffix's semantics for n > 0 — but that
 // trick can't express n==0 (there's no negative zero), so that case is
@@ -296,8 +296,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time checks that *Store satisfies the store interfaces.
-var (
-	_ zstore.Writer       = (*Store)(nil)
-	_ zstore.SuffixReader = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ zstore.Writer = (*Store)(nil)

@@ -219,8 +219,8 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
-// GetSuffix implements store.SuffixReader using S3's native suffix-range
-// syntax ("bytes=-N"), per the store.SuffixReader contract.
+// GetSuffix implements store.Store using S3's native suffix-range
+// syntax ("bytes=-N"), per the store.Store GetSuffix contract.
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
 	if err := cloudstore.ValidateRange("s3", "GetSuffix", 0, n); err != nil {
 		return nil, err
@@ -378,8 +378,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time checks that *Store satisfies the store interfaces.
-var (
-	_ zstore.Writer       = (*Store)(nil)
-	_ zstore.SuffixReader = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ zstore.Writer = (*Store)(nil)

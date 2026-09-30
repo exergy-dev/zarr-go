@@ -117,11 +117,14 @@ func main() {
 | Azure Blob                       | `store/azblob`                       |                                         |
 | LRU cache decorator              | `store/cache`                        | Bytes + entry caps, coalesces concurrent misses |
 
-Every store satisfies `store.Store` (the read side). Writable backends
-also satisfy `store.Writer` (`Set`, `Delete`, `SetIfNotExists`);
-`CreateArray`, `CreateGroup` and `Array.Write` return `zarr.ErrReadOnly`
-(the same value as `store.ErrReadOnly`) for a store that isn't one, such
-as the HTTP store.
+Every store satisfies `store.Store`, the read side: `Get`, `GetRange`,
+`GetSuffix` (the last n bytes, which is how a sharded read fetches a
+shard's index), `Exists` and `List`. Writable backends also satisfy
+`store.Writer` (`Set`, `Delete`, `SetIfNotExists`); `CreateArray`,
+`CreateGroup` and `Array.Write` return `zarr.ErrReadOnly` (the same value
+as `store.ErrReadOnly`) for a store that isn't one, such as the HTTP
+store. Keys a backend refuses to address (empty, or escaping its root)
+fail with `store.ErrInvalidKey`.
 
 `cache.New` returns a read-only cache; `cache.NewWriter` wraps a
 `store.Writer`, writes through, and invalidates the written keys.

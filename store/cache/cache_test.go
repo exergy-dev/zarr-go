@@ -21,6 +21,7 @@ type countingStore struct {
 
 	getCalls    atomic.Int64
 	rangeCalls  atomic.Int64
+	suffixCalls atomic.Int64
 	setCalls    atomic.Int64
 	deleteCalls atomic.Int64
 	existsCalls atomic.Int64
@@ -39,6 +40,11 @@ func (c *countingStore) Get(ctx context.Context, key string) ([]byte, error) {
 func (c *countingStore) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	c.rangeCalls.Add(1)
 	return c.inner.GetRange(ctx, key, off, n)
+}
+
+func (c *countingStore) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	c.suffixCalls.Add(1)
+	return c.inner.GetSuffix(ctx, key, n)
 }
 
 func (c *countingStore) Set(ctx context.Context, key string, value []byte) error {
@@ -440,23 +446,6 @@ func TestCacheGetRangeServesFromCachedValue(t *testing.T) {
 	}
 }
 
-// suffixCountingStore extends countingStore with a store.SuffixReader
-// implementation, so tests can control whether the "underlying implements
-// SuffixReader" path is exercised.
-type suffixCountingStore struct {
-	*countingStore
-	suffixCalls atomic.Int64
-}
-
-func (c *suffixCountingStore) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
-	c.suffixCalls.Add(1)
-	sr, ok := c.inner.(store.SuffixReader)
-	if !ok {
-		return nil, errors.New("inner does not implement store.SuffixReader")
-	}
-	return sr.GetSuffix(ctx, key, n)
-}
-
 func TestCacheGetSuffixServesFromCachedValue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -478,18 +467,17 @@ func TestCacheGetSuffixServesFromCachedValue(t *testing.T) {
 	}
 }
 
-func TestCacheGetSuffixDelegatesToUnderlyingSuffixReader(t *testing.T) {
+func TestCacheGetSuffixDelegatesOnMiss(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	base := newCounting(mem.New())
-	if err := base.inner.Set(ctx, "k", []byte("hello world")); err != nil {
+	inner := newCounting(mem.New())
+	if err := inner.inner.Set(ctx, "k", []byte("hello world")); err != nil {
 		t.Fatal(err)
 	}
-	inner := &suffixCountingStore{countingStore: base}
 	c := cache.NewWriter(inner, cache.Config{})
 
 	// Nothing cached yet: must delegate to the underlying GetSuffix, not
-	// fall back to a whole-blob Get.
+	// fetch the whole value, and (like GetRange) admit nothing.
 	v, err := c.GetSuffix(ctx, "k", 5)
 	if err != nil {
 		t.Fatal(err)
@@ -501,36 +489,10 @@ func TestCacheGetSuffixDelegatesToUnderlyingSuffixReader(t *testing.T) {
 		t.Fatalf("suffixCalls: got %d want 1", got)
 	}
 	if got := inner.getCalls.Load(); got != 0 {
-		t.Fatalf("getCalls: got %d want 0 (must not fall back to whole Get when SuffixReader is available)", got)
+		t.Fatalf("getCalls: got %d want 0", got)
 	}
-}
-
-func TestCacheGetSuffixFallsBackToGetWhenUnderlyingLacksSuffixReader(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	inner := newCounting(mem.New()) // countingStore does not implement store.SuffixReader
-	if err := inner.inner.Set(ctx, "k", []byte("hello world")); err != nil {
-		t.Fatal(err)
-	}
-	c := cache.NewWriter(inner, cache.Config{})
-
-	v, err := c.GetSuffix(ctx, "k", 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(v) != "world" {
-		t.Fatalf("GetSuffix = %q, want %q", v, "world")
-	}
-	if got := inner.getCalls.Load(); got != 1 {
-		t.Fatalf("getCalls: got %d want 1 (fallback to whole Get)", got)
-	}
-	// The fallback Get admits the value, so a second GetSuffix on the same
-	// key should now be served from the cache.
-	if _, err := c.GetSuffix(ctx, "k", 5); err != nil {
-		t.Fatal(err)
-	}
-	if got := inner.getCalls.Load(); got != 1 {
-		t.Fatalf("getCalls after second GetSuffix: got %d want 1 (should serve from cache)", got)
+	if n := c.Len(); n != 0 {
+		t.Fatalf("Len after a GetSuffix miss = %d, want 0", n)
 	}
 }
 

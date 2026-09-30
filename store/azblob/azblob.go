@@ -211,7 +211,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
-// GetSuffix implements the store.SuffixReader contract. Azure has no suffix
+// GetSuffix implements the store.Store GetSuffix contract. Azure has no suffix
 // range ("bytes=-N"), so it reads the blob's size and ETag with
 // GetProperties, then downloads the closed range holding the last n bytes,
 // conditional on that ETag: a blob replaced in between fails the download
@@ -365,8 +365,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time checks that *Store satisfies the store interfaces.
-var (
-	_ zstore.Writer       = (*Store)(nil)
-	_ zstore.SuffixReader = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ zstore.Writer = (*Store)(nil)

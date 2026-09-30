@@ -79,22 +79,13 @@ type BytesToBytesCodec interface {
 	DecodeBB(in []byte) ([]byte, error)
 }
 
-// RangeFetcher is the minimal interface the sharding codec needs to read
-// inner chunks from the underlying store. It exists here (not in store/) so
-// codec packages don't have to import store.
+// RangeFetcher is the minimal interface the sharding codec needs to read a
+// shard from the underlying store: GetRange for inner chunks (and a
+// leading index), GetSuffix for a trailing index. Both follow the
+// store.Store contracts, and every store.Store satisfies it; it is declared
+// here (not in store/) so codec packages don't have to import store.
 type RangeFetcher interface {
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
-}
-
-// SuffixRangeFetcher is an optional extension implemented by fetchers that
-// can natively serve a "last N bytes" request without knowing the blob
-// length up front (e.g. via an HTTP `Range: bytes=-N` header). A
-// PartialDecoder probes for this on its RangeFetcher and, when absent, falls
-// back to a positional GetRange strategy of its own choosing.
-//
-// Mirrors store.SuffixReader; duplicated here (like RangeFetcher/DimRange)
-// so codec packages have no dependency on store.
-type SuffixRangeFetcher interface {
 	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
 }
 

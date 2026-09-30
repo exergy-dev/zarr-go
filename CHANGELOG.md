@@ -58,10 +58,17 @@ Initial release.
   array->bytes codec's name, even when a bytes->bytes codec such as gzip
   failed. The wrapped `Err` now names the codec that actually failed.
 - `codec.PartialDecoder.DecodePartial` takes a `*codec.PartialReadRequest`
-  instead of seven positional parameters; `codec.SuffixRangeFetcher` moved
-  from `codec/sharding` to `codec`. Only relevant to custom
+  instead of seven positional parameters, and `codec.RangeFetcher` now
+  includes `GetSuffix` (`codec.SuffixRangeFetcher` is gone), so every
+  `store.Store` is a `RangeFetcher`. Only relevant to custom
   `codec.PartialDecoder` implementations, not typical `Array[T]` callers.
-- `store.Store` is now read-only (`Get`, `GetRange`, `Exists`, `List`);
+- `GetSuffix` is part of `store.Store` (`store.SuffixReader` is gone), and
+  the Azure Blob backend now implements it (size from GetProperties, then
+  a ranged download). The sharding codec always reads a trailing index
+  with one `GetSuffix`; its fetch-the-whole-shard fallback for stores
+  without one is gone.
+- `store.Store` is now read-only (`Get`, `GetRange`, `GetSuffix`,
+  `Exists`, `List`);
   the new `store.Writer` adds `Set`, `Delete` and `SetIfNotExists` and
   replaces `store.WritableStore`. The HTTP store no longer has stub
   mutators, and `http.ErrReadOnly` is gone: the single sentinel is

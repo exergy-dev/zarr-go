@@ -95,6 +95,15 @@ func ClampRange(v []byte, off, n int64) []byte {
 //   - off+n > size: clamped to return size-off bytes (the largest slice
 //     available at or after off).
 //
+// # GetSuffix contract
+//
+// GetSuffix follows the same conventions, with n as the suffix length:
+//   - n < 0: returns ErrInvalidRange, without issuing any request.
+//   - key missing: returns ErrKeyNotFound, even when n == 0.
+//   - n == 0 and key exists: returns ([]byte{}, nil).
+//   - n >= size: returns the whole value.
+//   - otherwise: returns the last n bytes.
+//
 // # List contract
 //
 // List(ctx, prefix) yields every key for which strings.HasPrefix(key,
@@ -109,26 +118,17 @@ type Store interface {
 	// the Store-level "GetRange contract" doc for the full behavior matrix.
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 
+	// GetSuffix returns the last n bytes of the value at key without
+	// knowing its size up front (the sharding codec reads a shard's index
+	// trailer this way). See the Store-level "GetSuffix contract" doc.
+	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
+
 	// List yields all keys under prefix. See the Store-level "List contract"
 	// doc. Errors during pagination are surfaced via the second tuple value.
 	List(ctx context.Context, prefix string) iter.Seq2[string, error]
 
 	// Exists reports whether key is present.
 	Exists(ctx context.Context, key string) (bool, error)
-}
-
-// SuffixReader is an optional Store extension implemented by backends that
-// can serve "last N bytes" requests — natively (HTTP Range: bytes=-N-style
-// backends) or otherwise. Consumers that need this (e.g. the sharding codec,
-// reading a shard's index trailer) probe for it via a type assertion and
-// fall back to Get + slice when a backend doesn't implement it.
-//
-// GetSuffix follows the same off/n conventions as GetRange with n playing
-// the role of the suffix length: n < 0 returns ErrInvalidRange; n == 0
-// returns ([]byte{}, nil) if the key exists (ErrKeyNotFound if not); n >=
-// size returns the whole value; otherwise the last n bytes.
-type SuffixReader interface {
-	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
 }
 
 // Writer is a Store that can also be written. The zarr write paths

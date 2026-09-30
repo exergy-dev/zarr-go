@@ -26,6 +26,7 @@ const shardCfg2x2 = `{
 type countingStore struct {
 	inner                        store.Store
 	gets, getRanges, getSuffixes atomic.Int64
+	suffixBytes                  atomic.Int64 // n of the last GetSuffix
 }
 
 func (c *countingStore) Get(ctx context.Context, key string) ([]byte, error) {
@@ -40,7 +41,8 @@ func (c *countingStore) GetRange(ctx context.Context, key string, off, n int64) 
 
 func (c *countingStore) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
 	c.getSuffixes.Add(1)
-	return c.inner.(store.SuffixReader).GetSuffix(ctx, key, n)
+	c.suffixBytes.Store(n)
+	return c.inner.GetSuffix(ctx, key, n)
 }
 
 func (c *countingStore) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
@@ -51,10 +53,7 @@ func (c *countingStore) Exists(ctx context.Context, key string) (bool, error) {
 	return c.inner.Exists(ctx, key)
 }
 
-var (
-	_ store.Store        = (*countingStore)(nil)
-	_ store.SuffixReader = (*countingStore)(nil)
-)
+var _ store.Store = (*countingStore)(nil)
 
 // TestPartialRead_EdgeShard proves the fullShape contract fix: a sharded
 // array whose shape is not divisible by its (outer) chunk shape has an edge
@@ -239,11 +238,10 @@ func TestPartialRead_MissingShard(t *testing.T) {
 }
 
 // TestPartialRead_FetchCounts proves the engine-level wiring end-to-end: a
-// genuinely-partial read against a sharded array (mem.Store, which
-// implements store.SuffixReader) issues exactly one GetSuffix (the index
-// trailer) plus a small, coalesced number of GetRange calls — never a
-// whole-chunk Get — matching the README's "fewer requests than a full read"
-// claim.
+// genuinely-partial read against a sharded array issues exactly one
+// GetSuffix (for exactly the index trailer) plus a small, coalesced number
+// of GetRange calls — never a whole-chunk Get — matching the README's
+// "fewer requests than a full read" claim.
 func TestPartialRead_FetchCounts(t *testing.T) {
 	ctx := context.Background()
 	inner := mem.New()
@@ -304,58 +302,13 @@ func TestPartialRead_FetchCounts(t *testing.T) {
 	if suf := cs.getSuffixes.Load(); suf != 1 {
 		t.Errorf("partial read issued %d GetSuffix calls, want exactly 1 (index trailer)", suf)
 	}
+	// 2x2 inner chunks per 8x8 shard: 16 (offset, length) uint64 pairs,
+	// plus the index's crc32c.
+	if n, want := cs.suffixBytes.Load(), int64(16*16+4); n != want {
+		t.Errorf("GetSuffix read %d bytes, want %d (just the index trailer)", n, want)
+	}
 	if r := cs.getRanges.Load(); r == 0 || r > 2 {
 		t.Errorf("partial read issued %d GetRange calls, want 1-2 (coalesced inner chunks)", r)
-	}
-}
-
-// rangeOnlyStore exposes only the store.Store method set of the wrapped
-// store, hiding any GetSuffix it has.
-type rangeOnlyStore struct{ store.Store }
-
-// TestPartialRead_NoSuffixStore checks the partial-decode path against a
-// store without GetSuffix: the sharding codec must fall back to a single
-// whole-shard GetRange (then serve the index and inner chunks from it)
-// rather than failing or issuing whole-chunk Gets.
-func TestPartialRead_NoSuffixStore(t *testing.T) {
-	ctx := context.Background()
-	inner := mem.New()
-	shape := []int64{16, 16}
-	a, err := zarr.CreateArray[int32](ctx, inner, "arr", shape, []int64{8, 8},
-		zarr.WithCodecs(codec.Spec{Name: "sharding_indexed", Configuration: json.RawMessage(shardCfg2x2)}))
-	if err != nil {
-		t.Fatalf("CreateArray: %v", err)
-	}
-	src := make([]int32, 16*16)
-	for i := range src {
-		src[i] = int32(i + 1)
-	}
-	if err := a.Write(ctx, zarr.All(shape), src); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	cs := &countingStore{inner: inner}
-	b, err := zarr.OpenArray[int32](ctx, rangeOnlyStore{cs}, "arr")
-	if err != nil {
-		t.Fatalf("OpenArray: %v", err)
-	}
-	cs.gets.Store(0)
-	sel := zarr.Selection{Ranges: []zarr.DimRange{{Start: 2, Stop: 6, Step: 1}, {Start: 2, Stop: 6, Step: 1}}}
-	got := make([]int32, sel.NumElements())
-	if err := b.Read(ctx, sel, got); err != nil {
-		t.Fatalf("partial Read: %v", err)
-	}
-	idx := 0
-	for r := int64(2); r < 6; r++ {
-		for c := int64(2); c < 6; c++ {
-			if want := src[r*16+c]; got[idx] != want {
-				t.Fatalf("[%d,%d] got %d want %d", r, c, got[idx], want)
-			}
-			idx++
-		}
-	}
-	if g, suf, r := cs.gets.Load(), cs.getSuffixes.Load(), cs.getRanges.Load(); g != 0 || suf != 0 || r != 1 {
-		t.Errorf("partial read issued Get=%d GetSuffix=%d GetRange=%d, want 0/0/1 (one whole-shard range)", g, suf, r)
 	}
 }
 

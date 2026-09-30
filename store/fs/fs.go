@@ -155,7 +155,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 }
 
 // GetSuffix returns the last n bytes of the value at key, per the
-// store.SuffixReader contract.
+// store.Store GetSuffix contract.
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -438,8 +438,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time interface assertions.
-var (
-	_ store.Writer       = (*Store)(nil)
-	_ store.SuffixReader = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ store.Writer = (*Store)(nil)
