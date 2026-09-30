@@ -544,7 +544,8 @@ func decodeGroupErr(raw []byte) error { _, err := DecodeGroup(raw); return err }
 // TestMarshalRawEscapingGolden pins how the caller-supplied raw members
 // (FillValue, Extra) are emitted: whitespace canonicalized, but '<', '>', '&'
 // and U+2028 are not HTML-escaped, unlike Attributes, which go through
-// json.Marshal. An invalid raw scalar is passed through unvalidated.
+// json.Marshal. An invalid raw value is rejected rather than written out as
+// invalid JSON.
 func TestMarshalRawEscapingGolden(t *testing.T) {
 	base := func() *ArrayMeta {
 		return &ArrayMeta{
@@ -596,34 +597,7 @@ func TestMarshalRawEscapingGolden(t *testing.T) {
   ],
   "zarr_format": 3
 }`},
-		{"invalid raw fill", invalid, `{
-  "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-      "chunk_shape": [
-        1
-      ]
-    }
-  },
-  "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-      "separator": "/"
-    }
-  },
-  "codecs": [
-    {
-      "name": "bytes"
-    }
-  ],
-  "data_type": "float32",
-  "fill_value": nan,
-  "node_type": "array",
-  "shape": [
-    1
-  ],
-  "zarr_format": 3
-}`},
+		{"invalid raw fill", invalid, `error: json: error calling MarshalJSON for type json.RawMessage: invalid character 'a' in literal null (expecting 'u')`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
