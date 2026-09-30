@@ -32,20 +32,16 @@ type v2RawGroup struct {
 // endianness implied by the leading byte-order character.
 type v2DtypeEntry struct {
 	v3Name string
-	endian string // "little", "big", or "" (single-byte types)
+	endian string // "little" or "big"; single-byte types use "little"
 }
 
 // v2DtypeTable lists all dtypes the v3 Numeric constraint supports. Only
 // entries listed here are accepted; everything else (object, structured,
 // strings, datetimes, ...) is rejected.
 //
-// Byte-order prefix:
-//
-//	'<' little-endian
-//	'>' big-endian
-//	'|' not applicable (single-byte; we treat as little for codec config)
-//	''  no prefix (rare; treat as native — but we reject to keep things explicit
-//	    by requiring an endianness mark for multi-byte types via the table)
+// Byte-order prefix: '<' little-endian, '>' big-endian, '|' not applicable
+// (single-byte types; recorded as little for the bytes codec config).
+// Unprefixed dtype strings are not in the table and are rejected.
 var v2DtypeTable = map[string]v2DtypeEntry{
 	// signed ints
 	"|i1": {"int8", "little"},
@@ -83,10 +79,9 @@ type v2RawCompressor struct {
 // name "v2" and the supplied separator so metadata.ChunkKey() produces correct
 // v2 chunk keys.
 //
-// Returns an error for v2 features outside M2 scope: "F" order, structured
-// dtypes, object dtypes, filters, and any compressor other than
-// gzip/zstd/zlib/blosc (the latter two are translated but may fail at
-// pipeline-build time if not registered).
+// Returns an error for unsupported v2 features: "F" order, structured and
+// object dtypes, filters, and any compressor other than gzip/zstd/zlib/blosc
+// (blosc is translated but fails at pipeline build without cgo).
 func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 	var v v2RawArray
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -102,28 +97,27 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 		return nil, fmt.Errorf("v2 chunks rank %d != shape rank %d", len(v.Chunks), len(v.Shape))
 	}
 
-	// Order: only "C" supported in M2. Empty defaults to "C" per the v2 spec.
+	// Only "C" order is supported. Empty defaults to "C" per the v2 spec.
 	switch v.Order {
 	case "", "C":
 		// ok
 	case "F":
-		return nil, fmt.Errorf("v2 order %q not supported (M2 supports C only)", v.Order)
+		return nil, fmt.Errorf("v2 order %q not supported (C only)", v.Order)
 	default:
 		return nil, fmt.Errorf("v2 order %q invalid", v.Order)
 	}
 
-	// Filters: must be null or empty array.
+	// Filters must be null or an empty array.
 	if len(v.Filters) > 0 && !isJSONNull(v.Filters) {
 		var arr []json.RawMessage
 		if err := json.Unmarshal(v.Filters, &arr); err != nil {
 			return nil, fmt.Errorf("v2 filters must be null or array: %w", err)
 		}
 		if len(arr) > 0 {
-			return nil, fmt.Errorf("v2 filters not supported in M2")
+			return nil, fmt.Errorf("v2 filters not supported")
 		}
 	}
 
-	// Dtype translation.
 	entry, ok := v2DtypeTable[v.Dtype]
 	if !ok {
 		return nil, fmt.Errorf("v2 dtype %q not supported", v.Dtype)
@@ -157,13 +151,9 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 		return nil, fmt.Errorf("v2 dimension_separator %q invalid (must be \".\" or \"/\")", sep)
 	}
 
-	// Fill value: v2 special encodings ("NaN", "Infinity", "-Infinity")
-	// happen to also be the v3 form for floats and pass through unchanged.
-	// If absent, default to JSON null (v2's "no fill" convention — unlike
-	// v3, DecodeArrayV2 does not require fill_value to be present/non-null).
-	// normalizeV2FillValue additionally rewrites the lenient encodings some
-	// real-world v2 writers emit (float-formatted ints, 0/1 for bool) into
-	// the strict form the shared fill-value parser expects.
+	// v2's "NaN"/"Infinity"/"-Infinity" fill encodings are also the v3 form
+	// and pass through unchanged. An absent fill_value becomes null (v2's
+	// "no fill" convention; unlike v3, it is not required).
 	fill := v.FillValue
 	if len(fill) == 0 {
 		fill = json.RawMessage("null")
@@ -196,14 +186,11 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 	return out, nil
 }
 
-// normalizeV2FillValue rewrites lenient v2-style fill_value encodings into
-// the strict v3 form zarr.parseFillValue expects, matching real-world v2
-// writers: some emit integer fill values as float literals (e.g. "0.0" for
-// an int32 array) or bool fill values as 0/1 rather than false/true. null,
-// plain integer literals, and anything that doesn't match one of these
-// lenient shapes (or isn't an integral value representable in 64 bits) pass
-// through unchanged (float/complex dtypes already use the v3-compatible
-// encoding).
+// normalizeV2FillValue rewrites lenient fill_value encodings that real-world
+// v2 writers emit into the strict v3 form zarr.parseFillValue expects:
+// integer fills as float literals (e.g. "0.0" for int32) and bool fills as
+// 0/1. Everything else, including null, plain integer literals, and
+// non-integral or out-of-range values, passes through unchanged.
 func normalizeV2FillValue(raw json.RawMessage, v3Dtype string) json.RawMessage {
 	if isJSONNull(raw) {
 		return raw

@@ -73,12 +73,11 @@ type configJSON struct {
 // false; when true, the encoder includes the 32-bit XXH64 trailer in each
 // frame.
 //
-// The decoder's max-memory cap is sampled from declimit.Max() here and fixed
-// for the lifetime of the Codec (klauspost's decoder takes its
-// max-decoded-size limit at construction; changing zarr.SetMaxDecodedBytes
-// afterward has no effect on already-built codecs). Without it, DecodeAll's
-// own default cap is 64 GiB, which still permits a large single allocation
-// before declimit's post-hoc check in DecodeBB ever runs.
+// The decoder's max-memory limit is sampled from declimit.Max() here and
+// fixed for the lifetime of the Codec (klauspost's decoder takes it only at
+// construction), so a later zarr.SetMaxDecodedBytes does not affect
+// already-built codecs. Without it, DecodeAll's own default limit is 64 GiB,
+// which permits a huge allocation before DecodeBB's post-hoc check runs.
 func New(raw json.RawMessage) (*Codec, error) {
 	var cfg configJSON
 	if len(raw) > 0 {
@@ -93,7 +92,8 @@ func New(raw json.RawMessage) (*Codec, error) {
 	checksum := cfg.Checksum != nil && *cfg.Checksum
 
 	encOpts := []kpzstd.EOption{
-		// Array.Write encodes chunks sequentially, so extra slots sit idle yet each preallocates match tables (up to ~34 MiB at level >= 10).
+		// Array.Write encodes chunks sequentially, so extra slots would sit
+		// idle yet each preallocates match tables (up to ~34 MiB at level >= 10).
 		kpzstd.WithEncoderConcurrency(min(4, runtime.GOMAXPROCS(0))),
 		kpzstd.WithEncoderCRC(checksum),
 		// Single-segment frames include Frame_Content_Size in the
@@ -107,7 +107,8 @@ func New(raw json.RawMessage) (*Codec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("zstd codec: encoder init: %w", err)
 	}
-	// Concurrency 0 (GOMAXPROCS) so Array.Read's NumCPU workers sharing this Codec don't serialize.
+	// Concurrency 0 (GOMAXPROCS) so Array.Read's decode workers sharing this
+	// Codec don't serialize.
 	decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(0)}
 	if maxDec := declimit.Max(); maxDec > 0 {
 		decOpts = append(decOpts, kpzstd.WithDecoderMaxMemory(uint64(maxDec)))

@@ -294,12 +294,10 @@ func nextCoord(coord, grid []int64) bool {
 	return false
 }
 
-// copyRegion copies an inner chunk's element bytes into the outer shard
-// buffer at the given grid coordinate, via the shared ndcopy kernel. Both
-// buffers are row-major; the inner chunk has shape innerShape, the outer has
-// shape outerShape, and elements are esz bytes. sc/dstRegion/srcRegion are
-// caller-owned scratch (sized for outerShape's rank), reused across many
-// calls in a DecodeAB loop to avoid a per-inner-chunk allocation.
+// copyRegion copies an inner chunk (shape innerShape) into the outer shard
+// buffer (shape outerShape) at the given grid coordinate. sc/dstRegion/
+// srcRegion are caller-owned scratch sized for outerShape's rank, reused
+// across the DecodeAB loop.
 func copyRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape []int64, inner []byte, esz int, sc *ndcopy.Scratch, dstRegion, srcRegion []ndcopy.Region) {
 	for i := range outerShape {
 		origin := coord[i] * chunkShape[i]
@@ -309,10 +307,8 @@ func copyRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape 
 	ndcopy.Copy(outer, outerShape, dstRegion, inner, innerShape, srcRegion, esz, sc)
 }
 
-// extractRegion does the inverse of copyRegion: it pulls an inner chunk's
-// bytes out of the outer shard buffer. sc/dstRegion/srcRegion are
-// caller-owned scratch (sized for outerShape's rank), reused across many
-// calls in an EncodeAB loop.
+// extractRegion is the inverse of copyRegion: it returns a fresh copy of an
+// inner chunk's bytes from the outer shard buffer. Scratch as for copyRegion.
 func extractRegion(outer []byte, outerShape []int64, coord, chunkShape, innerShape []int64, esz int, sc *ndcopy.Scratch, dstRegion, srcRegion []ndcopy.Region) []byte {
 	out := make([]byte, elementCount(innerShape)*int64(esz))
 	for i := range outerShape {
@@ -395,7 +391,6 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	if int64(len(in)) < idxLen {
 		return fmt.Errorf("sharding_indexed: shard too short: %d < index trailer %d", len(in), idxLen)
 	}
-	// Locate the index payload according to the configured layout.
 	var idxBytes []byte
 	switch c.indexLocation {
 	case indexEnd:
@@ -417,9 +412,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	} else {
 		out.Data = make([]byte, totalBytes)
 	}
-	// Pre-fill the entire output with the array's fill value so any missing
-	// inner chunks read back as fill (the spec contract). Empty/nil fill
-	// degenerates to zero-fill via writeFill.
+	// Pre-fill so absent inner chunks read back as the fill value.
 	fill := out.Fill
 	if len(fill) != esz {
 		fill = nil
@@ -493,8 +486,8 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 			len(in.Data), expected)
 	}
 
-	// Pre-compute the index encoded size so we can lay out body offsets in
-	// the indexStart layout. The trailer length is deterministic for fixed n.
+	// The index size (deterministic for fixed n) is needed up front to lay
+	// out body offsets in the indexStart layout.
 	idxLen, err := c.indexEncodedSize(n)
 	if err != nil {
 		return nil, fmt.Errorf("sharding_indexed: compute index size: %w", err)
@@ -505,10 +498,8 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	}
 
 	entries := make([]uint64, n*2)
-	// Pre-size body to the raw element count: encoded inner chunks are
-	// usually ≤ raw size for compressed pipelines and = raw size for the
-	// bytes-only path, so this avoids the O(log n) reallocations that an
-	// uncapped append would incur for large shards.
+	// Encoded inner chunks rarely exceed their raw size, so pre-sizing to
+	// the raw size avoids append reallocations for large shards.
 	body := make([]byte, 0, len(in.Data))
 
 	fill := in.Fill

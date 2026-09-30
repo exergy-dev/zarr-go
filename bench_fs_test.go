@@ -10,9 +10,7 @@ import (
 )
 
 // writeArrayToFS materializes the same shape/chunks/data layout used by
-// benchWriteArray, but onto a t.TempDir() via the fs backend. Callers pass a
-// helper t for setup logging — this is fine for both *testing.T and *testing.B
-// via the testing.TB shim.
+// benchWriteArray, but onto a t.TempDir() via the fs backend.
 func writeArrayToFS(tb testing.TB, root string, shape, chunks []int64, dtype string, data []byte) {
 	tb.Helper()
 	codecs := []map[string]any{
@@ -58,12 +56,9 @@ func writeArrayToFS(tb testing.TB, root string, shape, chunks []int64, dtype str
 			}
 			actualChunk[i] = end - origin
 		}
-		// The on-disk chunks must be FULL chunk_shape per v3 spec; the helper
-		// here pads with zeros for edge chunks. For 256x256 with 64x64 there
-		// are no edge chunks but we keep the logic defensively.
+		// On-disk chunks are always the full chunk_shape (v3 spec); edge
+		// chunks are zero-padded.
 		buf := make([]byte, chunks[0]*chunks[1]*int64(es))
-		// Copy the actual region into the upper-left of buf using the same
-		// row-major extraction the mem helper does.
 		full := benchExtractRowMajor(data, shape, c, chunks, actualChunk, es)
 		if int64(len(full)) == int64(len(buf)) {
 			copy(buf, full)

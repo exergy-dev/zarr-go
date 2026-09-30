@@ -13,15 +13,10 @@ import (
 )
 
 // gatedStore wraps a store.Writer, letting tests pause Get at a controlled
-// point. Each call to Get first (optionally) blocks sending on entered —
-// letting the test observe exactly when this call started, and how many
-// have started — then performs the real underlying read (capturing
-// whatever value is current AT THAT MOMENT), then (optionally) blocks on
-// gate before returning that already-captured value. This ordering matters:
-// gating before the read would let a concurrent Set that lands while the
-// gate is closed be observed by the "stale" read once it finally executes,
-// defeating tests that need a read known to have captured a value that a
-// later Set/Delete makes stale.
+// point. Each Get performs the real underlying read, then (optionally)
+// signals on entered, then (optionally) blocks on gate before returning the
+// already-captured value. Reading before gating guarantees the paused call
+// holds a value that a later Set/Delete makes stale.
 type gatedStore struct {
 	store.Writer // everything but Get passes straight through
 
@@ -29,7 +24,7 @@ type gatedStore struct {
 	calls int
 
 	gate    chan struct{} // if non-nil, Get blocks here (or on ctx.Done()) after the real read, before returning
-	entered chan struct{} // if non-nil, Get blocks sending here before the real read
+	entered chan struct{} // if non-nil, Get blocks sending here after the real read, before gate
 
 	// gates, if non-nil, overrides gate per call: the Nth Get (1-based)
 	// blocks on gates[N-1] instead (nil = don't block), so a test can
@@ -50,11 +45,8 @@ func (g *gatedStore) Get(ctx context.Context, key string) ([]byte, error) {
 		gate = g.gates[g.calls-1]
 	}
 	g.mu.Unlock()
-	// Perform the real read BEFORE signaling entered, so a test that
-	// receives from entered and then mutates the key can rely on this call
-	// having already captured its (possibly soon-to-be-stale) value — a
-	// send on entered before the read would only prove the call started,
-	// racing the read itself against the test's mutation.
+	// Read BEFORE signaling entered, so a test that receives from entered
+	// and then mutates the key knows this call captured the old value.
 	val, err := g.Writer.Get(ctx, key)
 	if g.entered != nil {
 		select {
@@ -79,10 +71,9 @@ func (g *gatedStore) Calls() int {
 	return g.calls
 }
 
-// TestCacheConcurrentMissCoalescesDeterministic proves N concurrent misses
-// on the same key result in exactly one underlying Get, using
-// testHookWaiterJoined (not a scheduling race) to know precisely when all
-// N-1 non-leader goroutines have joined the flight before releasing it.
+// TestCacheConcurrentMissCoalescesDeterministic checks that N concurrent
+// misses on the same key result in exactly one underlying Get, using
+// testHookWaiterJoined to know when all N-1 waiters have joined the flight.
 func TestCacheConcurrentMissCoalescesDeterministic(t *testing.T) {
 	ctx := context.Background()
 	inner := mem.New()
@@ -136,9 +127,9 @@ func TestCacheConcurrentMissCoalescesDeterministic(t *testing.T) {
 	}
 }
 
-// TestCacheStaleReAdmitOnSet is the regression test for the core coherency
-// bug: a Get that started before a concurrent Set must never let its
-// (now-stale) result get admitted into the cache after the Set lands.
+// TestCacheStaleReAdmitOnSet checks the core coherency property: a Get that
+// started before a concurrent Set must never get its (now-stale) result
+// admitted into the cache after the Set lands.
 func TestCacheStaleReAdmitOnSet(t *testing.T) {
 	ctx := context.Background()
 	inner := mem.New()
@@ -367,10 +358,10 @@ func TestCacheWaiterOwnCtxCancelReturnsImmediately(t *testing.T) {
 	<-leaderDone
 }
 
-// TestCacheGetAfterSetDoesNotJoinStaleFlight is the regression test for a
-// read-your-writes violation: a Get that STARTS after Set has returned must
-// not join a fetch that began before the Set (and so captured the old
-// value). It must start a fresh fetch and observe the write.
+// TestCacheGetAfterSetDoesNotJoinStaleFlight checks read-your-writes: a Get
+// that STARTS after Set has returned must not join a fetch that began before
+// the Set (and so captured the old value). It must start a fresh fetch and
+// observe the write.
 func TestCacheGetAfterSetDoesNotJoinStaleFlight(t *testing.T) {
 	ctx := context.Background()
 	inner := mem.New()
@@ -408,8 +399,8 @@ func TestCacheGetAfterSetDoesNotJoinStaleFlight(t *testing.T) {
 		g2Val, g2Err = c.Get(ctx, "k")
 		close(g2Done)
 	}()
-	// The second Get either joins the stale flight (the bug) or starts its
-	// own fetch, which reads "v2" and signals entered. Exactly one happens.
+	// The second Get must start its own fetch, which reads "v2" and signals
+	// entered, rather than join the stale flight.
 	select {
 	case <-waiterJoined:
 	case <-entered:

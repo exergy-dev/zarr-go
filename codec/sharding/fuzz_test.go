@@ -49,11 +49,8 @@ func FuzzDecodeIndex(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte, n int64) {
 		if n < 0 || n > 1<<16 {
-			// Bounds a corpus entry can grow the entry count to during
-			// fuzzing; decodeIndex itself is safe for any n (allocation is
-			// gated by a length check against the actual input first — see
-			// sharding.go's decodeIndex/DecodeAB), but there's nothing more
-			// to learn from huge n once that fast-reject path is exercised.
+			// decodeIndex is safe for any n, but huge n only exercises the
+			// same fast-reject path, so keep the fuzzer on small n.
 			return
 		}
 		entries, err := c.decodeIndex(data, n)
@@ -95,7 +92,7 @@ func FuzzDecodePartial(f *testing.F) {
 	if err != nil {
 		f.Fatalf("EncodeAB: %v", err)
 	}
-	// Index entry whose off+len overflows int64 (the C1 crasher).
+	// Index entry whose off+len overflows int64.
 	malicious := []byte{1, 2, 3, 4}
 	for _, e := range []uint64{0, 4, 1000, math.MaxInt64, 0, 2, 2, 2} {
 		malicious = binary.LittleEndian.AppendUint64(malicious, e)

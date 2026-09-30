@@ -1,10 +1,7 @@
-// Package ndcopy provides a single strided N-dimensional byte-buffer copy
-// kernel shared by every part of the codebase that moves a rectangular
-// sub-region between two row-major buffers: Array[T].Read/Write's chunk<->
-// user-buffer copies, and the sharding codec's shard<->inner-chunk and
-// partial-decode region copies. Consolidating these (they were previously
-// five near-identical hand-rolled implementations) means a fix or
-// optimization to the copy logic lands everywhere at once.
+// Package ndcopy provides the strided N-dimensional byte-buffer copy kernel
+// used wherever a rectangular sub-region moves between two row-major
+// buffers: Array[T].Read/Write/Stream's chunk<->user-buffer copies, and the
+// sharding codec's shard<->inner-chunk and partial-decode region copies.
 package ndcopy
 
 import "github.com/exergy-dev/zarr-go/codec"
@@ -15,10 +12,8 @@ import "github.com/exergy-dev/zarr-go/codec"
 // selections feed Copy without conversion.
 type Region = codec.DimRange
 
-// Scratch holds reusable buffers for Copy, so a hot loop calling Copy many
-// times (e.g. once per chunk) can avoid a per-call allocation by reusing one
-// Scratch sized for the max rank it will see. A nil Scratch makes Copy
-// allocate its own (fine for cold/one-off calls).
+// Scratch holds reusable buffers for Copy, so a hot loop can avoid a
+// per-call allocation. A Scratch is not safe for concurrent use.
 type Scratch struct {
 	SrcStrides, DstStrides []int64
 	RegionLen, Idx         []int64
@@ -77,15 +72,12 @@ func rowMajorStridesInto(shape, out []int64) {
 // dstRegion[d] must have equal Length() for every dimension d — Copy does
 // not validate this.
 //
-// Fast path: when every Region in both srcRegion and dstRegion has Step==1,
-// contiguous trailing dimensions collapse into single memmove (copy) calls
-// per outer-iteration position, rather than one copy per element. This is
-// the dominant case (whole or sliced chunk reads/writes); a stepped
-// selection along any dimension falls back to one copy per element.
+// When every Region on both sides has Step==1, contiguous trailing
+// dimensions collapse into one copy call per outer position; a stepped
+// region along any dimension falls back to one copy per element.
 //
-// sc may be nil, in which case Copy makes one small allocation for its own
-// scratch space; a loop calling Copy many times on one goroutine can pass
-// a reused *Scratch to avoid even that.
+// sc may be nil, in which case Copy makes one small allocation for its
+// scratch space.
 func Copy(
 	dst []byte, dstShape []int64, dstRegion []Region,
 	src []byte, srcShape []int64, srcRegion []Region,
@@ -94,8 +86,7 @@ func Copy(
 ) {
 	rank := len(srcShape)
 	if rank == 0 {
-		// Scalar: a single element, no dims to index — both buffers are
-		// exactly one element and the copy is unconditionally at offset 0.
+		// Scalar: both buffers are exactly one element.
 		copy(dst[:elemSize], src[:elemSize])
 		return
 	}
@@ -128,8 +119,7 @@ func Copy(
 		return
 	}
 
-	// Fallback: stride > 1 in some dimension on at least one side —
-	// element-by-element copy. idx was zeroed above.
+	// Stepped: element-by-element copy. idx was zeroed above.
 	for k := int64(0); k < total; k++ {
 		var srcEl, dstEl int64
 		for d := 0; d < rank; d++ {

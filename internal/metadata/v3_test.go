@@ -9,10 +9,8 @@ import (
 	"github.com/exergy-dev/zarr-go/codec"
 )
 
-// TestMarshalArrayDeterministic locks down that two marshals of equivalent
-// metadata produce byte-equal output. Regressing this would re-introduce the
-// map-iteration-order non-determinism the deterministic encoder is meant to
-// fix.
+// TestMarshalArrayDeterministic checks that two marshals of equivalent
+// metadata produce byte-equal output, independent of map iteration order.
 func TestMarshalArrayDeterministic(t *testing.T) {
 	m := &ArrayMeta{
 		ZarrFormat: 3,

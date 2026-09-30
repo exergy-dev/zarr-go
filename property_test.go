@@ -14,9 +14,8 @@ import (
 	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
-// --- Local helpers (intentionally duplicated from array_test.go to avoid
-// cross-file dependencies inside the same _test package). They are tiny and
-// keeping them here makes the property test self-contained. ----------------
+// --- Local helpers (duplicated from array_test.go to keep this file
+// self-contained). ----------------------------------------------------------
 
 func propElemBytes(dt string) int {
 	switch dt {

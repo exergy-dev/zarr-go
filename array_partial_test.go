@@ -55,14 +55,11 @@ func (c *countingStore) Exists(ctx context.Context, key string) (bool, error) {
 
 var _ store.Store = (*countingStore)(nil)
 
-// TestPartialRead_EdgeShard proves the fullShape contract fix: a sharded
-// array whose shape is not divisible by its (outer) chunk shape has an edge
-// chunk whose array-bounds-clipped extent is smaller than the shard's FULL
-// stored shape. A genuinely-partial (non-isFull) read into that edge chunk
-// must still resolve correctly — pre-fix, DecodePartial was fed the clipped
-// shape as fullShape, which computes the wrong inner-chunk grid against a
-// shard that was actually encoded (and its index built) at the full nominal
-// chunk_shape.
+// TestPartialRead_EdgeShard checks the PartialReadRequest.FullShape
+// contract: in a sharded array whose shape is not divisible by its chunk
+// shape, an edge chunk's clipped extent is smaller than the shard's stored
+// shape. A genuinely-partial read into it must pass the full chunk_shape as
+// FullShape; the clipped shape would yield the wrong inner-chunk grid.
 func TestPartialRead_EdgeShard(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
@@ -109,9 +106,8 @@ func TestPartialRead_EdgeShard(t *testing.T) {
 	}
 }
 
-// TestPartialRead_Rank9 exercises the heap-allocated (rank > maxStackRank)
-// scratch path in partialDecodeAndCopy with a genuinely-partial selection,
-// guarding against a latent panic in that path.
+// TestPartialRead_Rank9 exercises partialDecodeAndCopy at a high rank with a
+// genuinely-partial selection.
 func TestPartialRead_Rank9(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
@@ -237,11 +233,10 @@ func TestPartialRead_MissingShard(t *testing.T) {
 	}
 }
 
-// TestPartialRead_FetchCounts proves the engine-level wiring end-to-end: a
+// TestPartialRead_FetchCounts checks the engine-level wiring end-to-end: a
 // genuinely-partial read against a sharded array issues exactly one
 // GetSuffix (for exactly the index trailer) plus a small, coalesced number
-// of GetRange calls — never a whole-chunk Get — matching the README's
-// "fewer requests than a full read" claim.
+// of GetRange calls, and never a whole-chunk Get.
 func TestPartialRead_FetchCounts(t *testing.T) {
 	ctx := context.Background()
 	inner := mem.New()
@@ -366,10 +361,8 @@ func TestWithRangeGap_AffectsFetchCount(t *testing.T) {
 }
 
 // gatedIOStore blocks every Get call until release is closed, signaling on
-// entered first — but only once active is set, so metadata reads made
-// during OpenArray itself (before the test arms the gate) pass through
-// immediately. Used to deterministically prove WithIOConcurrency bounds the
-// number of concurrently in-flight chunk fetches.
+// entered first, but only once active is set, so metadata reads made
+// during OpenArray itself (before the test arms the gate) pass through.
 type gatedIOStore struct {
 	store.Writer
 	active  atomic.Bool
@@ -385,11 +378,10 @@ func (g *gatedIOStore) Get(ctx context.Context, key string) ([]byte, error) {
 	return g.Writer.Get(ctx, key)
 }
 
-// TestWithIOConcurrency_BoundsInFlight proves WithIOConcurrency(N) bounds
-// the number of concurrently in-flight store fetches to N, using a store
-// that blocks until released so the bound can be observed deterministically
-// rather than inferred from timing. The option must take effect whether it
-// is passed to OpenArray or directly to CreateArray.
+// TestWithIOConcurrency_BoundsInFlight checks that WithIOConcurrency(N)
+// bounds in-flight store fetches to N, observed deterministically via a
+// blocking store. The option must take effect whether it is passed to
+// OpenArray or to CreateArray.
 func TestWithIOConcurrency_BoundsInFlight(t *testing.T) {
 	const ioConc = 3
 	shape := []int64{32}

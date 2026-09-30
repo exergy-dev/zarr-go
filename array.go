@@ -23,11 +23,9 @@ var hostLittleEndian = func() bool {
 	return *(*byte)(unsafe.Pointer(&x)) == 1
 }()
 
-// pipelinePartialDecoder returns a non-nil PartialDecoder when the AB codec
-// implements the optional codec.PartialDecoder interface AND no BB codecs sit
-// on top of it (BB on top of sharding doesn't make sense — sharding is
-// always the outermost AB). Otherwise returns nil. Result is cached on
-// Array at open time so the per-chunk hot path needs no type assertion.
+// pipelinePartialDecoder returns the AB codec as a codec.PartialDecoder when
+// it implements one and no BB codecs sit on top of it (a BB codec would have
+// to decode the whole blob first), else nil.
 func pipelinePartialDecoder(p *codec.Pipeline) codec.PartialDecoder {
 	if p == nil || p.AB == nil || len(p.BB) != 0 {
 		return nil
@@ -40,9 +38,8 @@ func pipelinePartialDecoder(p *codec.Pipeline) codec.PartialDecoder {
 }
 
 // isRawCopyFastPipeline reports whether the pipeline is exactly
-// [bytes(<host endian>)] with no AA or BB codecs. In that case Pipeline.Decode
-// degenerates to copy(out, in) and can be skipped — the raw chunk bytes are
-// already the native element bytes and can be fed straight into ndcopy.Copy.
+// [bytes(<host endian>)] with no AA or BB codecs, so Pipeline.Decode would be
+// a plain copy and the raw chunk bytes can feed ndcopy.Copy directly.
 func isRawCopyFastPipeline(p *codec.Pipeline) bool {
 	if p == nil || p.AB == nil {
 		return false
@@ -80,19 +77,15 @@ type Array[T Numeric] struct {
 	dtype    Dtype
 	fill     []byte // fill value bytes, native byte order, sizeof(T)
 	opts     arrayOptions
-	// partialDecoder is non-nil when the pipeline's AB codec implements
-	// codec.PartialDecoder AND no BB codecs sit on top of it. Cached here
-	// (computed once at open) so per-chunk reads avoid a type assertion.
+	// partialDecoder and rawCopyFast are derived from pipeline once at open
+	// (see pipelinePartialDecoder and isRawCopyFastPipeline).
 	partialDecoder codec.PartialDecoder
-	// rawCopyFast is set when the codec pipeline is exactly [bytes(<host endian>)]
-	// with no AA or BB codecs, so the on-wire chunk bytes can be consumed
-	// directly without invoking Pipeline.Decode.
-	rawCopyFast bool
+	rawCopyFast    bool
 }
 
-// Chunk is one decoded chunk yielded from Stream. Data aliases an internal
-// buffer owned by the iterator and is only valid for the current loop-body
-// iteration; see Stream's doc comment for the full lifetime contract.
+// Chunk is one decoded chunk yielded from Stream. Shape is clipped to the
+// array bounds and Data holds exactly product(Shape) elements in row-major
+// order. Data is freshly allocated for each chunk and owned by the caller.
 type Chunk[T Numeric] struct {
 	Coord []int64
 	Shape []int64
@@ -132,8 +125,7 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 	if want == 0 {
 		return nil // empty selection: no chunk intersects it
 	}
-	// Pre-fill dst with the fill value so missing chunks are correct without
-	// any extra work later. For zero fill (the common case) this is cheap.
+	// Pre-fill dst so missing chunks need no further work.
 	if hasNonZeroFill(a.fill) {
 		fillTyped[T](dst, a.fill)
 	} // else: Go zero-initializes
@@ -255,9 +247,8 @@ func (a *Array[T]) chunkActualShape(coord ChunkCoord, chunkShape []int64, out []
 // partialDecodeAndCopy issues a partial-decode request for the requested
 // sub-region of the chunk at coord and copies the result into dst.
 //
-// If the per-chunk source range degenerates to "the entire (clipped) chunk"
-// or any dim has step != 1, this falls back to the full-fetch path so the
-// pipeline.Decode path is still exercised correctly.
+// If the selection covers the entire (clipped) chunk or any dim has
+// step != 1, it falls back to a full fetch and Pipeline.Decode.
 func (a *Array[T]) partialDecodeAndCopy(
 	ctx context.Context,
 	pd codec.PartialDecoder,
@@ -323,19 +314,16 @@ func (a *Array[T]) partialDecodeAndCopy(
 		GapBytes:  a.opts.rangeGap,
 	}
 	if err := pd.DecodePartial(ctx, a.store, &req); err != nil {
-		// Translate "key not found" to the same sentinel as the full path
-		// so the caller skips the chunk and leaves the fill value in place.
+		// Pass ErrKeyNotFound through unwrapped so the caller leaves the
+		// fill value in place, as on the full path.
 		if errors.Is(err, store.ErrKeyNotFound) {
 			return err
 		}
 		return &DecodeError{Coord: []int64(coord), Err: fmt.Errorf("codec %q: %w", a.pipeline.AB.Name(), err)}
 	}
 
-	// Copy the dense region buffer into dst at the outDst positions.
-	// The region buffer has shape regionShape (in chunk-local source coords)
-	// and maps 1:1 onto outDst (Step==1 along every dim), so it can be
-	// treated as if it were the whole "chunk" with a full [0, regionShape[d])
-	// source region.
+	// The dense region buffer maps 1:1 onto outDst (Step==1 along every
+	// dim), so copy it as a whole "chunk" of shape regionShape.
 	whole := make([]ndcopy.Region, rank)
 	for d := 0; d < rank; d++ {
 		whole[d] = ndcopy.Region{Start: 0, Stop: regionShape[d], Step: 1}
@@ -368,9 +356,7 @@ func (a *Array[T]) decodeAndCopy(
 		dstBytes = unsafe.Slice((*byte)(unsafe.Pointer(&dst[0])), len(dst)*elemSize)
 	}
 
-	// Fast path: pipeline is [bytes(<host endian>)], no AA/BB. Raw bytes
-	// are already native element bytes — skip pipeline.Decode and the
-	// pooled buffer entirely.
+	// Raw bytes are already native element bytes: skip Decode and the pool.
 	if a.rawCopyFast && len(raw) == chunkBytes {
 		ndcopy.Copy(dstBytes, outShape, outDst, raw, chunkShape, chunkSrc, elemSize, nil)
 		return nil
@@ -485,11 +471,9 @@ func (a *Array[T]) writeOneChunk(
 	key := metadata.ChunkKey(a.path, a.meta.ChunkKeyEnc, []int64(coord))
 
 	if !fullCovered {
-		// Read-modify-write: try to load existing chunk.
 		existing, err := a.store.Get(ctx, key)
 		switch {
 		case err == nil:
-			// Decode existing into chunkBuf.
 			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Data: chunkBuf[:0], Fill: a.fill}
 			if err := a.pipeline.Decode(existing, &ck); err != nil {
 				return &DecodeError{Coord: []int64(coord), Err: err}
@@ -499,7 +483,6 @@ func (a *Array[T]) writeOneChunk(
 			}
 			copy(chunkBuf, ck.Data)
 		case errors.Is(err, store.ErrKeyNotFound):
-			// Initialize chunkBuf with fill value bytes.
 			fillChunk(chunkBuf, a.fill, elemSize)
 		default:
 			return fmt.Errorf("fetch chunk %v: %w", []int64(coord), err)
@@ -542,15 +525,12 @@ func fillChunk(buf, fill []byte, elemSize int) {
 	}
 }
 
-// Stream yields decoded chunks intersecting sel without assembling the full
-// output buffer.
+// Stream yields decoded chunks intersecting sel, one whole chunk at a time,
+// without assembling the full output buffer. Chunks are fetched and decoded
+// sequentially; a missing chunk is yielded filled with the fill value.
 //
-// The Data slice in each yielded Chunk[T] aliases an internal decode buffer
-// owned by the iterator. It is valid for the lifetime of the body of the
-// for-range loop only; callers that need to retain the bytes across
-// iterations must copy the slice. The iterator allocates a fresh buffer per
-// chunk so consecutive yields don't overlap, but reuse may begin once the
-// loop body returns true.
+// Each yielded Chunk has its own freshly allocated Data, which the iterator
+// never touches again: callers may retain it without copying.
 func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T], error] {
 	return func(yield func(Chunk[T], error) bool) {
 		if err := sel.Validate(a.meta.Shape); err != nil {
@@ -559,10 +539,7 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 		}
 		chunkShape := a.meta.ChunkGrid.Configuration.ChunkShape
 		elemSize := int(unsafe.Sizeof(*new(T)))
-		// Scratch for the edge-chunk extraction branch below. chunkShape
-		// (hence rank) is constant for the whole Stream call, so these are
-		// allocated once and reused across every edge chunk instead of
-		// per-chunk.
+		// Scratch for edge-chunk extraction, reused across chunks.
 		edgeRank := len(chunkShape)
 		edgeScratch := ndcopy.NewScratch(edgeRank)
 		edgeRegion := make([]ndcopy.Region, edgeRank)
@@ -581,7 +558,6 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 			raw, err := a.store.Get(ctx, key)
 			if err != nil {
 				if errors.Is(err, store.ErrKeyNotFound) {
-					// Synthetic fill-value chunk.
 					n := int64(1)
 					for _, d := range actualChunk {
 						n *= d

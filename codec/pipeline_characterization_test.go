@@ -1,7 +1,6 @@
 package codec_test
 
-// Characterization tests pinning the behavior every registered codec must
-// keep across changes to how codecs are constructed:
+// Characterization tests pinning behavior every registered codec must have:
 //
 //   - a built Pipeline is shared by all of an Array's reader goroutines, so
 //     each codec's Encode/Decode must be safe for concurrent use (run these

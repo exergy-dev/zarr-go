@@ -1,6 +1,5 @@
-// Package bufpool provides sized sync.Pools of []byte keyed by power-of-two
-// byte-size class. Above the largest class we fall back to ad-hoc allocation
-// rather than panic.
+// Package bufpool provides sync.Pools of []byte keyed by power-of-two size
+// class. Requests above the largest class are allocated directly.
 package bufpool
 
 import (
@@ -63,7 +62,7 @@ func Put(b []byte) {
 	if c > 1<<maxClassLog {
 		return
 	}
-	// recover the class from cap (which is exactly a power of two for pooled bufs)
+	// Pooled buffers have a power-of-two cap.
 	k := bits.TrailingZeros(uint(c))
 	cls := k - minClassLog
 	if cls < 0 || cls >= numClasses {

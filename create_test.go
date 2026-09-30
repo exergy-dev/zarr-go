@@ -49,10 +49,9 @@ func TestCreateGroupAlreadyExists(t *testing.T) {
 	}
 }
 
-// TestCreateArrayDefaultFillValueByDtype guards against CreateArray[bool] and
-// CreateArray[complexN] always failing when no WithFillValue is given: the
-// blanket JSON literal "0" (valid for numeric dtypes) is invalid JSON for
-// bool (needs true/false) and complex (needs a 2-element array).
+// TestCreateArrayDefaultFillValueByDtype checks that CreateArray[bool] and
+// CreateArray[complexN] work without WithFillValue: their default fill_value
+// must be false and [0,0] respectively, not the numeric "0".
 func TestCreateArrayDefaultFillValueByDtype(t *testing.T) {
 	ctx := context.Background()
 
@@ -76,10 +75,10 @@ func TestCreateArrayDefaultFillValueByDtype(t *testing.T) {
 	})
 }
 
-// TestWithOverwriteDeletesStaleChunks guards against WithOverwrite leaving
-// old chunk bytes behind when an array is re-created with a different
-// dtype/shape at the same path: without cleanup, reads of the "new" array
-// would decode the stale bytes as garbage instead of fill.
+// TestWithOverwriteDeletesStaleChunks checks that WithOverwrite removes old
+// chunk bytes when an array is re-created with a different dtype/shape at
+// the same path, so the new array reads fill rather than decoding stale
+// bytes as garbage.
 func TestWithOverwriteDeletesStaleChunks(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
@@ -114,9 +113,8 @@ func TestWithOverwriteDeletesStaleChunks(t *testing.T) {
 	}
 }
 
-// TestWithV2ChunkKeys checks the new option wires the dead
-// keyEncName/keySep createOptions fields: without it chunks were always
-// written at the v3 default layout regardless of caller intent.
+// TestWithV2ChunkKeys checks that WithV2ChunkKeys writes chunks with the v2
+// key layout and records it in chunk_key_encoding.
 func TestWithV2ChunkKeys(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()

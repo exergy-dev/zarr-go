@@ -1,10 +1,9 @@
-// Package metadata parses Zarr v3 array and group JSON.
+// Package metadata parses and marshals Zarr v3 array and group JSON, and
+// translates v2 .zarray/.zgroup documents into the same v3-shaped types.
 //
-// The exposed types are intentionally narrow — only the fields the engine
+// The exposed types are intentionally narrow: only the fields the engine
 // needs. Unknown top-level fields are preserved in ArrayMeta.Extra /
-// GroupMeta.Extra so a decode→marshal cycle is lossless even when the
-// document contains future-spec fields this implementation doesn't yet
-// recognize.
+// GroupMeta.Extra so a decode→marshal cycle is lossless.
 package metadata
 
 import (
@@ -33,9 +32,6 @@ type Header struct {
 }
 
 // ArrayMeta is the v3 zarr.json for an array.
-//
-// Extra preserves any top-level v3 fields that this implementation doesn't
-// yet recognize, so future spec extensions round-trip losslessly.
 type ArrayMeta struct {
 	ZarrFormat   int              `json:"zarr_format"`
 	NodeType     string           `json:"node_type"`
@@ -49,10 +45,9 @@ type ArrayMeta struct {
 	StorageTrans json.RawMessage  `json:"storage_transformers,omitempty"`
 	Dimensions   []string         `json:"dimension_names,omitempty"`
 
-	// Extra holds top-level fields not covered by the named members. The
-	// MarshalJSON path emits them in sorted order alongside the known fields
-	// so unknown future-spec keys round-trip losslessly. It is not part of
-	// the v3 wire format itself.
+	// Extra holds top-level fields not covered by the named members (on
+	// decode, only extensions marked "must_understand": false are accepted).
+	// MarshalArray emits them alongside the known fields.
 	Extra map[string]json.RawMessage `json:"-"`
 }
 
@@ -65,7 +60,7 @@ type GroupMeta struct {
 }
 
 // ChunkGrid describes how the array is partitioned into chunks. Only the
-// "regular" grid is supported in M1.
+// "regular" grid is supported.
 type ChunkGrid struct {
 	Name          string              `json:"name"`
 	Configuration ChunkGridRegularCfg `json:"configuration"`
@@ -92,7 +87,7 @@ func PeekNodeType(raw []byte) (NodeType, error) {
 		return NodeUnknown, fmt.Errorf("parse header: %w", err)
 	}
 	if h.ZarrFormat != 3 {
-		return NodeUnknown, fmt.Errorf("zarr_format %d not supported (M1 reads v3 only)", h.ZarrFormat)
+		return NodeUnknown, fmt.Errorf("zarr_format %d not supported (want 3)", h.ZarrFormat)
 	}
 	switch h.NodeType {
 	case "array":
@@ -125,11 +120,9 @@ var knownGroupFields = map[string]struct{}{
 	"attributes":  {},
 }
 
-// CloneInt64 returns a non-nil copy of s, even when s is empty or nil. Used
-// for Shape/ChunkShape so a rank-0 array's dims marshal as JSON "[]" rather
-// than "null" — append([]int64(nil), s...) would silently stay nil when s
-// has zero elements (nil or not), and DecodeArray's shape-presence check
-// treats a null shape the same as a missing one.
+// CloneInt64 returns a non-nil copy of s, even when s is empty or nil, so a
+// rank-0 array's Shape/ChunkShape marshals as "[]" rather than "null" (which
+// DecodeArray treats as a missing shape).
 func CloneInt64(s []int64) []int64 {
 	out := make([]int64, len(s))
 	copy(out, s)
@@ -148,10 +141,8 @@ func defaultSeparator(encName string) string {
 
 // validateArrayMeta checks structural invariants shared by v2 and v3 array
 // metadata: non-negative shape, a supported chunk_grid whose rank and
-// positivity match the array shape. Called by DecodeArray after its
-// v3-JSON-specific field validation and by DecodeArrayV2 after v2->v3
-// translation, so a validation gap fixed for one format can't silently
-// persist for the other.
+// positivity match the array shape. Both DecodeArray and DecodeArrayV2 call
+// it so the two formats are validated identically.
 func validateArrayMeta(m *ArrayMeta) error {
 	for i, d := range m.Shape {
 		if d < 0 {
@@ -272,9 +263,7 @@ func validateStorageTransformers(raw json.RawMessage) error {
 	return nil
 }
 
-// parseTopLevel decodes raw into a flat key→raw-value map. Used by DecodeArray
-// and DecodeGroup to avoid the parse-twice pattern of separately filling a
-// typed struct AND a map.
+// parseTopLevel decodes raw into a flat key→raw-value map.
 func parseTopLevel(raw []byte) (map[string]json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -284,9 +273,8 @@ func parseTopLevel(raw []byte) (map[string]json.RawMessage, error) {
 }
 
 // unmarshalKnown re-marshals only the known fields into a synthetic JSON
-// object and unmarshals that into dst. Doing it this way means we parse the
-// raw input exactly once (in parseTopLevel) and pay an O(known-fields) JSON
-// round-trip on a much smaller buffer instead of re-parsing the whole doc.
+// object and unmarshals that into dst, so the full document is parsed once
+// (by parseTopLevel) rather than twice.
 func unmarshalKnown(fields map[string]json.RawMessage, dst any, known map[string]struct{}) error {
 	subset := make(map[string]json.RawMessage, len(known))
 	for k := range known {
@@ -340,8 +328,7 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 	if len(out.FillValue) == 0 {
 		out.FillValue = DefaultFillValue(out.DataType)
 	}
-	// Build the raw object as a map[string]json.RawMessage; encoding/json
-	// emits map keys in sorted order, so the output is reproducible.
+	// encoding/json emits map keys in sorted order: output is reproducible.
 	fields := map[string]json.RawMessage{}
 	if err := assignField(fields, "zarr_format", out.ZarrFormat); err != nil {
 		return nil, err
@@ -480,13 +467,10 @@ func ChunkKey(arrayPath string, enc ChunkKeyEncoding, coord []int64) string {
 	if sep == "" {
 		sep = defaultSeparator(enc.Name)
 	}
-	// v3 default: <array>/c/i0/i1/.../iN with sep between indices
-	// v3 v2-compat: <array>/<i0><sep><i1>...
-	// Rank-0 (scalar) arrays have no coordinate components at all: the
-	// default encoding's key is just ".../c" and the v2 encoding's is the
-	// single literal index "0", matching zarr-python's convention.
-	// The array path is slash-trimmed so a root array ("") yields "c/0"
-	// rather than "/c/0", and stray slashes can't produce "a//c/0".
+	// default: <array>/c<sep>i0<sep>i1...   v2: <array>/i0<sep>i1...
+	// Rank-0 keys are ".../c" (default) and ".../0" (v2), matching
+	// zarr-python. The array path is slash-trimmed so a root array yields
+	// "c/0" rather than "/c/0".
 	dir := strings.Trim(arrayPath, "/")
 	out := make([]byte, 0, len(dir)+2+len(sep)+8*len(coord))
 	if dir != "" {

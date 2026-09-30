@@ -157,8 +157,7 @@ func TestDecodeGarbage(t *testing.T) {
 // header declares a huge uncompressed size (nbytes) but whose actual
 // compressed body is tiny, simulating a decompression bomb. DecodeBB must
 // reject it based on the declared nbytes alone, without attempting to
-// allocate anywhere near the forged size (the pre-fix code did
-// `make([]byte, int(nbytes))` straight from the untrusted header).
+// allocate anywhere near the forged size.
 //
 // c-blosc's 16-byte header layout: byte0=version, byte1=versionlz,
 // byte2=flags, byte3=typesize, bytes[4:8]=nbytes (LE uint32),

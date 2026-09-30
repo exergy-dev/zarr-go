@@ -11,10 +11,9 @@ import (
 
 // TestPathSpellingsRoundTrip checks that every spelling of a node path (with
 // or without leading/trailing slashes) resolves to the same array: data
-// written via one spelling must read back via every other. Before paths were
-// normalized, metadata keys were slash-trimmed but chunk keys were not, so
-// reading via "a/" or "/a" found the metadata, missed every chunk, and
-// silently returned fill values.
+// written via one spelling must read back via every other. Metadata and
+// chunk keys must be normalized alike, or a read would find the metadata,
+// miss every chunk, and silently return fill values.
 func TestPathSpellingsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	classes := map[string][]string{

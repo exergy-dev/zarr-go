@@ -25,8 +25,8 @@ import (
 //	unit=4    19%     40%      55%
 //	unit=8    24%     48%      68%
 
-// bytewiseSwap32 / bytewiseSwap64 are the byte-at-a-time loops swapBytes used
-// for the tail and for non-amd64 before swapWords32/64, kept as a baseline.
+// bytewiseSwap32 / bytewiseSwap64 are plain byte-at-a-time loops, kept as a
+// baseline.
 func bytewiseSwap32(dst, src []byte) {
 	for i := 0; i < len(src); i += 4 {
 		dst[i] = src[i+3]

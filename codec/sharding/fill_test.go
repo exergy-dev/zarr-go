@@ -62,7 +62,7 @@ func TestEncodeDecodeFillNonZero(t *testing.T) {
 	// Bottom-left 2x2 block stays all-zero (test that fill != 0 keeps it
 	// stored, decoded as 0).
 
-	// fill = NaN bytes (one element worth, native-LE float32).
+	// One NaN float32 element in native byte order (little-endian hosts).
 	fill := make([]byte, elem)
 	binary.LittleEndian.PutUint32(fill, math.Float32bits(float32(math.NaN())))
 
