@@ -41,15 +41,15 @@ var (
 )
 
 // DecodeError is returned from chunk decode failures with enough context to
-// debug a single bad chunk in a 10M-chunk array.
+// debug a single bad chunk in a 10M-chunk array. Err names the codec that
+// failed (e.g. `codec "gzip": ...`) when the failure came from one.
 type DecodeError struct {
 	Coord []int64
-	Codec string
 	Err   error
 }
 
 func (e *DecodeError) Error() string {
-	return fmt.Sprintf("decode chunk %v via codec %q: %v", e.Coord, e.Codec, e.Err)
+	return fmt.Sprintf("decode chunk %v: %v", e.Coord, e.Err)
 }
 
 func (e *DecodeError) Unwrap() error { return e.Err }

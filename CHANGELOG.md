@@ -50,6 +50,9 @@ Initial release.
 - `CreateOption` is now an interface, and every `OpenOption`
   (`WithConcurrency`, `WithIOConcurrency`, `WithRangeGap`) is also a
   `CreateOption`, so `CreateArray` can tune the array it returns.
+- `DecodeError` no longer has a `Codec` field: it always held the
+  array->bytes codec's name, even when a bytes->bytes codec such as gzip
+  failed. The wrapped `Err` now names the codec that actually failed.
 - `codec.PartialDecoder.DecodePartial` takes a `*codec.PartialReadRequest`
   instead of seven positional parameters; `codec.SuffixRangeFetcher` moved
   from `codec/sharding` to `codec`. Only relevant to custom

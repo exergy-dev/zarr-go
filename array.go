@@ -430,7 +430,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 		if errors.Is(err, store.ErrKeyNotFound) {
 			return err
 		}
-		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
+		return &DecodeError{Coord: []int64(coord), Err: fmt.Errorf("codec %q: %w", a.pipeline.AB.Name(), err)}
 	}
 
 	// Copy the dense region buffer into dst at the dstSlice positions.
@@ -492,11 +492,10 @@ func (a *Array[T]) decodeAndCopy(
 		Fill:  a.fill,
 	}
 	if err := a.pipeline.Decode(raw, &chunk); err != nil {
-		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
+		return &DecodeError{Coord: []int64(coord), Err: err}
 	}
 	if len(chunk.Data) != chunkBytes {
-		return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(),
-			Err: fmt.Errorf("decoded chunk size %d != expected %d", len(chunk.Data), chunkBytes)}
+		return &DecodeError{Coord: []int64(coord), Err: fmt.Errorf("decoded chunk size %d != expected %d", len(chunk.Data), chunkBytes)}
 	}
 
 	ndcopy.Copy(dstBytes, outShape, dstRegion, chunk.Data, chunkShape, srcRegion, elemSize, &ndSc)
@@ -603,7 +602,7 @@ func (a *Array[T]) writeOneChunk(
 			// Decode existing into chunkBuf.
 			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Data: chunkBuf[:0], Fill: a.fill}
 			if err := a.pipeline.Decode(existing, &ck); err != nil {
-				return &DecodeError{Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err}
+				return &DecodeError{Coord: []int64(coord), Err: err}
 			}
 			if int64(len(ck.Data)) != totalChunkBytes {
 				return fmt.Errorf("decoded chunk size %d != expected %d", len(ck.Data), totalChunkBytes)
@@ -716,9 +715,7 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 			}
 			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Fill: a.fill}
 			if err := a.pipeline.Decode(raw, &ck); err != nil {
-				yield(Chunk[T]{Coord: []int64(coord)}, &DecodeError{
-					Coord: []int64(coord), Codec: a.pipeline.AB.Name(), Err: err,
-				})
+				yield(Chunk[T]{Coord: []int64(coord)}, &DecodeError{Coord: []int64(coord), Err: err})
 				return
 			}
 			chunkBytes := elemSize
@@ -727,8 +724,8 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 			}
 			if len(ck.Data) != chunkBytes {
 				yield(Chunk[T]{Coord: []int64(coord)}, &DecodeError{
-					Coord: []int64(coord), Codec: a.pipeline.AB.Name(),
-					Err: fmt.Errorf("decoded chunk size %d != expected %d", len(ck.Data), chunkBytes),
+					Coord: []int64(coord),
+					Err:   fmt.Errorf("decoded chunk size %d != expected %d", len(ck.Data), chunkBytes),
 				})
 				return
 			}
