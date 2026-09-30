@@ -32,6 +32,9 @@ func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, err
 		}
+		if bits := uint(size * 8); bits < 64 && (n < -1<<(bits-1) || n >= 1<<(bits-1)) {
+			return nil, fmt.Errorf("fill value %d out of range for dtype %s", n, dt)
+		}
 		switch size {
 		case 1:
 			out[0] = byte(int8(n))
@@ -46,6 +49,9 @@ func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 		var n uint64
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, err
+		}
+		if bits := uint(size * 8); bits < 64 && n>>bits != 0 {
+			return nil, fmt.Errorf("fill value %d out of range for dtype %s", n, dt)
 		}
 		switch size {
 		case 1:
