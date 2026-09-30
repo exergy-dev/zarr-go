@@ -185,6 +185,33 @@ func TestListPrefixAndOrder(t *testing.T) {
 	}
 }
 
+// TestListIsLazy checks that List snapshots keys when the sequence is
+// iterated, not when List is called, matching the fs and cloud backends.
+func TestListIsLazy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := mem.New()
+	if err := s.Set(ctx, "a/1", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	seq := s.List(ctx, "a/")
+	if err := s.Set(ctx, "a/2", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for k, err := range seq {
+		if err != nil {
+			t.Fatalf("List error: %v", err)
+		}
+		got = append(got, k)
+	}
+	if want := []string{"a/1", "a/2"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("List: got %v, want %v", got, want)
+	}
+}
+
 func TestSetIfNotExists(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
