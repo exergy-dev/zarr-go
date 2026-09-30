@@ -144,7 +144,10 @@ func (s *Store) blobExists(ctx context.Context, k string) (bool, error) {
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := s.client.DownloadStream(ctx, s.container, k, nil)
 	if err != nil {
 		if isNotFound(err) {
@@ -172,7 +175,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		return nil, err
 	}
 	n = cloudstore.ClampLen(off, n)
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	if n == 0 {
 		ok, err := s.blobExists(ctx, k)
 		if err != nil {
@@ -205,8 +211,11 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := cloudstore.JoinKey(s.prefix, key)
-	_, err := s.client.UploadBuffer(ctx, s.container, k, value, nil)
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.UploadBuffer(ctx, s.container, k, value, nil)
 	if err != nil {
 		return fmt.Errorf("azblob: UploadBuffer %q: %w", k, err)
 	}
@@ -217,10 +226,13 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // access condition; on 412 PreconditionFailed (or BlobAlreadyExists) the
 // blob already exists and (false, nil) is returned.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
 	bbClient := s.client.ServiceClient().NewContainerClient(s.container).NewBlockBlobClient(k)
 	body := streaming.NopCloser(bytes.NewReader(value))
-	_, err := bbClient.Upload(ctx, body, &blockblob.UploadOptions{
+	_, err = bbClient.Upload(ctx, body, &blockblob.UploadOptions{
 		AccessConditions: &blob.AccessConditions{
 			ModifiedAccessConditions: &blob.ModifiedAccessConditions{
 				IfNoneMatch: to.Ptr(azcore.ETagAny),
@@ -238,8 +250,11 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := cloudstore.JoinKey(s.prefix, key)
-	_, err := s.client.DeleteBlob(ctx, s.container, k, nil)
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.DeleteBlob(ctx, s.container, k, nil)
 	if err != nil {
 		if isNotFound(err) {
 			return nil
@@ -251,7 +266,11 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	return s.blobExists(ctx, cloudstore.JoinKey(s.prefix, key))
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
+	return s.blobExists(ctx, k)
 }
 
 // List implements store.Store. The supplied prefix is joined with the

@@ -21,14 +21,44 @@ func TestJoinKey(t *testing.T) {
 		{"/p/", "foo", "p/foo"},
 		{"/p/", "/foo", "p/foo"},
 		{"a/b", "c/d", "a/b/c/d"},
-		{"p", "", "p"},
-		{"", "", ""},
-		{"p", "/", "p"},
+		{"p", "foo/", "p/foo/"},
 	}
 	for _, c := range cases {
-		got := JoinKey(c.prefix, c.key)
-		if got != c.want {
-			t.Errorf("JoinKey(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
+		got, err := JoinKey("s3", c.prefix, c.key)
+		if err != nil || got != c.want {
+			t.Errorf("JoinKey(%q, %q) = %q, %v, want %q, nil", c.prefix, c.key, got, err, c.want)
+		}
+	}
+}
+
+func TestJoinKeyRejectsEmptyKey(t *testing.T) {
+	for _, prefix := range []string{"", "p", "/p/"} {
+		for _, key := range []string{"", "/", "//"} {
+			got, err := JoinKey("s3", prefix, key)
+			if !errors.Is(err, ErrEmptyKey) || got != "" {
+				t.Errorf("JoinKey(%q, %q) = %q, %v, want \"\", ErrEmptyKey", prefix, key, got, err)
+			}
+			if err != nil && !strings.HasPrefix(err.Error(), "s3: ") {
+				t.Errorf("JoinKey(%q, %q) error %q lacks the backend name", prefix, key, err)
+			}
+		}
+	}
+}
+
+// TestJoinKeyStaysInNamespace: every object a single-key operation addresses
+// must lie inside the store's namespace, i.e. List must be able to map it
+// back to the same key.
+func TestJoinKeyStaysInNamespace(t *testing.T) {
+	for _, prefix := range []string{"", "data", "/data/", "a/b"} {
+		for _, key := range []string{"", "/", "//", "k", "/k", "k/v"} {
+			obj, err := JoinKey("s3", prefix, key)
+			if err != nil {
+				continue // rejected keys address no object at all
+			}
+			got, ok := KeyFromObject(prefix, obj)
+			if want := strings.TrimLeft(key, "/"); !ok || got != want {
+				t.Errorf("JoinKey(%q, %q) = %q, outside the store namespace (KeyFromObject = %q, %v)", prefix, key, obj, got, ok)
+			}
 		}
 	}
 }

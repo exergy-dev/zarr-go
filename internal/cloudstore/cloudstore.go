@@ -5,6 +5,7 @@
 package cloudstore
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -12,18 +13,30 @@ import (
 	"github.com/exergy-dev/zarr-go/store"
 )
 
+// ErrEmptyKey is returned (wrapped with the calling backend's name) by
+// JoinKey for a key that is empty after stripping leading slashes.
+var ErrEmptyKey = errors.New("empty key")
+
 // JoinKey joins the configured prefix with key, producing a clean object key
-// with no leading or duplicate slashes.
-func JoinKey(prefix, key string) string {
+// with no leading or duplicate slashes, for the single-key operations (Get,
+// GetRange, GetSuffix, Set, SetIfNotExists, Delete, Exists).
+//
+// A key that is empty after stripping leading slashes is rejected with
+// ErrEmptyKey: there is no object inside the store's namespace for it to
+// name. Joining it would address the object named exactly prefix (outside
+// prefix+"/") or, mapped to prefix+"/", the directory marker that
+// KeyFromObject hides from List; with no prefix, the empty object name the
+// SDKs reject anyway.
+func JoinKey(backend, prefix, key string) (string, error) {
 	prefix = TrimSlashes(prefix)
-	key = strings.TrimLeft(key, "/")
+	k := strings.TrimLeft(key, "/")
+	if k == "" {
+		return "", fmt.Errorf("%s: key %q: %w", backend, key, ErrEmptyKey)
+	}
 	if prefix == "" {
-		return key
+		return k, nil
 	}
-	if key == "" {
-		return prefix
-	}
-	return prefix + "/" + key
+	return prefix + "/" + k, nil
 }
 
 // TrimSlashes strips leading and trailing slashes from s.

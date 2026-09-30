@@ -99,7 +99,10 @@ func googleAPICode(err error) int {
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	r, err := s.bucket.Object(k).NewReader(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
@@ -127,7 +130,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		return nil, err
 	}
 	n = cloudstore.ClampLen(off, n)
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	r, err := s.bucket.Object(k).NewRangeReader(ctx, off, n)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
@@ -155,7 +161,10 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	if err := cloudstore.ValidateRange("gcs", "GetSuffix", 0, n); err != nil {
 		return nil, err
 	}
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	if n == 0 {
 		if _, err := s.bucket.Object(k).Attrs(ctx); err != nil {
 			if errors.Is(err, storage.ErrObjectNotExist) {
@@ -182,7 +191,10 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return err
+	}
 	w := s.bucket.Object(k).NewWriter(ctx)
 	if _, err := w.Write(value); err != nil {
 		_ = w.Close()
@@ -198,7 +210,10 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // "x-goog-if-generation-match: 0" precondition (DoesNotExist) so concurrent
 // writers can race safely; the loser receives a 412 and we return (false, nil).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
 	obj := s.bucket.Object(k).If(storage.Conditions{DoesNotExist: true})
 	w := obj.NewWriter(ctx)
 	if _, err := w.Write(value); err != nil {
@@ -219,7 +234,10 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return err
+	}
 	if err := s.bucket.Object(k).Delete(ctx); err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return nil
@@ -231,7 +249,10 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
 	if _, err := s.bucket.Object(k).Attrs(ctx); err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return false, nil

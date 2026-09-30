@@ -16,6 +16,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/exergy-dev/zarr-go/internal/cloudstore"
 	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
@@ -114,6 +115,33 @@ func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
 	}
 	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
 		t.Fatalf("range headers sent = %q, want [%q]", r, want)
+	}
+}
+
+// TestEmptyKeyRejected: single-key operations must reject key "" before
+// issuing any request, rather than addressing the object named exactly
+// Prefix (outside the store's Prefix+"/" namespace).
+func TestEmptyKeyRejected(t *testing.T) {
+	url, requests := cloudstoretest.RangeServer(t, "Range", []byte("x"))
+	s := fakeStore(t, url)
+	s.prefix = "data"
+	ctx := context.Background()
+	ops := map[string]func() error{
+		"Get":            func() error { _, err := s.Get(ctx, ""); return err },
+		"GetRange":       func() error { _, err := s.GetRange(ctx, "", 0, 1); return err },
+		"GetSuffix":      func() error { _, err := s.GetSuffix(ctx, "/", 1); return err },
+		"Set":            func() error { return s.Set(ctx, "", []byte("x")) },
+		"SetIfNotExists": func() error { _, err := s.SetIfNotExists(ctx, "", []byte("x")); return err },
+		"Delete":         func() error { return s.Delete(ctx, "") },
+		"Exists":         func() error { _, err := s.Exists(ctx, ""); return err },
+	}
+	for name, op := range ops {
+		if err := op(); !errors.Is(err, cloudstore.ErrEmptyKey) {
+			t.Errorf("%s(\"\") = %v, want ErrEmptyKey", name, err)
+		}
+	}
+	if r := requests(); len(r) != 0 {
+		t.Errorf("empty-key operations issued %d requests, want 0", len(r))
 	}
 }
 

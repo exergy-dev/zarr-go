@@ -143,7 +143,10 @@ func (s *Store) headExists(ctx context.Context, k string) (bool, error) {
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	out, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(k),
@@ -168,7 +171,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		return nil, err
 	}
 	n = cloudstore.ClampLen(off, n)
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	if n == 0 {
 		ok, err := s.headExists(ctx, k)
 		if err != nil {
@@ -218,7 +224,10 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	if err := cloudstore.ValidateRange("s3", "GetSuffix", 0, n); err != nil {
 		return nil, err
 	}
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	if n == 0 {
 		ok, err := s.headExists(ctx, k)
 		if err != nil {
@@ -258,8 +267,11 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := cloudstore.JoinKey(s.prefix, key)
-	_, err := s.client.PutObject(ctx, &awss3.PutObjectInput{
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.PutObject(ctx, &awss3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(k),
 		Body:   bytes.NewReader(value),
@@ -281,8 +293,11 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // behind older S3-compatible gateways that do not understand If-None-Match
 // will see those errors here rather than silent overwrites.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
-	_, err := s.client.PutObject(ctx, &awss3.PutObjectInput{
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.client.PutObject(ctx, &awss3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(k),
 		Body:        bytes.NewReader(value),
@@ -300,8 +315,11 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := cloudstore.JoinKey(s.prefix, key)
-	_, err := s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(k),
 	})
@@ -316,7 +334,11 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	return s.headExists(ctx, cloudstore.JoinKey(s.prefix, key))
+	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
+	return s.headExists(ctx, k)
 }
 
 // List implements store.Store. The supplied prefix is joined with the
