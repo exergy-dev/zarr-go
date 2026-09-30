@@ -133,8 +133,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	if off >= size {
 		return []byte{}, nil
 	}
+	// Compare against the remaining length rather than off+n, which can
+	// overflow int64 for n near MaxInt64 and skip the clamp.
 	want := n
-	if off+want > size {
+	if want > size-off {
 		want = size - off
 	}
 	buf := make([]byte, want)
