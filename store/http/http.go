@@ -58,7 +58,7 @@ type Config struct {
 //
 // The zero value is not usable; construct one with New.
 type Store struct {
-	baseURL string
+	baseURL *url.URL
 	client  *http.Client
 	headers http.Header
 }
@@ -69,11 +69,16 @@ func New(cfg Config) (*Store, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("http store: BaseURL is required")
 	}
-	if _, err := url.Parse(cfg.BaseURL); err != nil {
-		return nil, fmt.Errorf("http store: invalid BaseURL: %w", err)
+	base, err := url.Parse(cfg.BaseURL)
+	if err != nil {
+		// Unwrap the *url.Error: its message quotes the raw URL, which
+		// may include a password.
+		return nil, fmt.Errorf("http store: invalid BaseURL: %w", errors.Unwrap(err))
 	}
 	if !strings.HasSuffix(cfg.BaseURL, "/") {
-		return nil, fmt.Errorf("http store: BaseURL %q must end with %q", cfg.BaseURL, "/")
+		// Redacted: a BaseURL may carry user:password@ credentials, which
+		// must not end up in error strings or logs.
+		return nil, fmt.Errorf("http store: BaseURL %q must end with %q", base.Redacted(), "/")
 	}
 	client := cfg.Client
 	if client == nil {
@@ -84,7 +89,7 @@ func New(cfg Config) (*Store, error) {
 		headers = cfg.Headers.Clone()
 	}
 	return &Store{
-		baseURL: cfg.BaseURL,
+		baseURL: base,
 		client:  client,
 		headers: headers,
 	}, nil
@@ -92,22 +97,21 @@ func New(cfg Config) (*Store, error) {
 
 // resolve joins key onto the base URL and rejects keys containing ".."
 // segments. This prevents callers from escaping the configured base.
-func (s *Store) resolve(key string) (string, error) {
+//
+// The returned URL may carry BaseURL credentials: format it in errors with
+// u.Redacted(), never u.String() or %s/%v on u directly.
+func (s *Store) resolve(key string) (*url.URL, error) {
 	for _, seg := range strings.Split(key, "/") {
 		if seg == ".." {
-			return "", fmt.Errorf("http store: key %q contains forbidden %q segment", key, "..")
+			return nil, fmt.Errorf("http store: key %q contains forbidden %q segment", key, "..")
 		}
 	}
-	u, err := url.JoinPath(s.baseURL, key)
-	if err != nil {
-		return "", fmt.Errorf("http store: failed to build URL for key %q: %w", key, err)
-	}
-	return u, nil
+	return s.baseURL.JoinPath(key), nil
 }
 
 // newRequest constructs an *http.Request and applies any configured headers.
-func (s *Store) newRequest(ctx context.Context, method, u string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+func (s *Store) newRequest(ctx context.Context, method string, u *url.URL) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("http store: build request: %w", err)
 	}
@@ -131,20 +135,20 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http store: GET %s: %w", u, err)
+		return nil, fmt.Errorf("http store: GET %s: %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("http store: GET %s: read body: %w", u, err)
+			return nil, fmt.Errorf("http store: GET %s: read body: %w", u.Redacted(), err)
 		}
 		return body, nil
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("http store: GET %s: %w", u, store.ErrKeyNotFound)
+		return nil, fmt.Errorf("http store: GET %s: %w", u.Redacted(), store.ErrKeyNotFound)
 	default:
-		return nil, fmt.Errorf("http store: GET %s: unexpected status %d", u, resp.StatusCode)
+		return nil, fmt.Errorf("http store: GET %s: unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
 }
 
@@ -168,7 +172,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 			return nil, exErr
 		}
 		if !ok {
-			return nil, fmt.Errorf("http store: GetRange %s: %w", u, store.ErrKeyNotFound)
+			return nil, fmt.Errorf("http store: GetRange %s: %w", u.Redacted(), store.ErrKeyNotFound)
 		}
 		return []byte{}, nil
 	}
@@ -185,7 +189,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http store: GET %s (range): %w", u, err)
+		return nil, fmt.Errorf("http store: GET %s (range): %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -197,7 +201,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		// rather than silently returning mismatched data.
 		if cr := resp.Header.Get("Content-Range"); cr != "" {
 			if start, ok := parseContentRangeStart(cr); ok && start != off {
-				return nil, fmt.Errorf("http store: GET %s (range): server returned Content-Range %q for requested offset %d", u, cr, off)
+				return nil, fmt.Errorf("http store: GET %s (range): server returned Content-Range %q for requested offset %d", u.Redacted(), cr, off)
 			}
 		}
 		// Bound the read at n: a misbehaving server streaming more than
@@ -205,28 +209,28 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		// without limit.
 		body, err := io.ReadAll(io.LimitReader(resp.Body, n))
 		if err != nil {
-			return nil, fmt.Errorf("http store: GET %s (range): read body: %w", u, err)
+			return nil, fmt.Errorf("http store: GET %s (range): read body: %w", u.Redacted(), err)
 		}
 		return body, nil
 	case http.StatusOK:
 		// Server ignored the Range header; slice manually.
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("http store: GET %s (range fallback): read body: %w", u, err)
+			return nil, fmt.Errorf("http store: GET %s (range fallback): read body: %w", u.Redacted(), err)
 		}
 		clamped := store.ClampRange(body, off, n)
 		out := make([]byte, len(clamped))
 		copy(out, clamped)
 		return out, nil
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("http store: GET %s (range): %w", u, store.ErrKeyNotFound)
+		return nil, fmt.Errorf("http store: GET %s (range): %w", u.Redacted(), store.ErrKeyNotFound)
 	case http.StatusRequestedRangeNotSatisfiable:
 		// Treat as empty slice; the key might exist but the requested range
 		// is past EOF. Return a zero-length slice rather than an error so
 		// callers reading optional trailing bytes don't see a failure.
 		return []byte{}, nil
 	default:
-		return nil, fmt.Errorf("http store: GET %s (range): unexpected status %d", u, resp.StatusCode)
+		return nil, fmt.Errorf("http store: GET %s (range): unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
 }
 
@@ -248,7 +252,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 			return nil, exErr
 		}
 		if !ok {
-			return nil, fmt.Errorf("http store: GetSuffix %s: %w", u, store.ErrKeyNotFound)
+			return nil, fmt.Errorf("http store: GetSuffix %s: %w", u.Redacted(), store.ErrKeyNotFound)
 		}
 		return []byte{}, nil
 	}
@@ -259,7 +263,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	req.Header.Set("Range", fmt.Sprintf("bytes=-%d", n))
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u, err)
+		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -268,14 +272,14 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 		// exactly the suffix, and anything beyond n is not trusted.
 		body, err := io.ReadAll(io.LimitReader(resp.Body, n))
 		if err != nil {
-			return nil, fmt.Errorf("http store: GET %s (suffix range): read body: %w", u, err)
+			return nil, fmt.Errorf("http store: GET %s (suffix range): read body: %w", u.Redacted(), err)
 		}
 		return body, nil
 	case http.StatusOK:
 		// Server ignored the Range header; slice manually.
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("http store: GET %s (suffix range fallback): read body: %w", u, err)
+			return nil, fmt.Errorf("http store: GET %s (suffix range fallback): read body: %w", u.Redacted(), err)
 		}
 		length := int64(len(body))
 		start := length - n
@@ -284,13 +288,13 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 		}
 		return body[start:], nil
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u, store.ErrKeyNotFound)
+		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), store.ErrKeyNotFound)
 	case http.StatusRequestedRangeNotSatisfiable:
 		// n is at or past the resource's size; the contract calls for the
 		// whole value in that case.
 		return s.Get(ctx, key)
 	default:
-		return nil, fmt.Errorf("http store: GET %s (suffix range): unexpected status %d", u, resp.StatusCode)
+		return nil, fmt.Errorf("http store: GET %s (suffix range): unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
 }
 
@@ -341,7 +345,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("http store: HEAD %s: %w", u, err)
+		return false, fmt.Errorf("http store: HEAD %s: %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -350,7 +354,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	case http.StatusNotFound:
 		return false, nil
 	default:
-		return false, fmt.Errorf("http store: HEAD %s: unexpected status %d", u, resp.StatusCode)
+		return false, fmt.Errorf("http store: HEAD %s: unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
 }
 

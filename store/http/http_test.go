@@ -412,3 +412,42 @@ func TestGetSuffixBoundsPartialContentBody(t *testing.T) {
 		t.Fatalf("GetSuffix len = %d, want 16", len(got))
 	}
 }
+
+func TestErrorsRedactBaseURLPassword(t *testing.T) {
+	t.Parallel()
+	const password = "s3cret-pw"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	base := strings.Replace(srv.URL, "http://", "http://user:"+password+"@", 1) + "/"
+
+	checkRedacted := func(op string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: expected error", op)
+		}
+		if strings.Contains(err.Error(), password) {
+			t.Errorf("%s: error leaks password: %v", op, err)
+		}
+	}
+
+	_, err := New(Config{BaseURL: strings.TrimSuffix(base, "/")})
+	checkRedacted("New (no trailing slash)", err)
+	_, err = New(Config{BaseURL: "http://user:" + password + "@host:badport/"})
+	checkRedacted("New (unparseable)", err)
+
+	s, err := New(Config{BaseURL: base})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	_, err = s.Get(ctx, "k")
+	checkRedacted("Get", err)
+	_, err = s.GetRange(ctx, "k", 0, 4)
+	checkRedacted("GetRange", err)
+	_, err = s.GetSuffix(ctx, "k", 4)
+	checkRedacted("GetSuffix", err)
+	_, err = s.Exists(ctx, "k")
+	checkRedacted("Exists", err)
+}
