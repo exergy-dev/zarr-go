@@ -3,6 +3,7 @@ package zarr
 import (
 	"fmt"
 	"iter"
+	"slices"
 )
 
 // Selection identifies a contiguous (with stride) hyperrectangle of an array.
@@ -65,11 +66,7 @@ func (s Selection) Validate(shape []int64) error {
 type ChunkCoord []int64
 
 // Clone returns a copy of c so the caller can retain it across iterator steps.
-func (c ChunkCoord) Clone() ChunkCoord {
-	out := make(ChunkCoord, len(c))
-	copy(out, c)
-	return out
-}
+func (c ChunkCoord) Clone() ChunkCoord { return slices.Clone(c) }
 
 // ChunksIntersecting yields each chunk coordinate whose chunk overlaps the
 // selection. Coordinates are emitted in row-major (C) order.

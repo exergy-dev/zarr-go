@@ -264,3 +264,84 @@ func TestCreateArrayRank0(t *testing.T) {
 		t.Fatalf("dst[0] = %v, want 3.5", dst[0])
 	}
 }
+
+// TestRank0ShapeSlicesNonNil checks a rank-0 array's Shape(), Chunks(), and
+// streamed chunk Coord are empty but non-nil (so they marshal as JSON "[]",
+// not "null"), whether the array was just created or reopened.
+func TestRank0ShapeSlicesNonNil(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	a, err := zarr.CreateArray[int32](ctx, s, "scalar", nil, nil)
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	b, err := zarr.OpenArray[int32](ctx, s, "scalar")
+	if err != nil {
+		t.Fatalf("OpenArray: %v", err)
+	}
+	for name, arr := range map[string]*zarr.Array[int32]{"created": a, "opened": b} {
+		if got := arr.Shape(); got == nil || len(got) != 0 {
+			t.Errorf("%s: Shape() = %#v, want non-nil empty", name, got)
+		}
+		if got := arr.Chunks(); got == nil || len(got) != 0 {
+			t.Errorf("%s: Chunks() = %#v, want non-nil empty", name, got)
+		}
+		n := 0
+		for ck, err := range arr.Stream(ctx, zarr.All(nil)) {
+			if err != nil {
+				t.Fatalf("%s: Stream: %v", name, err)
+			}
+			if ck.Coord == nil || len(ck.Coord) != 0 {
+				t.Errorf("%s: Stream Coord = %#v, want non-nil empty", name, ck.Coord)
+			}
+			n++
+		}
+		if n != 1 {
+			t.Errorf("%s: Stream yielded %d chunks, want 1", name, n)
+		}
+	}
+}
+
+// TestShapeAndCoordCopiesDoNotAlias checks Shape(), Chunks(), and
+// ChunkCoord.Clone return copies the caller may mutate freely.
+func TestShapeAndCoordCopiesDoNotAlias(t *testing.T) {
+	a, err := zarr.CreateArray[int32](context.Background(), mem.New(), "a", []int64{4, 6}, []int64{2, 3})
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	a.Shape()[0] = 99
+	a.Chunks()[0] = 99
+	if got := a.Shape(); got[0] != 4 || got[1] != 6 {
+		t.Errorf("Shape() = %v after mutating a returned copy, want [4 6]", got)
+	}
+	if got := a.Chunks(); got[0] != 2 || got[1] != 3 {
+		t.Errorf("Chunks() = %v after mutating a returned copy, want [2 3]", got)
+	}
+	c := zarr.ChunkCoord{1, 2}
+	d := c.Clone()
+	d[0] = 9
+	if c[0] != 1 || d[1] != 2 {
+		t.Errorf("Clone aliased: c=%v d=%v", c, d)
+	}
+}
+
+// TestGroupNilAttrsStayNil checks a group created without attributes reports
+// nil Attrs(), both in memory and after a reopen.
+func TestGroupNilAttrsStayNil(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	g, err := zarr.CreateGroup(ctx, s, "g", nil)
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if got := g.Attrs(); got != nil {
+		t.Errorf("created: Attrs() = %#v, want nil", got)
+	}
+	n, err := zarr.Open(ctx, s, "g")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := n.(*zarr.Group).Attrs(); got != nil {
+		t.Errorf("reopened: Attrs() = %#v, want nil", got)
+	}
+}

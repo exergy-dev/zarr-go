@@ -322,6 +322,56 @@ func TestPartialRead_FetchCounts(t *testing.T) {
 	}
 }
 
+// rangeOnlyStore exposes only the store.Store method set of the wrapped
+// store, hiding any GetSuffix it has.
+type rangeOnlyStore struct{ store.Store }
+
+// TestPartialRead_NoSuffixStore checks the partial-decode path against a
+// store without GetSuffix: the sharding codec must fall back to a single
+// whole-shard GetRange (then serve the index and inner chunks from it)
+// rather than failing or issuing whole-chunk Gets.
+func TestPartialRead_NoSuffixStore(t *testing.T) {
+	ctx := context.Background()
+	inner := mem.New()
+	shape := []int64{16, 16}
+	a, err := zarr.CreateArray[int32](ctx, inner, "arr", shape, []int64{8, 8},
+		zarr.WithCodecs(codec.Spec{Name: "sharding_indexed", Configuration: json.RawMessage(shardCfg2x2)}))
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	src := make([]int32, 16*16)
+	for i := range src {
+		src[i] = int32(i + 1)
+	}
+	if err := a.Write(ctx, zarr.All(shape), src); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	cs := &countingStore{inner: inner}
+	b, err := zarr.OpenArray[int32](ctx, rangeOnlyStore{cs}, "arr")
+	if err != nil {
+		t.Fatalf("OpenArray: %v", err)
+	}
+	cs.gets.Store(0)
+	sel := zarr.Selection{Ranges: []zarr.DimRange{{Start: 2, Stop: 6, Step: 1}, {Start: 2, Stop: 6, Step: 1}}}
+	got := make([]int32, sel.NumElements())
+	if err := b.Read(ctx, sel, got); err != nil {
+		t.Fatalf("partial Read: %v", err)
+	}
+	idx := 0
+	for r := int64(2); r < 6; r++ {
+		for c := int64(2); c < 6; c++ {
+			if want := src[r*16+c]; got[idx] != want {
+				t.Fatalf("[%d,%d] got %d want %d", r, c, got[idx], want)
+			}
+			idx++
+		}
+	}
+	if g, suf, r := cs.gets.Load(), cs.getSuffixes.Load(), cs.getRanges.Load(); g != 0 || suf != 0 || r != 1 {
+		t.Errorf("partial read issued Get=%d GetSuffix=%d GetRange=%d, want 0/0/1 (one whole-shard range)", g, suf, r)
+	}
+}
+
 // TestWithRangeGap_AffectsFetchCount verifies WithRangeGap actually reaches
 // the sharding codec's range coalescing: a tight gap issues one GetRange per
 // disjoint span, a generous gap coalesces them into one.

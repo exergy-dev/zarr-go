@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
 	"sync"
 	"unsafe"
 
@@ -77,16 +78,12 @@ type Array[T Numeric] struct {
 	meta     *metadata.ArrayMeta
 	pipeline *codec.Pipeline
 	dtype    Dtype
-	fill     []byte // fill value bytes, native LE, sizeof(T)
+	fill     []byte // fill value bytes, native byte order, sizeof(T)
 	opts     arrayOptions
 	// partialDecoder is non-nil when the pipeline's AB codec implements
 	// codec.PartialDecoder AND no BB codecs sit on top of it. Cached here
 	// (computed once at open) so per-chunk reads avoid a type assertion.
 	partialDecoder codec.PartialDecoder
-	// fetcher adapts store to codec.RangeFetcher (and codec.SuffixRangeFetcher
-	// when store implements store.SuffixReader) for the partial-decode path.
-	// Constructed once at open so per-chunk reads don't pay adapter-alloc cost.
-	fetcher codec.RangeFetcher
 	// rawCopyFast is set when the codec pipeline is exactly [bytes(<host endian>)]
 	// with no AA or BB codecs, so the on-wire chunk bytes can be consumed
 	// directly without invoking Pipeline.Decode.
@@ -103,18 +100,11 @@ type Chunk[T Numeric] struct {
 }
 
 // Shape returns the array's logical shape.
-func (a *Array[T]) Shape() []int64 {
-	out := make([]int64, len(a.meta.Shape))
-	copy(out, a.meta.Shape)
-	return out
-}
+func (a *Array[T]) Shape() []int64 { return metadata.CloneInt64(a.meta.Shape) }
 
 // Chunks returns the array's chunk shape.
 func (a *Array[T]) Chunks() []int64 {
-	cs := a.meta.ChunkGrid.Configuration.ChunkShape
-	out := make([]int64, len(cs))
-	copy(out, cs)
-	return out
+	return metadata.CloneInt64(a.meta.ChunkGrid.Configuration.ChunkShape)
 }
 
 // Dtype returns the array's element type.
@@ -426,7 +416,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 		Fill:      a.fill,
 		GapBytes:  a.opts.rangeGap,
 	}
-	if err := pd.DecodePartial(ctx, a.fetcher, &req); err != nil {
+	if err := pd.DecodePartial(ctx, a.store, &req); err != nil {
 		// Translate "key not found" to the same sentinel as the full path
 		// so the caller skips the chunk and leaves the fill value in place.
 		if errors.Is(err, store.ErrKeyNotFound) {
@@ -450,42 +440,6 @@ func (a *Array[T]) partialDecodeAndCopy(
 	}
 	ndcopy.Copy(dstBytes, outShape, dstRegion, out, regionShape, srcRegion, elemSize, &ndSc)
 	return nil
-}
-
-// rangeOnlyFetcher adapts a store.Store to codec.RangeFetcher, nothing more.
-// Used when the store doesn't implement store.SuffixReader; the sharding
-// codec falls back to its own whole-blob-fetch strategy for the index
-// trailer in that case.
-type rangeOnlyFetcher struct {
-	s store.Store
-}
-
-// GetRange forwards to the underlying store's GetRange.
-func (f rangeOnlyFetcher) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	return f.s.GetRange(ctx, key, off, n)
-}
-
-// suffixFetcher extends rangeOnlyFetcher with a native GetSuffix, used when
-// the underlying store implements store.SuffixReader — the dominant
-// codepath for cloud backends (a single `Range: bytes=-N` request for the
-// index trailer instead of a whole-blob fetch).
-type suffixFetcher struct {
-	rangeOnlyFetcher
-	sr store.SuffixReader
-}
-
-func (f suffixFetcher) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
-	return f.sr.GetSuffix(ctx, key, n)
-}
-
-// newChunkFetcher builds the codec.RangeFetcher used for partial chunk
-// decodes, chosen once at array open based on what s implements.
-func newChunkFetcher(s store.Store) codec.RangeFetcher {
-	rf := rangeOnlyFetcher{s: s}
-	if sr, ok := s.(store.SuffixReader); ok {
-		return suffixFetcher{rangeOnlyFetcher: rf, sr: sr}
-	}
-	return rf
 }
 
 // decodeAndCopy decodes one already-fetched chunk and copies its sub-region
@@ -771,7 +725,7 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 				return
 			}
 			var data []T
-			if clipped := !slicesEqual(actualChunk, chunkShape); clipped {
+			if clipped := !slices.Equal(actualChunk, chunkShape); clipped {
 				// Edge chunk: the stored chunk covers the full chunkShape, but
 				// the yielded Shape is clipped to the array bounds. Extract the
 				// in-bounds region into a dense buffer so Data's layout matches
@@ -799,19 +753,6 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 	}
 }
 
-// slicesEqual reports whether a and b have the same length and elements.
-func slicesEqual(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // hasNonZeroFill reports whether any byte in fill is non-zero.
 func hasNonZeroFill(fill []byte) bool {
 	for _, b := range fill {
@@ -822,8 +763,8 @@ func hasNonZeroFill(fill []byte) bool {
 	return false
 }
 
-// fillTyped writes the fill value (one element's worth of native-LE bytes)
-// across every element of dst.
+// fillTyped writes the fill value (one element's worth of bytes in native
+// byte order) across every element of dst.
 func fillTyped[T Numeric](dst []T, fill []byte) {
 	if len(dst) == 0 || len(fill) == 0 {
 		return

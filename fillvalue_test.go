@@ -92,6 +92,27 @@ func TestErrCorruptMetadataWrapsDecodeFailures(t *testing.T) {
 	}
 }
 
+// TestErrCorruptMetadataKeepsCause checks the ErrCorruptMetadata wrap keeps
+// the underlying decode error in the chain, so callers can errors.As for
+// the concrete cause (here, the JSON syntax error) as well as the sentinel.
+func TestErrCorruptMetadataKeepsCause(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	if err := s.Set(ctx, "arr/zarr.json", []byte(`{"zarr_format": 3,`)); err != nil {
+		t.Fatal(err)
+	}
+	_, openErr := zarr.Open(ctx, s, "arr")
+	_, arrErr := zarr.OpenArray[float32](ctx, s, "arr")
+	for name, err := range map[string]error{"Open": openErr, "OpenArray": arrErr} {
+		if !errors.Is(err, zarr.ErrCorruptMetadata) {
+			t.Errorf("%s: got %v, want ErrCorruptMetadata", name, err)
+		}
+		if !errors.As(err, new(*json.SyntaxError)) {
+			t.Errorf("%s: errors.As(%v, *json.SyntaxError) = false, want true", name, err)
+		}
+	}
+}
+
 // TestErrUnknownCodecSentinel checks BuildPipeline's error is wrapped with
 // the shared codec.ErrUnknownCodec / zarr.ErrUnknownCodec sentinel (the two
 // are aliases), matchable from either package.

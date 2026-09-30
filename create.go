@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/exergy-dev/zarr-go/codec"
@@ -261,16 +262,7 @@ func deleteStaleChunks(ctx context.Context, ws store.WritableStore, path string)
 
 // cloneAttrs returns a shallow copy of attrs (or nil for nil), so callers
 // storing a map into metadata don't alias the caller's own map.
-func cloneAttrs(attrs map[string]any) map[string]any {
-	if attrs == nil {
-		return nil
-	}
-	out := make(map[string]any, len(attrs))
-	for k, v := range attrs {
-		out[k] = v
-	}
-	return out
-}
+func cloneAttrs(attrs map[string]any) map[string]any { return maps.Clone(attrs) }
 
 // CreateGroup adds a sub-group named name under g.
 func (g *Group) CreateGroup(ctx context.Context, name string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
