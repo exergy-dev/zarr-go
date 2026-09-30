@@ -70,8 +70,9 @@ type Codec struct {
 // in DecodeBB below ever runs.
 func (c *Codec) init() {
 	c.once.Do(func() {
+		// Concurrency 0 (GOMAXPROCS) so Array's NumCPU workers sharing this Codec don't serialize.
 		encOpts := []kpzstd.EOption{
-			kpzstd.WithEncoderConcurrency(1),
+			kpzstd.WithEncoderConcurrency(0),
 			kpzstd.WithEncoderCRC(c.Checksum),
 			// Single-segment frames include Frame_Content_Size in the
 			// header, which numcodecs/zstandard.decompress requires.
@@ -85,7 +86,7 @@ func (c *Codec) init() {
 			c.initErr = fmt.Errorf("zstd codec: encoder init: %w", err)
 			return
 		}
-		decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(1)}
+		decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(0)}
 		if maxDec := declimit.Max(); maxDec > 0 {
 			decOpts = append(decOpts, kpzstd.WithDecoderMaxMemory(uint64(maxDec)))
 		}
