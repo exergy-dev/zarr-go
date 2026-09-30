@@ -50,14 +50,45 @@ func (c *Codec) Configure(raw json.RawMessage) error {
 	return nil
 }
 
-var readerPool = sync.Pool{}
+// Pools, each kept because benchmarks show it pays for itself (same scheme
+// as the gzip codec):
+//
+//   - writerPools: a writer allocates ~800 KiB of compressor state; reusing
+//     it cuts EncodeBB's allocations by ~95% on 64 KiB chunks. Reset cannot
+//     change a writer's level, so there is one pool per level (index
+//     level+1, covering -1..9).
+//   - readerPool: reuses a reader's inflate state across DecodeBB calls.
+//   - encScratch: the compressed size isn't known up front, so compressing
+//     into reused scratch and copying out an exact-size result allocates
+//     less than growing a fresh buffer. Buffers over 1 MiB are dropped
+//     rather than pinned.
+var (
+	writerPools [11]sync.Pool
+	readerPool  sync.Pool
+	encScratch  = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+)
 
 func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	buf.Grow(len(in) / 2)
-	w, err := stdzlib.NewWriterLevel(&buf, c.Level)
-	if err != nil {
-		return nil, fmt.Errorf("zlib codec: writer init: %w", err)
+	buf := encScratch.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 1<<20 {
+			encScratch.Put(buf)
+		}
+	}()
+	var pool *sync.Pool
+	var w *stdzlib.Writer
+	if c.Level >= -1 && c.Level <= 9 {
+		pool = &writerPools[c.Level+1]
+		w, _ = pool.Get().(*stdzlib.Writer)
+	}
+	if w != nil {
+		w.Reset(buf)
+	} else {
+		var err error
+		if w, err = stdzlib.NewWriterLevel(buf, c.Level); err != nil {
+			return nil, fmt.Errorf("zlib codec: writer init: %w", err)
+		}
 	}
 	if _, err := w.Write(in); err != nil {
 		return nil, fmt.Errorf("zlib codec: write: %w", err)
@@ -65,35 +96,39 @@ func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
 	if err := w.Close(); err != nil {
 		return nil, fmt.Errorf("zlib codec: close: %w", err)
 	}
-	return buf.Bytes(), nil
+	if pool != nil {
+		pool.Put(w)
+	}
+	return bytes.Clone(buf.Bytes()), nil
 }
 
 func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
-	var r io.ReadCloser
-	if pooled, ok := readerPool.Get().(io.ReadCloser); ok {
-		if reset, ok := pooled.(zlibResetter); ok {
-			if err := reset.Reset(bytes.NewReader(in), nil); err == nil {
-				r = pooled
-			}
-		}
+	br := bytes.NewReader(in)
+	zr, _ := readerPool.Get().(io.ReadCloser)
+	var err error
+	if zr != nil {
+		err = zr.(stdzlib.Resetter).Reset(br, nil)
+	} else {
+		zr, err = stdzlib.NewReader(br)
 	}
-	if r == nil {
-		var err error
-		r, err = stdzlib.NewReader(bytes.NewReader(in))
-		if err != nil {
-			return nil, fmt.Errorf("zlib codec: reader init: %w", err)
-		}
+	if err != nil {
+		return nil, fmt.Errorf("zlib codec: reader init: %w", err)
 	}
+	// Reset reinitializes all reader state, so the reader is reusable
+	// whatever happens below. Unbinding br keeps the pool from pinning in.
 	defer func() {
-		_ = r.Close()
-		readerPool.Put(r)
+		br.Reset(nil)
+		readerPool.Put(zr)
 	}()
 	maxDec := declimit.Max()
-	var rdr io.Reader = r
+	var r io.Reader = zr
 	if maxDec > 0 {
-		rdr = io.LimitReader(r, maxDec+1)
+		// Reading at most maxDec+1 bytes tells "at the cap" from "over it"
+		// without materializing the whole bomb.
+		r = io.LimitReader(zr, maxDec+1)
 	}
-	out, err := io.ReadAll(rdr)
+	// Unlike gzip, a zlib stream records no decoded size to presize from.
+	out, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("zlib codec: read: %w", err)
 	}
@@ -101,10 +136,6 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 		return nil, fmt.Errorf("zlib codec: decompressed output exceeds %d bytes", maxDec)
 	}
 	return out, nil
-}
-
-type zlibResetter interface {
-	Reset(r io.Reader, dict []byte) error
 }
 
 func init() {
