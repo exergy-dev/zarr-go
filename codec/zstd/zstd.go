@@ -9,6 +9,7 @@ package zstd
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 
 	kpzstd "github.com/klauspost/compress/zstd"
@@ -71,7 +72,8 @@ type Codec struct {
 func (c *Codec) init() {
 	c.once.Do(func() {
 		encOpts := []kpzstd.EOption{
-			kpzstd.WithEncoderConcurrency(1),
+			// Array.Write encodes chunks sequentially, so extra slots sit idle yet each preallocates match tables (up to ~34 MiB at level >= 10).
+			kpzstd.WithEncoderConcurrency(min(4, runtime.GOMAXPROCS(0))),
 			kpzstd.WithEncoderCRC(c.Checksum),
 			// Single-segment frames include Frame_Content_Size in the
 			// header, which numcodecs/zstandard.decompress requires.
@@ -85,7 +87,8 @@ func (c *Codec) init() {
 			c.initErr = fmt.Errorf("zstd codec: encoder init: %w", err)
 			return
 		}
-		decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(1)}
+		// Concurrency 0 (GOMAXPROCS) so Array.Read's NumCPU workers sharing this Codec don't serialize.
+		decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(0)}
 		if maxDec := declimit.Max(); maxDec > 0 {
 			decOpts = append(decOpts, kpzstd.WithDecoderMaxMemory(uint64(maxDec)))
 		}
