@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // NodeType reports whether a zarr.json describes a group or an array.

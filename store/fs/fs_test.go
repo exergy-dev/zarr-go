@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/storetest"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
 func newStore(t *testing.T) *Store {

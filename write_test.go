@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 func TestWriteThenRead_Bytes_2D(t *testing.T) {

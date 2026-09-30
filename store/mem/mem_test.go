@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/mem"
-	"github.com/rkm/zarr-go/store/storetest"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
 func TestConformance(t *testing.T) {

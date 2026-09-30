@@ -27,7 +27,7 @@ import (
 	"iter"
 	"sync"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // Config configures the cache. Underlying is required; the size/count limits

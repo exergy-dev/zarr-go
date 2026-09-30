@@ -7,7 +7,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // v2RawArray mirrors the on-disk shape of a Zarr v2 .zarray document — only

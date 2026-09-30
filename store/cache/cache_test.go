@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/cache"
-	"github.com/rkm/zarr-go/store/mem"
-	"github.com/rkm/zarr-go/store/storetest"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/cache"
+	"github.com/exergy-dev/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
 // countingStore wraps a store.Store and records call counts per method for

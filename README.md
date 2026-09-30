@@ -1,7 +1,7 @@
 # zarr-go
 
 [![CI](https://github.com/exergy-dev/zarr-go/actions/workflows/ci.yml/badge.svg)](https://github.com/exergy-dev/zarr-go/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/rkm/zarr-go.svg)](https://pkg.go.dev/github.com/rkm/zarr-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/exergy-dev/zarr-go.svg)](https://pkg.go.dev/github.com/exergy-dev/zarr-go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A pure-Go implementation of the [Zarr](https://zarr.dev) chunked, compressed,
@@ -22,7 +22,7 @@ codecs and storage backends.
 ## Install
 
 ```bash
-go get github.com/rkm/zarr-go
+go get github.com/exergy-dev/zarr-go
 ```
 
 Requires Go 1.25 or newer.
@@ -38,8 +38,8 @@ import (
 	"context"
 	"fmt"
 
-	zarr "github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/store/fs"
+	zarr "github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/store/fs"
 )
 
 func main() {
@@ -75,9 +75,9 @@ import (
 	"context"
 	"encoding/json"
 
-	zarr "github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/store/fs"
+	zarr "github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/store/fs"
 )
 
 func main() {
@@ -123,8 +123,8 @@ Stores all satisfy `store.Store`; writable backends additionally satisfy
 
 ```go
 import (
-    "github.com/rkm/zarr-go/store/cache"
-    "github.com/rkm/zarr-go/store/s3"
+    "github.com/exergy-dev/zarr-go/store/cache"
+    "github.com/exergy-dev/zarr-go/store/s3"
 )
 
 base, _ := s3.New(ctx, s3.Config{Bucket: "my-bucket", Prefix: "datasets/"})

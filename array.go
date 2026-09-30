@@ -8,12 +8,12 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/rkm/zarr-go/codec"
-	bytescodec "github.com/rkm/zarr-go/codec/bytes"
-	"github.com/rkm/zarr-go/internal/bufpool"
-	"github.com/rkm/zarr-go/internal/metadata"
-	"github.com/rkm/zarr-go/internal/ndcopy"
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/codec"
+	bytescodec "github.com/exergy-dev/zarr-go/codec/bytes"
+	"github.com/exergy-dev/zarr-go/internal/bufpool"
+	"github.com/exergy-dev/zarr-go/internal/metadata"
+	"github.com/exergy-dev/zarr-go/internal/ndcopy"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // hostLittleEndian is true if the host CPU is little-endian.

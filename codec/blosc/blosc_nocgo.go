@@ -16,7 +16,7 @@ package blosc
 import (
 	"encoding/json"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // Codec is the no-op stub used when the binary was not built with cgo +

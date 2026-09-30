@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // Sentinel errors. Wrap with fmt.Errorf("...: %w", ...) at boundaries.

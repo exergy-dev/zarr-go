@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 func TestMmapGet(t *testing.T) {

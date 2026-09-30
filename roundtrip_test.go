@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/store/fs"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/store/fs"
 )
 
 // TestRoundTripPython writes arrays with zarr-go, then invokes zarr-python to

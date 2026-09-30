@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
 // newConfigured returns a fresh Codec configured from the given JSON. An

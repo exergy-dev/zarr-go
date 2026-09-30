@@ -10,8 +10,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/storetest"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
 func TestIsNotFound(t *testing.T) {

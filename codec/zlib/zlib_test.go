@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
 func TestZlibRoundTrip(t *testing.T) {

@@ -14,8 +14,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
 type Codec struct {

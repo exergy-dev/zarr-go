@@ -27,7 +27,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
 // Codec is the cgo-backed v3 "zstd" bytes→bytes codec. Each call to

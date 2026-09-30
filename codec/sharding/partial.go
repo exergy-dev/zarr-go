@@ -22,9 +22,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/internal/ndcopy"
-	"github.com/rkm/zarr-go/internal/scheduler"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/internal/ndcopy"
+	"github.com/exergy-dev/zarr-go/internal/scheduler"
 )
 
 // DecodePartial implements codec.PartialDecoder.

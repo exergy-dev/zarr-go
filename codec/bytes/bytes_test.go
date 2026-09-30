@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // dtypes lists every Zarr v3 dtype the bytes codec supports, paired with its

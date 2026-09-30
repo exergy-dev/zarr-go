@@ -11,8 +11,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/store/fs"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/store/fs"
 )
 
 type manifestEntry struct {

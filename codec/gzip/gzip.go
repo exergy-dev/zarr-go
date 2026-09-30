@@ -19,9 +19,9 @@ import (
 	"io"
 	"sync"
 
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 	kpgzip "github.com/klauspost/compress/gzip"
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/internal/declimit"
 )
 
 // Codec is the v3 "gzip" bytes→bytes codec.

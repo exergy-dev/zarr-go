@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // gatedStore wraps a store.Store, letting tests pause Get at a controlled

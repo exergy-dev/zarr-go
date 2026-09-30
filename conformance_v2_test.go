@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rkm/zarr-go/store/fs"
+	"github.com/exergy-dev/zarr-go/store/fs"
 )
 
 type v2ManifestEntry struct {

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // JoinKey joins the configured prefix with key, producing a clean object key

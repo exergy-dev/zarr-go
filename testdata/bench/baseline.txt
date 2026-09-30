@@ -32,4 +32,4 @@ BenchmarkReadFloat32_Slice_2D-32           	   47059	     24375 ns/op	1641.01 MB
 BenchmarkReadFloat32_Slice_2D-32           	   45667	     24514 ns/op	1631.75 MB/s	   67321 B/op	      25 allocs/op
 BenchmarkReadFloat32_Slice_2D-32           	   46734	     26092 ns/op	1533.06 MB/s	   67321 B/op	      25 allocs/op
 PASS
-ok  	github.com/rkm/zarr-go	91.943s
+ok  	github.com/exergy-dev/zarr-go	91.943s

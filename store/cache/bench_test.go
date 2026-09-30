@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rkm/zarr-go/store/cache"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go/store/cache"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // BenchmarkCacheWarmHit measures the cost of a cached Get with a small

@@ -10,8 +10,8 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // --- Local helpers (intentionally duplicated from array_test.go to avoid

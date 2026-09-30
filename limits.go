@@ -1,6 +1,6 @@
 package zarr
 
-import "github.com/rkm/zarr-go/internal/declimit"
+import "github.com/exergy-dev/zarr-go/internal/declimit"
 
 // SetMaxDecodedBytes sets the maximum number of bytes any single codec
 // invocation (gzip, zlib, zstd, blosc, ...) may decompress a chunk or shard

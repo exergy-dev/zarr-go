@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // Float16 is the IEEE 754 binary16 type. Stored as the raw bit pattern;

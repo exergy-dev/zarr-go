@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // Store is an in-memory key/value backend.

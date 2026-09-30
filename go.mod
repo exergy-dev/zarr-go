@@ -1,4 +1,4 @@
-module github.com/rkm/zarr-go
+module github.com/exergy-dev/zarr-go
 
 go 1.25.0
 

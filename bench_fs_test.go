@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/store/fs"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/store/fs"
 )
 
 // writeArrayToFS materializes the same shape/chunks/data layout used by

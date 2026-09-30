@@ -39,7 +39,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
 // Shuffle filter constants matching blosc.h.

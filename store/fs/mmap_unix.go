@@ -10,7 +10,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 	"golang.org/x/sys/unix"
 )
 

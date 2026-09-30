@@ -5,7 +5,7 @@ package fs
 import (
 	"context"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // noopRelease is a non-nil release callback for the fallback path; nothing

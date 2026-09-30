@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rkm/zarr-go/codec"
-	_ "github.com/rkm/zarr-go/codec/bytes"
-	_ "github.com/rkm/zarr-go/codec/crc32c"
-	_ "github.com/rkm/zarr-go/codec/gzip"
-	_ "github.com/rkm/zarr-go/codec/sharding"
+	"github.com/exergy-dev/zarr-go/codec"
+	_ "github.com/exergy-dev/zarr-go/codec/bytes"
+	_ "github.com/exergy-dev/zarr-go/codec/crc32c"
+	_ "github.com/exergy-dev/zarr-go/codec/gzip"
+	_ "github.com/exergy-dev/zarr-go/codec/sharding"
 )
 
 // newCodec builds a fresh sharding_indexed codec from JSON config.

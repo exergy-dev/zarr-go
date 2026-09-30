@@ -4,7 +4,7 @@
 // configured endianness. The package name shadows the stdlib "bytes" package;
 // callers that need both should import this one with an alias, e.g.
 //
-//	import bytescodec "github.com/rkm/zarr-go/codec/bytes"
+//	import bytescodec "github.com/exergy-dev/zarr-go/codec/bytes"
 package bytes
 
 import (
@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // hostLittleEndian is true if the host CPU is little-endian. Detected once at

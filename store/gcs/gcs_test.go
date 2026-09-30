@@ -11,8 +11,8 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/storetest"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
 func TestIsPreconditionFailed(t *testing.T) {

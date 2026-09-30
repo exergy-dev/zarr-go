@@ -25,7 +25,7 @@ import (
 
 	"iter"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // ErrReadOnly is returned by Set and Delete because the HTTP backend does not

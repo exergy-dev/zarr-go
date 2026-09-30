@@ -20,8 +20,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
-	"github.com/rkm/zarr-go/internal/cloudstore"
-	zstore "github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/internal/cloudstore"
+	zstore "github.com/exergy-dev/zarr-go/store"
 )
 
 // Config configures a Store.

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // shortDecodeCodec is a deliberately buggy array->bytes codec whose EncodeAB

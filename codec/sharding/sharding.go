@@ -14,9 +14,9 @@ import (
 	"math"
 	"sync"
 
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/internal/declimit"
-	"github.com/rkm/zarr-go/internal/ndcopy"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/internal/ndcopy"
 )
 
 // emptyMarker is the (offset, length) value used in the index for an inner

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 func TestStubConfigureReturnsRequiresCGO(t *testing.T) {

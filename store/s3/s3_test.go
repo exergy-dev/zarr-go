@@ -14,8 +14,8 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/rkm/zarr-go/store"
-	"github.com/rkm/zarr-go/store/storetest"
+	"github.com/exergy-dev/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
 func TestIsNotFound(t *testing.T) {

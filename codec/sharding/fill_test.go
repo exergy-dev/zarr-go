@@ -7,9 +7,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/rkm/zarr-go/codec"
-	_ "github.com/rkm/zarr-go/codec/bytes"
-	_ "github.com/rkm/zarr-go/codec/crc32c"
+	"github.com/exergy-dev/zarr-go/codec"
+	_ "github.com/exergy-dev/zarr-go/codec/bytes"
+	_ "github.com/exergy-dev/zarr-go/codec/crc32c"
 )
 
 // TestEncodeDecodeFillNonZero confirms that an inner chunk whose elements

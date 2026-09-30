@@ -7,10 +7,10 @@ import (
 	"math"
 	"testing"
 
-	"github.com/rkm/zarr-go/codec"
-	_ "github.com/rkm/zarr-go/codec/bytes"
-	_ "github.com/rkm/zarr-go/codec/crc32c"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go/codec"
+	_ "github.com/exergy-dev/zarr-go/codec/bytes"
+	_ "github.com/exergy-dev/zarr-go/codec/crc32c"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // FuzzDecodeIndex feeds arbitrary bytes to decodeIndex, the parser for a

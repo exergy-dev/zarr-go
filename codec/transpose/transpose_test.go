@@ -7,7 +7,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // newCodec returns a configured transpose codec or fails the test.

@@ -7,8 +7,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // writeArray writes a synthetic v3 array into a fresh mem store and returns it.

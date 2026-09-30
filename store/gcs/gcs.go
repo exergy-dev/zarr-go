@@ -17,8 +17,8 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
-	"github.com/rkm/zarr-go/internal/cloudstore"
-	zstore "github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/internal/cloudstore"
+	zstore "github.com/exergy-dev/zarr-go/store"
 )
 
 // Config configures a Store.

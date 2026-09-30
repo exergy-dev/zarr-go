@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // TestPathSpellingsRoundTrip checks that every spelling of a node path (with

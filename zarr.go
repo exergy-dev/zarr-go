@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/internal/metadata"
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/internal/metadata"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // Node is the union of Group and *Array[T] returned by Open.

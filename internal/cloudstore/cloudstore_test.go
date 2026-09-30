@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 func TestJoinKey(t *testing.T) {

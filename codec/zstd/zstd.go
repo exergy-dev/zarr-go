@@ -14,7 +14,7 @@ import (
 
 	kpzstd "github.com/klauspost/compress/zstd"
 
-	"github.com/rkm/zarr-go/internal/declimit"
+	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
 // scratchPool reuses []byte scratch space across Encode/Decode calls. The

@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"hash/crc32"
 
-	"github.com/rkm/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // ErrChecksumMismatch is returned by DecodeBB when the stored CRC32C trailer

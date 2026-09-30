@@ -24,8 +24,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 
-	"github.com/rkm/zarr-go/internal/cloudstore"
-	zstore "github.com/rkm/zarr-go/store"
+	"github.com/exergy-dev/zarr-go/internal/cloudstore"
+	zstore "github.com/exergy-dev/zarr-go/store"
 )
 
 // Config configures a Store.

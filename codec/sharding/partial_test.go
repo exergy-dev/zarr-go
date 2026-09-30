@@ -8,11 +8,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rkm/zarr-go/codec"
-	_ "github.com/rkm/zarr-go/codec/bytes"
-	_ "github.com/rkm/zarr-go/codec/crc32c"
-	_ "github.com/rkm/zarr-go/codec/gzip"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go/codec"
+	_ "github.com/exergy-dev/zarr-go/codec/bytes"
+	_ "github.com/exergy-dev/zarr-go/codec/crc32c"
+	_ "github.com/exergy-dev/zarr-go/codec/gzip"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // countingFetcher serves range and suffix reads from an in-memory blob and

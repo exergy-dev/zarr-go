@@ -6,9 +6,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/rkm/zarr-go"
-	"github.com/rkm/zarr-go/codec"
-	"github.com/rkm/zarr-go/store/mem"
+	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // TestSharded_NaNFillRoundTrip checks that a sharded array with
