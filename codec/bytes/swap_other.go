@@ -1,5 +1,5 @@
-// Stub fast-path helpers for non-amd64 builds. Always return 0 so swapBytes
-// uses the scalar implementation in full.
+// No SIMD bulk swap outside amd64: these return 0 so swapBytes runs the
+// portable word loops (swapWords32/64) over the whole buffer.
 
 //go:build !amd64
 

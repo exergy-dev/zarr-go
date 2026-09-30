@@ -3,7 +3,7 @@
 // These routines reverse fixed-width groups of bytes (4 or 8) using PSHUFB
 // (SSSE3) or VPSHUFB (AVX2). They are wired in from swapBytes via the
 // swapBulk32 / swapBulk64 helpers below; on CPUs without the required
-// extension the helpers fall back to the scalar swap implementation.
+// extension they return 0 and swapBytes uses the portable swapWords32/64.
 
 //go:build amd64
 
@@ -31,7 +31,7 @@ var (
 
 // swapBulk32 swaps the largest 32-aligned (AVX2) or 16-aligned (SSSE3) prefix
 // of src into dst in 4-byte groups, returning the number of bytes consumed.
-// The caller is responsible for handling the remainder with the scalar loop.
+// The caller handles the remainder with swapWords32.
 func swapBulk32(dst, src []byte) int {
 	n := len(src)
 	if n < 4 {

@@ -1,14 +1,33 @@
 package bytes
 
-import "testing"
+import (
+	stdbytes "bytes"
+	"fmt"
+	"testing"
+)
 
-const benchSize = 1 << 20 // 1 MiB
+// This file benchmarks swapBytes (impl=asm: the unit==4/8 bulk goes to the
+// SIMD assembly on amd64) against the portable word loops it falls back to
+// (impl=words: swapWords32/64, used on non-amd64 and on amd64 without SSSE3)
+// and a plain byte loop (impl=bytewise), so the cost of keeping swap_amd64.s
+// can be re-evaluated as the Go compiler improves.
+//
+// Compare with benchstat, e.g.
+//
+//	go test -run '^$' -bench BenchmarkSwap -count=8 ./codec/bytes > swap.txt
+//	benchstat -col /impl swap.txt
+//
+// On an i9-14900KF (Go 1.25, GOAMD64=v1, 8 interleaved runs) the portable
+// word loops reached this fraction of the assembly's throughput, which is
+// below the 50%-at-64KiB bar for deleting it, so the assembly stays:
+//
+//	         4 KiB   64 KiB   1 MiB
+//	unit=4    19%     40%      55%
+//	unit=8    24%     48%      68%
 
-// scalarSwap32 mirrors the unrolled scalar branch in swapBytes for unit==4.
-// Kept as a separate function so benchmarks can compare it directly against
-// the SIMD path without the SIMD wiring inside swapBytes choosing the bulk
-// helper.
-func scalarSwap32(dst, src []byte) {
+// bytewiseSwap32 / bytewiseSwap64 are the byte-at-a-time loops swapBytes used
+// for the tail and for non-amd64 before swapWords32/64, kept as a baseline.
+func bytewiseSwap32(dst, src []byte) {
 	for i := 0; i < len(src); i += 4 {
 		dst[i] = src[i+3]
 		dst[i+1] = src[i+2]
@@ -17,7 +36,7 @@ func scalarSwap32(dst, src []byte) {
 	}
 }
 
-func scalarSwap64(dst, src []byte) {
+func bytewiseSwap64(dst, src []byte) {
 	for i := 0; i < len(src); i += 8 {
 		dst[i] = src[i+7]
 		dst[i+1] = src[i+6]
@@ -30,60 +49,53 @@ func scalarSwap64(dst, src []byte) {
 	}
 }
 
-func BenchmarkSwap32_1MiB_Scalar(b *testing.B) {
-	src := make([]byte, benchSize)
-	dst := make([]byte, benchSize)
-	for i := range src {
-		src[i] = byte(i)
+func BenchmarkSwap(b *testing.B) {
+	type impl struct {
+		name string
+		fn   func(dst, src []byte)
 	}
-	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		scalarSwap32(dst, src)
+	units := []struct {
+		unit  int
+		impls []impl
+	}{
+		{4, []impl{
+			{"asm", func(d, s []byte) { swapBytes(d, s, 4) }},
+			{"words", swapWords32},
+			{"bytewise", bytewiseSwap32},
+		}},
+		{8, []impl{
+			{"asm", func(d, s []byte) { swapBytes(d, s, 8) }},
+			{"words", swapWords64},
+			{"bytewise", bytewiseSwap64},
+		}},
 	}
-}
+	sizes := []struct {
+		name string
+		n    int
+	}{{"4KiB", 4 << 10}, {"64KiB", 64 << 10}, {"1MiB", 1 << 20}}
 
-func BenchmarkSwap32_1MiB_SIMD(b *testing.B) {
-	if swapBulk32(make([]byte, 32), make([]byte, 32)) == 0 {
-		b.Skip("no SIMD bulk swap available on this build/CPU")
-	}
-	src := make([]byte, benchSize)
-	dst := make([]byte, benchSize)
-	for i := range src {
-		src[i] = byte(i)
-	}
-	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		swapBytes(dst, src, 4)
-	}
-}
-
-func BenchmarkSwap64_1MiB_Scalar(b *testing.B) {
-	src := make([]byte, benchSize)
-	dst := make([]byte, benchSize)
-	for i := range src {
-		src[i] = byte(i)
-	}
-	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		scalarSwap64(dst, src)
-	}
-}
-
-func BenchmarkSwap64_1MiB_SIMD(b *testing.B) {
-	if swapBulk64(make([]byte, 32), make([]byte, 32)) == 0 {
-		b.Skip("no SIMD bulk swap available on this build/CPU")
-	}
-	src := make([]byte, benchSize)
-	dst := make([]byte, benchSize)
-	for i := range src {
-		src[i] = byte(i)
-	}
-	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		swapBytes(dst, src, 8)
+	for _, u := range units {
+		for _, sz := range sizes {
+			src := make([]byte, sz.n)
+			for i := range src {
+				src[i] = byte(i*131 + 17)
+			}
+			want := make([]byte, sz.n)
+			swapBytes(want, src, u.unit)
+			for _, im := range u.impls {
+				name := fmt.Sprintf("unit=%d/size=%s/impl=%s", u.unit, sz.name, im.name)
+				b.Run(name, func(b *testing.B) {
+					dst := make([]byte, sz.n)
+					im.fn(dst, src)
+					if !stdbytes.Equal(dst, want) {
+						b.Fatalf("%s output differs from swapBytes", im.name)
+					}
+					b.SetBytes(int64(sz.n))
+					for b.Loop() {
+						im.fn(dst, src)
+					}
+				})
+			}
+		}
 	}
 }
