@@ -27,6 +27,18 @@ go get github.com/exergy-dev/zarr-go
 
 Requires Go 1.25 or newer.
 
+The S3, GCS and Azure Blob stores are separate modules, so their SDKs only
+enter your build if you use them. Add the ones you need:
+
+```bash
+go get github.com/exergy-dev/zarr-go/store/s3
+go get github.com/exergy-dev/zarr-go/store/gcs
+go get github.com/exergy-dev/zarr-go/store/azblob
+```
+
+The import paths are the same as the module paths. Every other store
+(`fs`, `mem`, `http`, `cache`) ships in the root module.
+
 ## Quick start
 
 ### Read
@@ -112,9 +124,9 @@ func main() {
 | Local filesystem                 | `store/fs`                           | `fs.WithMmap()` for zero-copy reads     |
 | In-memory                        | `store/mem`                          | Tests, transient pipelines              |
 | HTTP (read-only)                 | `store/http`                         | Range GETs                              |
-| S3                               | `store/s3`                           | aws-sdk-go-v2; If-None-Match for atomic create |
-| Google Cloud Storage             | `store/gcs`                          |                                         |
-| Azure Blob                       | `store/azblob`                       |                                         |
+| S3                               | `store/s3` (own module)              | aws-sdk-go-v2; If-None-Match for atomic create |
+| Google Cloud Storage             | `store/gcs` (own module)             |                                         |
+| Azure Blob                       | `store/azblob` (own module)          |                                         |
 | LRU cache decorator              | `store/cache`                        | Bytes + entry caps, coalesces concurrent misses |
 
 Every store satisfies `store.Store`, the read side: `Get`, `GetRange`,
@@ -211,7 +223,12 @@ go test ./...
 go test -race ./...
 ```
 
-Cloud-backend integration tests are skipped unless their respective
+`./...` stops at module boundaries, so the commands above skip the nested
+`store/s3`, `store/gcs` and `store/azblob` modules. `make test`, `make race`,
+`make vet` and `make lint` run over all four modules.
+
+Each cloud backend's offline tests run against an in-process fake of its
+object API. Its integration tests are skipped unless the backend's
 credential env vars are set; see each `store/<backend>/*_test.go`.
 
 The Python conformance fixtures under `testdata/gen/` are generated with

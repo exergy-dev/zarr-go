@@ -16,7 +16,6 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
 )
@@ -104,7 +103,7 @@ func fakeStore(t *testing.T, endpoint string) *Store {
 // TestFakeConformance runs the read side of the store contract (Basics,
 // GetRange, GetSuffix) against the credential-free fake.
 func TestFakeConformance(t *testing.T) {
-	srv := cloudstoretest.NewServer(t, "Range")
+	srv := newFakeServer(t)
 	storetest.RunConformance(t, func(t *testing.T) store.Store {
 		return fakeStore(t, srv.URL)
 	}, storetest.Options{
@@ -117,7 +116,7 @@ func TestFakeConformance(t *testing.T) {
 // TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
 // object size, including when off+n-1 overflows int64 (n = MaxInt64).
 func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
-	srv := cloudstoretest.NewServer(t, "Range")
+	srv := newFakeServer(t)
 	srv.Put("k", []byte("0123456789"))
 	s := fakeStore(t, srv.URL)
 	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
@@ -136,7 +135,7 @@ func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
 // issuing any request, rather than addressing the object named exactly
 // Prefix (outside the store's Prefix+"/" namespace).
 func TestEmptyKeyRejected(t *testing.T) {
-	srv := cloudstoretest.NewServer(t, "Range")
+	srv := newFakeServer(t)
 	srv.Put("k", []byte("x"))
 	s := fakeStore(t, srv.URL)
 	s.prefix = "data"

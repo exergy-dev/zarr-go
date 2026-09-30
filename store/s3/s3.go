@@ -21,7 +21,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
-	"github.com/exergy-dev/zarr-go/internal/cloudstore"
 	zstore "github.com/exergy-dev/zarr-go/store"
 )
 
@@ -144,7 +143,7 @@ func (s *Store) headExists(ctx context.Context, k string) (bool, error) {
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return nil, err
 	}
@@ -168,11 +167,11 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 
 // GetRange implements store.Store, per the store.Store GetRange contract.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	if err := cloudstore.ValidateRange("s3", "GetRange", off, n); err != nil {
+	if err := checkRange(off, n); err != nil {
 		return nil, err
 	}
-	n = cloudstore.ClampLen(off, n)
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	n = clampLen(off, n)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return nil, err
 	}
@@ -222,10 +221,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 // GetSuffix implements store.Store using S3's native suffix-range
 // syntax ("bytes=-N"), per the store.Store GetSuffix contract.
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
-	if err := cloudstore.ValidateRange("s3", "GetSuffix", 0, n); err != nil {
+	if err := checkSuffix(n); err != nil {
 		return nil, err
 	}
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +267,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 
 // Set implements store.Writer.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return err
 	}
@@ -294,7 +293,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // behind older S3-compatible gateways that do not understand If-None-Match
 // will see those errors here rather than silent overwrites.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return false, err
 	}
@@ -316,7 +315,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Writer. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return err
 	}
@@ -335,7 +334,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k, err := cloudstore.JoinKey("s3", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return false, err
 	}
@@ -346,7 +345,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // store's configured prefix; yielded keys have the configured prefix
 // stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := cloudstore.ListPrefix(s.prefix, prefix)
+	full := listPrefix(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		paginator := awss3.NewListObjectsV2Paginator(s.client, &awss3.ListObjectsV2Input{
 			Bucket: aws.String(s.bucket),
@@ -366,7 +365,7 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 				if obj.Key == nil {
 					continue
 				}
-				k, ok := cloudstore.KeyFromObject(s.prefix, *obj.Key)
+				k, ok := keyFromObject(s.prefix, *obj.Key)
 				if !ok {
 					continue
 				}

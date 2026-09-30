@@ -1,4 +1,4 @@
-package cloudstore
+package s3
 
 import (
 	"errors"
@@ -26,9 +26,9 @@ func TestJoinKey(t *testing.T) {
 		{"p", "foo/", "p/foo/"},
 	}
 	for _, c := range cases {
-		got, err := JoinKey("s3", c.prefix, c.key)
+		got, err := joinKey(c.prefix, c.key)
 		if err != nil || got != c.want {
-			t.Errorf("JoinKey(%q, %q) = %q, %v, want %q, nil", c.prefix, c.key, got, err, c.want)
+			t.Errorf("joinKey(%q, %q) = %q, %v, want %q, nil", c.prefix, c.key, got, err, c.want)
 		}
 	}
 }
@@ -36,12 +36,12 @@ func TestJoinKey(t *testing.T) {
 func TestJoinKeyRejectsEmptyKey(t *testing.T) {
 	for _, prefix := range []string{"", "p", "/p/"} {
 		for _, key := range []string{"", "/", "//"} {
-			got, err := JoinKey("s3", prefix, key)
+			got, err := joinKey(prefix, key)
 			if !errors.Is(err, store.ErrInvalidKey) || got != "" {
-				t.Errorf("JoinKey(%q, %q) = %q, %v, want \"\", ErrInvalidKey", prefix, key, got, err)
+				t.Errorf("joinKey(%q, %q) = %q, %v, want \"\", ErrInvalidKey", prefix, key, got, err)
 			}
 			if err != nil && !strings.HasPrefix(err.Error(), "s3: ") {
-				t.Errorf("JoinKey(%q, %q) error %q lacks the backend name", prefix, key, err)
+				t.Errorf("joinKey(%q, %q) error %q lacks the backend name", prefix, key, err)
 			}
 		}
 	}
@@ -53,13 +53,13 @@ func TestJoinKeyRejectsEmptyKey(t *testing.T) {
 func TestJoinKeyStaysInNamespace(t *testing.T) {
 	for _, prefix := range []string{"", "data", "/data/", "a/b"} {
 		for _, key := range []string{"", "/", "//", "k", "/k", "k/v"} {
-			obj, err := JoinKey("s3", prefix, key)
+			obj, err := joinKey(prefix, key)
 			if err != nil {
 				continue // rejected keys address no object at all
 			}
-			got, ok := KeyFromObject(prefix, obj)
+			got, ok := keyFromObject(prefix, obj)
 			if want := strings.TrimLeft(key, "/"); !ok || got != want {
-				t.Errorf("JoinKey(%q, %q) = %q, outside the store namespace (KeyFromObject = %q, %v)", prefix, key, obj, got, ok)
+				t.Errorf("joinKey(%q, %q) = %q, outside the store namespace (keyFromObject = %q, %v)", prefix, key, obj, got, ok)
 			}
 		}
 	}
@@ -80,9 +80,9 @@ func TestListPrefix(t *testing.T) {
 		{"a/b", "c", "a/b/c"},
 	}
 	for _, c := range cases {
-		got := ListPrefix(c.storePrefix, c.prefix)
+		got := listPrefix(c.storePrefix, c.prefix)
 		if got != c.want {
-			t.Errorf("ListPrefix(%q, %q) = %q, want %q", c.storePrefix, c.prefix, got, c.want)
+			t.Errorf("listPrefix(%q, %q) = %q, want %q", c.storePrefix, c.prefix, got, c.want)
 		}
 	}
 }
@@ -104,9 +104,9 @@ func TestKeyFromObject(t *testing.T) {
 		{"p", "other/foo", "", false},
 	}
 	for _, c := range cases {
-		got, ok := KeyFromObject(c.storePrefix, c.objKey)
+		got, ok := keyFromObject(c.storePrefix, c.objKey)
 		if got != c.want || ok != c.ok {
-			t.Errorf("KeyFromObject(%q, %q) = %q, %v, want %q, %v", c.storePrefix, c.objKey, got, ok, c.want, c.ok)
+			t.Errorf("keyFromObject(%q, %q) = %q, %v, want %q, %v", c.storePrefix, c.objKey, got, ok, c.want, c.ok)
 		}
 	}
 }
@@ -115,13 +115,13 @@ func TestKeyFromObject(t *testing.T) {
 // name has the computed list prefix (string-prefix semantics), and each name
 // is mapped back to a store key.
 func listObjects(objects []string, storePrefix, prefix string) []string {
-	full := ListPrefix(storePrefix, prefix)
+	full := listPrefix(storePrefix, prefix)
 	var keys []string
 	for _, obj := range objects {
 		if !strings.HasPrefix(obj, full) {
 			continue
 		}
-		if k, ok := KeyFromObject(storePrefix, obj); ok {
+		if k, ok := keyFromObject(storePrefix, obj); ok {
 			keys = append(keys, k)
 		}
 	}
@@ -168,27 +168,30 @@ func TestClampLen(t *testing.T) {
 		{math.MaxInt64, math.MaxInt64, 0},
 	}
 	for _, c := range cases {
-		got := ClampLen(c.off, c.n)
+		got := clampLen(c.off, c.n)
 		if got != c.want {
-			t.Errorf("ClampLen(%d, %d) = %d, want %d", c.off, c.n, got, c.want)
+			t.Errorf("clampLen(%d, %d) = %d, want %d", c.off, c.n, got, c.want)
 		}
 		if end := c.off + got; end < c.off {
-			t.Errorf("ClampLen(%d, %d) = %d: off+n overflows to %d", c.off, c.n, got, end)
+			t.Errorf("clampLen(%d, %d) = %d: off+n overflows to %d", c.off, c.n, got, end)
 		}
 	}
 }
 
-func TestValidateRange(t *testing.T) {
-	if err := ValidateRange("s3", "GetRange", 0, 0); err != nil {
-		t.Errorf("ValidateRange(0,0) = %v, want nil", err)
+func TestCheckRange(t *testing.T) {
+	if err := checkRange(0, 0); err != nil {
+		t.Errorf("checkRange(0, 0) = %v, want nil", err)
 	}
-	if err := ValidateRange("s3", "GetRange", -1, 0); !errors.Is(err, store.ErrInvalidRange) {
-		t.Errorf("ValidateRange(-1,0) = %v, want ErrInvalidRange", err)
+	if err := checkRange(-1, 0); !errors.Is(err, store.ErrInvalidRange) {
+		t.Errorf("checkRange(-1, 0) = %v, want ErrInvalidRange", err)
 	}
-	if err := ValidateRange("s3", "GetRange", 0, -1); !errors.Is(err, store.ErrInvalidRange) {
-		t.Errorf("ValidateRange(0,-1) = %v, want ErrInvalidRange", err)
+	if err := checkRange(0, -1); !errors.Is(err, store.ErrInvalidRange) {
+		t.Errorf("checkRange(0, -1) = %v, want ErrInvalidRange", err)
 	}
-	if err := ValidateRange("s3", "GetSuffix", 0, -1); !errors.Is(err, store.ErrInvalidRange) {
-		t.Errorf("ValidateRange GetSuffix(-1) = %v, want ErrInvalidRange", err)
+	if err := checkSuffix(0); err != nil {
+		t.Errorf("checkSuffix(0) = %v, want nil", err)
+	}
+	if err := checkSuffix(-1); !errors.Is(err, store.ErrInvalidRange) {
+		t.Errorf("checkSuffix(-1) = %v, want ErrInvalidRange", err)
 	}
 }

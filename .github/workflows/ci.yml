@@ -21,6 +21,29 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
+  # The cloud store backends are nested modules (each with its own go.mod,
+  # so their SDKs stay out of the root module graph). `./...` at the root
+  # stops at a module boundary, so each needs its own run. The backends are
+  # pure Go over HTTP, so one OS is enough; their offline tests run against
+  # an in-process fake, and the integration tests skip without credentials.
+  cloud-modules:
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [store/s3, store/gcs, store/azblob]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
   # cgo exercises the zarrcgo build tag (the cgo-backed blosc codec), which
   # the default `test` matrix above never compiles at all since the tag is
   # opt-in. Linux-only: libblosc-dev is readily apt-installable there.
@@ -35,10 +58,9 @@ jobs:
       - run: CGO_ENABLED=1 go build -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go vet -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go test -tags zarrcgo -race ./...
-  # Build-only: catches the int/int64-width-dependent class of bug (the
-  # motivating case was a decoded-size cap check in blosc/zstd that used
-  # platform int instead of int64) without needing to execute 32-bit binaries
-  # the runner can't run natively.
+  # Build-only: catches bugs that depend on the width of int (such as a size
+  # cap compared in platform int instead of int64) without needing to
+  # execute 32-bit binaries the runner can't run natively.
   build-386:
     runs-on: ubuntu-latest
     steps:
@@ -48,21 +70,25 @@ jobs:
           go-version: '1.25'
       - run: GOARCH=386 go build ./...
   lint:
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [., store/s3, store/gcs, store/azblob]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache-dependency-path: ${{ matrix.module }}/go.sum
       - uses: golangci/golangci-lint-action@v6
         with:
-          # v1.61 (the previous pin) is built with go1.23 and refuses to
-          # even load a config for a go1.25 module ("the Go language
-          # version (go1.23) used to build golangci-lint is lower than the
-          # targeted Go version"). v2.12.2 is built with go1.26 and works;
-          # .golangci.yml was migrated to the v2 config schema to match
-          # (`golangci-lint migrate`).
+          # golangci-lint refuses to load a module whose go directive is
+          # newer than the Go it was built with, so the pin must be built
+          # with go1.25 or later; .golangci.yml uses the matching v2 config
+          # schema. The nested modules pick up the root .golangci.yml.
           version: v2.12.2
+          working-directory: ${{ matrix.module }}
   # Short-run fuzzing: 20s per target is enough to catch a regression
   # against the checked-in seed corpus without materially slowing CI. Any
   # crasher Go finds is auto-written to testdata/fuzz/<name>/ and becomes a
@@ -82,15 +108,23 @@ jobs:
       # than one fuzz test") — anchor both patterns.
       - run: go test ./internal/metadata/... -run '^$' -fuzz '^FuzzDecodeArray$' -fuzztime 20s
       - run: go test ./internal/metadata/... -run '^$' -fuzz '^FuzzDecodeArrayV2$' -fuzztime 20s
-  # Known-vulnerability scan of the module graph and the toolchain's stdlib.
-  # Only reports findings reachable from this module's code.
+  # Known-vulnerability scan of each module's graph and the toolchain's
+  # stdlib. Only reports findings reachable from the scanned module's code.
   govulncheck:
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [., store/s3, store/gcs, store/azblob]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache-dependency-path: ${{ matrix.module }}/go.sum
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
   bench:
     runs-on: ubuntu-latest
