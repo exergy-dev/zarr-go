@@ -2,6 +2,8 @@ package cloudstore
 
 import (
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rkm/zarr-go/store"
@@ -30,21 +32,91 @@ func TestJoinKey(t *testing.T) {
 	}
 }
 
-func TestStripPrefix(t *testing.T) {
+func TestListPrefix(t *testing.T) {
 	cases := []struct {
-		prefix, key, want string
+		storePrefix, prefix, want string
 	}{
+		{"", "", ""},
 		{"", "foo", "foo"},
-		{"p", "p/foo", "foo"},
-		{"p", "p/foo/bar", "foo/bar"},
-		{"a/b", "a/b/c", "c"},
-		// key without prefix is returned as-is.
-		{"p", "other/foo", "other/foo"},
+		{"", "/foo", "foo"},
+		{"", "foo/", "foo/"},
+		{"p", "", "p/"},
+		{"p", "/", "p/"},
+		{"p", "foo", "p/foo"},
+		{"/p/", "/foo/", "p/foo/"},
+		{"a/b", "c", "a/b/c"},
 	}
 	for _, c := range cases {
-		got := StripPrefix(c.prefix, c.key)
+		got := ListPrefix(c.storePrefix, c.prefix)
 		if got != c.want {
-			t.Errorf("StripPrefix(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
+			t.Errorf("ListPrefix(%q, %q) = %q, want %q", c.storePrefix, c.prefix, got, c.want)
+		}
+	}
+}
+
+func TestKeyFromObject(t *testing.T) {
+	cases := []struct {
+		storePrefix, objKey, want string
+		ok                        bool
+	}{
+		{"", "foo", "foo", true},
+		{"", "", "", false},
+		{"p", "p/foo", "foo", true},
+		{"p", "p/foo/bar", "foo/bar", true},
+		{"/p/", "p/foo", "foo", true},
+		{"a/b", "a/b/c", "c", true},
+		{"p", "p", "", false},
+		{"p", "p/", "", false},
+		{"p", "p2/foo", "", false},
+		{"p", "other/foo", "", false},
+	}
+	for _, c := range cases {
+		got, ok := KeyFromObject(c.storePrefix, c.objKey)
+		if got != c.want || ok != c.ok {
+			t.Errorf("KeyFromObject(%q, %q) = %q, %v, want %q, %v", c.storePrefix, c.objKey, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// listObjects simulates a backend List: the bucket returns every object whose
+// name has the computed list prefix (string-prefix semantics), and each name
+// is mapped back to a store key.
+func listObjects(objects []string, storePrefix, prefix string) []string {
+	full := ListPrefix(storePrefix, prefix)
+	var keys []string
+	for _, obj := range objects {
+		if !strings.HasPrefix(obj, full) {
+			continue
+		}
+		if k, ok := KeyFromObject(storePrefix, obj); ok {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func TestListNamespace(t *testing.T) {
+	objects := []string{"data", "data/", "data/a", "data/b/c", "data2/x", "database/y", "other"}
+	cases := []struct {
+		storePrefix, prefix string
+		want                []string
+	}{
+		{"data", "", []string{"a", "b/c"}},
+		{"data", "/", []string{"a", "b/c"}},
+		{"data", "b", []string{"b/c"}},
+		{"data", "b/", []string{"b/c"}},
+		{"data", "a", []string{"a"}},
+		{"data", "x", nil},
+		{"/data/", "", []string{"a", "b/c"}},
+		{"", "", objects},
+		{"", "data", []string{"data", "data/", "data/a", "data/b/c", "data2/x", "database/y"}},
+		{"", "data/", []string{"data/", "data/a", "data/b/c"}},
+		{"", "/data/", []string{"data/", "data/a", "data/b/c"}},
+	}
+	for _, c := range cases {
+		got := listObjects(objects, c.storePrefix, c.prefix)
+		if !slices.Equal(got, c.want) {
+			t.Errorf("List(storePrefix=%q, prefix=%q) = %q, want %q", c.storePrefix, c.prefix, got, c.want)
 		}
 	}
 }

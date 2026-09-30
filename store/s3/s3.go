@@ -322,7 +322,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // store's configured prefix; yielded keys have the configured prefix
 // stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := cloudstore.JoinKey(s.prefix, prefix)
+	full := cloudstore.ListPrefix(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		paginator := awss3.NewListObjectsV2Paginator(s.client, &awss3.ListObjectsV2Input{
 			Bucket: aws.String(s.bucket),
@@ -342,7 +342,10 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 				if obj.Key == nil {
 					continue
 				}
-				k := cloudstore.StripPrefix(s.prefix, *obj.Key)
+				k, ok := cloudstore.KeyFromObject(s.prefix, *obj.Key)
+				if !ok {
+					continue
+				}
 				if !yield(k, nil) {
 					return
 				}
