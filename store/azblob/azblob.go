@@ -257,7 +257,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // store's configured prefix; yielded keys have the configured prefix
 // stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := cloudstore.JoinKey(s.prefix, prefix)
+	full := cloudstore.ListPrefix(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		opts := &azblob.ListBlobsFlatOptions{}
 		if full != "" {
@@ -281,7 +281,10 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 				if item == nil || item.Name == nil {
 					continue
 				}
-				k := cloudstore.StripPrefix(s.prefix, *item.Name)
+				k, ok := cloudstore.KeyFromObject(s.prefix, *item.Name)
+				if !ok {
+					continue
+				}
 				if !yield(k, nil) {
 					return
 				}

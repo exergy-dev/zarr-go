@@ -30,15 +30,32 @@ func TrimSlashes(s string) string {
 	return strings.Trim(s, "/")
 }
 
-// StripPrefix removes the configured prefix from a returned object key.
-func StripPrefix(prefix, key string) string {
-	if prefix == "" {
-		return key
+// ListPrefix returns the object-name prefix to list for a store-level List
+// prefix. With a non-empty storePrefix the result always includes the
+// separating slash, so listing never matches sibling objects such as
+// storePrefix+"2/x" or an object named exactly storePrefix.
+func ListPrefix(storePrefix, prefix string) string {
+	storePrefix = TrimSlashes(storePrefix)
+	prefix = strings.TrimLeft(prefix, "/")
+	if storePrefix == "" {
+		return prefix
 	}
-	if key == prefix {
-		return ""
+	return storePrefix + "/" + prefix
+}
+
+// KeyFromObject maps a listed object name back to a store key. ok is false
+// for objects outside storePrefix+"/" and for the bare directory marker
+// storePrefix+"/", which has no store key.
+func KeyFromObject(storePrefix, objKey string) (key string, ok bool) {
+	storePrefix = TrimSlashes(storePrefix)
+	if storePrefix == "" {
+		return objKey, objKey != ""
 	}
-	return strings.TrimPrefix(key, prefix+"/")
+	key, ok = strings.CutPrefix(objKey, storePrefix+"/")
+	if !ok || key == "" {
+		return "", false
+	}
+	return key, true
 }
 
 // ValidateRange returns store.ErrInvalidRange (wrapped with the calling

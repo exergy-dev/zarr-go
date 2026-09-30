@@ -242,7 +242,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // List implements store.Store. The supplied prefix is joined with the store's
 // configured prefix; yielded keys have the configured prefix stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := cloudstore.JoinKey(s.prefix, prefix)
+	full := cloudstore.ListPrefix(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		it := s.bucket.Objects(ctx, &storage.Query{Prefix: full})
 		for {
@@ -258,10 +258,13 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 				yield("", fmt.Errorf("gcs: list %q: %w", full, err))
 				return
 			}
-			if attrs == nil || attrs.Name == "" {
+			if attrs == nil {
 				continue
 			}
-			k := cloudstore.StripPrefix(s.prefix, attrs.Name)
+			k, ok := cloudstore.KeyFromObject(s.prefix, attrs.Name)
+			if !ok {
+				continue
+			}
 			if !yield(k, nil) {
 				return
 			}
