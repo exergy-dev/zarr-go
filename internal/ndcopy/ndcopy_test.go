@@ -29,7 +29,7 @@ func naiveCopy(dst []byte, dstShape []int64, dstRegion []Region, src []byte, src
 	}
 	regionLen := make([]int64, rank)
 	for i := range regionLen {
-		regionLen[i] = dstRegion[i].Length()
+		regionLen[i] = length(dstRegion[i])
 	}
 	total := int64(1)
 	for _, n := range regionLen {
@@ -86,32 +86,32 @@ func TestCopyMatchesNaive_Basic(t *testing.T) {
 		{
 			name:     "whole_chunk_2d",
 			srcShape: []int64{4, 4}, dstShape: []int64{4, 4},
-			srcRegion: []Region{{0, 4, 1}, {0, 4, 1}},
-			dstRegion: []Region{{0, 4, 1}, {0, 4, 1}},
+			srcRegion: []Region{{Start: 0, Stop: 4, Step: 1}, {Start: 0, Stop: 4, Step: 1}},
+			dstRegion: []Region{{Start: 0, Stop: 4, Step: 1}, {Start: 0, Stop: 4, Step: 1}},
 		},
 		{
 			name:     "edge_clip_2d",
 			srcShape: []int64{4, 4}, dstShape: []int64{5, 5},
-			srcRegion: []Region{{0, 4, 1}, {0, 1, 1}},
-			dstRegion: []Region{{0, 4, 1}, {4, 5, 1}},
+			srcRegion: []Region{{Start: 0, Stop: 4, Step: 1}, {Start: 0, Stop: 1, Step: 1}},
+			dstRegion: []Region{{Start: 0, Stop: 4, Step: 1}, {Start: 4, Stop: 5, Step: 1}},
 		},
 		{
 			name:     "strided_1d",
 			srcShape: []int64{10}, dstShape: []int64{5},
-			srcRegion: []Region{{0, 10, 2}},
-			dstRegion: []Region{{0, 5, 1}},
+			srcRegion: []Region{{Start: 0, Stop: 10, Step: 2}},
+			dstRegion: []Region{{Start: 0, Stop: 5, Step: 1}},
 		},
 		{
 			name:     "strided_2d_mixed",
 			srcShape: []int64{8, 8}, dstShape: []int64{4, 8},
-			srcRegion: []Region{{0, 8, 2}, {0, 8, 1}},
-			dstRegion: []Region{{0, 4, 1}, {0, 8, 1}},
+			srcRegion: []Region{{Start: 0, Stop: 8, Step: 2}, {Start: 0, Stop: 8, Step: 1}},
+			dstRegion: []Region{{Start: 0, Stop: 4, Step: 1}, {Start: 0, Stop: 8, Step: 1}},
 		},
 		{
 			name:     "sharding_inner_into_outer",
 			srcShape: []int64{2, 2}, dstShape: []int64{6, 6},
-			srcRegion: []Region{{0, 2, 1}, {0, 2, 1}},
-			dstRegion: []Region{{2, 4, 1}, {4, 6, 1}},
+			srcRegion: []Region{{Start: 0, Stop: 2, Step: 1}, {Start: 0, Stop: 2, Step: 1}},
+			dstRegion: []Region{{Start: 2, Stop: 4, Step: 1}, {Start: 4, Stop: 6, Step: 1}},
 		},
 		{
 			name:     "rank0_scalar",
@@ -121,16 +121,16 @@ func TestCopyMatchesNaive_Basic(t *testing.T) {
 		{
 			name:     "rank3_partial",
 			srcShape: []int64{4, 4, 4}, dstShape: []int64{2, 3, 4},
-			srcRegion: []Region{{1, 3, 1}, {0, 3, 1}, {0, 4, 1}},
-			dstRegion: []Region{{0, 2, 1}, {0, 3, 1}, {0, 4, 1}},
+			srcRegion: []Region{{Start: 1, Stop: 3, Step: 1}, {Start: 0, Stop: 3, Step: 1}, {Start: 0, Stop: 4, Step: 1}},
+			dstRegion: []Region{{Start: 0, Stop: 2, Step: 1}, {Start: 0, Stop: 3, Step: 1}, {Start: 0, Stop: 4, Step: 1}},
 		},
 		{
 			name: "dst_stepped_write_direction",
 			// Mirrors writeOneChunk: the DESTINATION side is stepped, not
 			// the source (writing a strided selection into a chunk).
 			srcShape: []int64{5}, dstShape: []int64{10},
-			srcRegion: []Region{{0, 5, 1}},
-			dstRegion: []Region{{0, 10, 2}},
+			srcRegion: []Region{{Start: 0, Stop: 5, Step: 1}},
+			dstRegion: []Region{{Start: 0, Stop: 10, Step: 2}},
 		},
 	}
 	for _, tc := range cases {
@@ -179,7 +179,7 @@ func randomTrial(t testing.TB, r *rand.Rand, sc *Scratch, label string) {
 			sStop = srcShape[d]
 		}
 		srcRegion[d] = Region{Start: sStart, Stop: sStop, Step: sStep}
-		n := srcRegion[d].Length()
+		n := length(srcRegion[d])
 		if n == 0 {
 			n = 1
 			srcRegion[d] = Region{Start: 0, Stop: 1, Step: 1}
@@ -250,7 +250,7 @@ func TestCopyZeroLength(t *testing.T) {
 	dst := fillBytes(16)
 	before := append([]byte(nil), dst...)
 	src := fillBytes(16)
-	Copy(dst, []int64{4}, []Region{{2, 2, 1}}, src, []int64{4}, []Region{{0, 0, 1}}, 4, nil)
+	Copy(dst, []int64{4}, []Region{{Start: 2, Stop: 2, Step: 1}}, src, []int64{4}, []Region{{Start: 0, Stop: 0, Step: 1}}, 4, nil)
 	if !bytes.Equal(dst, before) {
 		t.Fatalf("zero-length region mutated dst: got=%v want=%v", dst, before)
 	}
@@ -262,14 +262,14 @@ func TestScratchReuseAcrossRanks(t *testing.T) {
 	sc := NewScratch(1)
 	src1 := fillBytes(4 * 4)
 	dst1 := make([]byte, 4*4)
-	Copy(dst1, []int64{4}, []Region{{0, 4, 1}}, src1, []int64{4}, []Region{{0, 4, 1}}, 4, sc)
+	Copy(dst1, []int64{4}, []Region{{Start: 0, Stop: 4, Step: 1}}, src1, []int64{4}, []Region{{Start: 0, Stop: 4, Step: 1}}, 4, sc)
 	if !bytes.Equal(dst1, src1) {
 		t.Fatalf("rank-1 copy via small scratch failed: got=%v want=%v", dst1, src1)
 	}
 
 	src2 := fillBytes(3 * 3 * 3 * 4)
 	dst2 := make([]byte, 3*3*3*4)
-	region := []Region{{0, 3, 1}, {0, 3, 1}, {0, 3, 1}}
+	region := []Region{{Start: 0, Stop: 3, Step: 1}, {Start: 0, Stop: 3, Step: 1}, {Start: 0, Stop: 3, Step: 1}}
 	Copy(dst2, []int64{3, 3, 3}, region, src2, []int64{3, 3, 3}, region, 4, sc)
 	if !bytes.Equal(dst2, src2) {
 		t.Fatalf("rank-3 copy via grown scratch failed: got=%v want=%v", dst2, src2)

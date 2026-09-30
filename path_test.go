@@ -136,14 +136,14 @@ func TestOverwriteDeletesChunksAcrossSpellings(t *testing.T) {
 func TestGroupPathNormalized(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
-	g, err := zarr.CreateGroup(ctx, s, "/g/", nil)
+	g, err := zarr.CreateGroup(ctx, s, "/g/")
 	if err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
 	if g.Path() != "g" {
 		t.Fatalf("Path() = %q, want %q", g.Path(), "g")
 	}
-	sub, err := g.CreateGroup(ctx, "/h/", nil)
+	sub, err := g.CreateGroup(ctx, "/h/")
 	if err != nil {
 		t.Fatalf("Group.CreateGroup: %v", err)
 	}

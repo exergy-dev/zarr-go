@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/exergy-dev/zarr-go"
@@ -154,4 +155,45 @@ func TestDecodeShortChunkReturnsError(t *testing.T) {
 	if !errors.As(err, &de) {
 		t.Fatalf("expected *zarr.DecodeError, got %T: %v", err, err)
 	}
+}
+
+// TestDecodeErrorNamesFailingCodec checks that when a bytes->bytes codec
+// (gzip) fails on a corrupt chunk, the DecodeError returned by Read,
+// Stream, and a read-modify-write Write names gzip — the codec that
+// actually failed — and not the array->bytes codec ("bytes").
+func TestDecodeErrorNamesFailingCodec(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	shape := []int64{8}
+	a, err := zarr.CreateArray[int32](ctx, s, "arr", shape, []int64{4},
+		zarr.WithCodecs(
+			codec.Spec{Name: "bytes", Configuration: json.RawMessage(`{"endian":"little"}`)},
+			codec.Spec{Name: "gzip", Configuration: json.RawMessage(`{"level":5}`)},
+		))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(ctx, "arr/c/0", []byte("not a gzip stream")); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(what string, err error) {
+		t.Helper()
+		var de *zarr.DecodeError
+		if !errors.As(err, &de) {
+			t.Fatalf("%s: got %T (%v), want *zarr.DecodeError", what, err, err)
+		}
+		if msg := err.Error(); strings.Contains(msg, `"bytes"`) || !strings.Contains(msg, `"gzip"`) {
+			t.Errorf("%s: error %q should name codec \"gzip\", not \"bytes\"", what, msg)
+		}
+	}
+	check("Read", a.Read(ctx, zarr.All(shape), make([]int32, 8)))
+	for _, err := range a.Stream(ctx, zarr.All(shape)) {
+		if err != nil {
+			check("Stream", err)
+			break
+		}
+	}
+	partial := zarr.Selection{Ranges: []zarr.DimRange{{Start: 0, Stop: 1, Step: 1}}}
+	check("Write", a.Write(ctx, partial, []int32{1}))
 }

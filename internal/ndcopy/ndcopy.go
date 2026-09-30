@@ -7,14 +7,16 @@
 // optimization to the copy logic lands everywhere at once.
 package ndcopy
 
-// Region is a half-open range [Start, Stop) along one dimension, with a
-// positive Step. Step=1 selects every element in the range.
-type Region struct {
-	Start, Stop, Step int64
-}
+import "github.com/exergy-dev/zarr-go/codec"
 
-// Length returns the number of elements this Region selects.
-func (r Region) Length() int64 {
+// Region is a half-open range [Start, Stop) along one dimension, with a
+// positive Step. Step=1 selects every element in the range. It is the same
+// type as codec.DimRange, so partial-decode regions and per-chunk
+// selections feed Copy without conversion.
+type Region = codec.DimRange
+
+// length returns the number of elements r selects.
+func length(r Region) int64 {
 	if r.Step <= 0 || r.Stop <= r.Start {
 		return 0
 	}
@@ -41,11 +43,13 @@ func NewScratch(rank int) *Scratch {
 }
 
 // slices returns rank-length slices of each Scratch buffer, growing/
-// allocating them first if this Scratch is nil or its buffers are too
-// short (so a Scratch sized for a smaller rank can still be reused safely).
+// allocating them first if its buffers are too short (so a Scratch sized
+// for a smaller rank can still be reused safely). A nil Scratch gets all
+// four carved from a single allocation.
 func (sc *Scratch) slices(rank int) (srcStrides, dstStrides, regionLen, idx []int64) {
 	if sc == nil {
-		sc = &Scratch{}
+		buf := make([]int64, 4*rank)
+		return buf[:rank:rank], buf[rank : 2*rank : 2*rank], buf[2*rank : 3*rank : 3*rank], buf[3*rank:]
 	}
 	if len(sc.SrcStrides) < rank {
 		sc.SrcStrides = make([]int64, rank)
@@ -87,10 +91,9 @@ func rowMajorStridesInto(shape, out []int64) {
 // the dominant case (whole or sliced chunk reads/writes); a stepped
 // selection along any dimension falls back to one copy per element.
 //
-// sc may be nil, in which case Copy allocates its own scratch space —
-// acceptable for cold/one-off calls, but hot loops (e.g. once per chunk in
-// Array.Read) should pass a *Scratch reused across calls to stay
-// allocation-free.
+// sc may be nil, in which case Copy makes one small allocation for its own
+// scratch space; a loop calling Copy many times on one goroutine can pass
+// a reused *Scratch to avoid even that.
 func Copy(
 	dst []byte, dstShape []int64, dstRegion []Region,
 	src []byte, srcShape []int64, srcRegion []Region,
@@ -109,7 +112,7 @@ func Copy(
 	rowMajorStridesInto(srcShape, srcStrides)
 	rowMajorStridesInto(dstShape, dstStrides)
 	for i := 0; i < rank; i++ {
-		regionLen[i] = dstRegion[i].Length()
+		regionLen[i] = length(dstRegion[i])
 		idx[i] = 0
 	}
 	total := int64(1)

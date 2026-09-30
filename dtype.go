@@ -12,12 +12,6 @@ import (
 // file and fillvalue.go.
 type Float16 uint16
 
-// Complex64 and Complex128 are aliases for the standard library complex types.
-type (
-	Complex64  = complex64
-	Complex128 = complex128
-)
-
 // Numeric is the type constraint for all dtypes the typed Array[T] supports.
 //
 // bool is included to match the Zarr v3 spec; one byte per element.
@@ -55,15 +49,6 @@ const (
 	DtypeFloat64
 	DtypeComplex64
 	DtypeComplex128
-)
-
-// Endian identifies the byte order of multi-byte dtypes.
-type Endian uint8
-
-const (
-	EndianNative Endian = iota
-	EndianLittle
-	EndianBig
 )
 
 // Size returns the byte size of one element of the dtype.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -205,5 +206,36 @@ func TestOpenErrorMatrix(t *testing.T) {
 			}
 			checkOpen(t, "OpenArray", node, err, tc.openArray)
 		})
+	}
+}
+
+// TestOpenV2ArrayAttrs checks that a v2 array's .zattrs sidecar is exposed
+// through Array.Attrs (via both OpenArray and Open), and that a v2 array
+// has no dimension names.
+func TestOpenV2ArrayAttrs(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	for k, v := range map[string]string{"n/.zarray": v2F4Array, "n/.zattrs": v2AttrsDoc} {
+		if err := s.Set(ctx, k, []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]any{"k": "v2"}
+	a, err := zarr.OpenArray[float32](ctx, s, "n")
+	if err != nil {
+		t.Fatalf("OpenArray: %v", err)
+	}
+	if got := a.Attrs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("OpenArray: Attrs() = %#v, want %#v", got, want)
+	}
+	if got := a.DimensionNames(); got != nil {
+		t.Errorf("OpenArray: DimensionNames() = %v, want nil", got)
+	}
+	n, err := zarr.Open(ctx, s, "n")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := n.(*zarr.Array[float32]).Attrs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Open: Attrs() = %#v, want %#v", got, want)
 	}
 }

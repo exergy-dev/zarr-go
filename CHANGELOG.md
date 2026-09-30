@@ -33,11 +33,26 @@ Initial release.
   sharded-chunk ranges are coalesced into one fetch.
 - `zarr.WithOverwrite`, `zarr.WithChunkKeySeparator`,
   `zarr.WithV2ChunkKeys` array-creation options.
+- `Array.Attrs` and `Array.DimensionNames` expose (copies of) what
+  `WithAttributes` / `WithDimensionNames` persist, and a v2 array's
+  `.zattrs`. `CreateArray` rejects a dimension-name list whose length
+  differs from the array rank.
 - Fuzz targets for the N-d copy kernel (`internal/ndcopy`), sharded index
   trailer parsing, and v2/v3 metadata decoding.
 
 ### Changed
 
+- `CreateGroup` / `Group.CreateGroup` no longer take a positional `attrs`
+  map: pass `WithAttributes` instead. An array-only option (`WithCodecs`,
+  `WithFillValue`, `WithDimensionNames`, `WithChunkKeySeparator`,
+  `WithV2ChunkKeys`) passed to `CreateGroup` is now an error instead of
+  being silently ignored.
+- `CreateOption` is now an interface, and every `OpenOption`
+  (`WithConcurrency`, `WithIOConcurrency`, `WithRangeGap`) is also a
+  `CreateOption`, so `CreateArray` can tune the array it returns.
+- `DecodeError` no longer has a `Codec` field: it always held the
+  array->bytes codec's name, even when a bytes->bytes codec such as gzip
+  failed. The wrapped `Err` now names the codec that actually failed.
 - `codec.PartialDecoder.DecodePartial` takes a `*codec.PartialReadRequest`
   instead of seven positional parameters; `codec.SuffixRangeFetcher` moved
   from `codec/sharding` to `codec`. Only relevant to custom

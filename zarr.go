@@ -30,7 +30,6 @@ type Group struct {
 	store store.Store
 	path  string
 	meta  *metadata.GroupMeta
-	opts  arrayOptions
 }
 
 func (*Group) zarrNode() {}
@@ -63,7 +62,7 @@ func Open(ctx context.Context, s store.Store, path string, opts ...OpenOption) (
 		return nil, err
 	}
 	if gm != nil {
-		return &Group{store: s, path: path, meta: gm, opts: o}, nil
+		return &Group{store: s, path: path, meta: gm}, nil
 	}
 	return openArrayDynamic(s, path, am, o)
 }
