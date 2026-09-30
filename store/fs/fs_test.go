@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -438,5 +439,31 @@ func TestDeleteMissingNoError(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("Exists after Delete: got true, want false")
+	}
+}
+
+// TestStoredFilesAreWorldReadable checks that published keys don't inherit
+// os.CreateTemp's owner-only 0600 mode: a store written by one user must be
+// readable by others (e.g. a web server serving the same directory).
+func TestStoredFilesAreWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not meaningful on windows")
+	}
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.Set(ctx, "a/set", []byte("x")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if ok, err := s.SetIfNotExists(ctx, "a/sine", []byte("x")); err != nil || !ok {
+		t.Fatalf("SetIfNotExists: ok=%v err=%v", ok, err)
+	}
+	for _, k := range []string{"a/set", "a/sine"} {
+		info, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(k)))
+		if err != nil {
+			t.Fatalf("Stat %q: %v", k, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o044 != 0o044 {
+			t.Errorf("%q mode = %v, want group/other read bits (0o044) set", k, perm)
+		}
 	}
 }

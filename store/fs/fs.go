@@ -231,6 +231,13 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // SetIfNotExists between "temp file created" and "temp file published".
 // Removes the temp file and returns the error on any failure.
 func (s *Store) writeAndCommit(tmp *os.File, tmpPath string, value []byte) error {
+	// os.CreateTemp creates files 0600; widen to the usual 0644 so the
+	// published key isn't owner-only.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
 	if _, err := tmp.Write(value); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
