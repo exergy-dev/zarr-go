@@ -259,14 +259,17 @@ func TestRejectsDotDotKey(t *testing.T) {
 	s, _ := newTestStore(t, nil, nil, [2]string{})
 
 	for _, key := range []string{"..", "../etc/passwd", "a/../b", "foo/.."} {
-		if _, err := s.Get(context.Background(), key); err == nil {
-			t.Fatalf("Get(%q): expected error for .. segment", key)
+		if _, err := s.Get(context.Background(), key); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("Get(%q) = %v, want ErrInvalidKey", key, err)
 		}
-		if _, err := s.GetRange(context.Background(), key, 0, 4); err == nil {
-			t.Fatalf("GetRange(%q): expected error for .. segment", key)
+		if _, err := s.GetRange(context.Background(), key, 0, 4); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("GetRange(%q) = %v, want ErrInvalidKey", key, err)
 		}
-		if _, err := s.Exists(context.Background(), key); err == nil {
-			t.Fatalf("Exists(%q): expected error for .. segment", key)
+		if _, err := s.GetSuffix(context.Background(), key, 4); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("GetSuffix(%q) = %v, want ErrInvalidKey", key, err)
+		}
+		if _, err := s.Exists(context.Background(), key); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("Exists(%q) = %v, want ErrInvalidKey", key, err)
 		}
 	}
 }

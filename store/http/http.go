@@ -98,7 +98,7 @@ func New(cfg Config) (*Store, error) {
 func (s *Store) resolve(key string) (*url.URL, error) {
 	for _, seg := range strings.Split(key, "/") {
 		if seg == ".." {
-			return nil, fmt.Errorf("http store: key %q contains forbidden %q segment", key, "..")
+			return nil, fmt.Errorf("http store: key %q contains a \"..\" segment: %w", key, store.ErrInvalidKey)
 		}
 	}
 	return s.baseURL.JoinPath(key), nil

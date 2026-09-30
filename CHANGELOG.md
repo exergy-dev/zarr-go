@@ -37,6 +37,10 @@ Initial release.
   `WithAttributes` / `WithDimensionNames` persist, and a v2 array's
   `.zattrs`. `CreateArray` rejects a dimension-name list whose length
   differs from the array rank.
+- `store.ErrInvalidKey`, wrapped by every client-side key rejection: an
+  empty key on the S3, GCS and Azure backends (previously an internal,
+  unmatchable error), and a `..` segment, reserved staging-file segment or
+  non-local path on the filesystem and HTTP stores.
 - Fuzz targets for the N-d copy kernel (`internal/ndcopy`), sharded index
   trailer parsing, and v2/v3 metadata decoding.
 

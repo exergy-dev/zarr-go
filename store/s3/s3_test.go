@@ -16,7 +16,6 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/exergy-dev/zarr-go/internal/cloudstore"
 	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
@@ -136,8 +135,8 @@ func TestEmptyKeyRejected(t *testing.T) {
 		"Exists":         func() error { _, err := s.Exists(ctx, ""); return err },
 	}
 	for name, op := range ops {
-		if err := op(); !errors.Is(err, cloudstore.ErrEmptyKey) {
-			t.Errorf("%s(\"\") = %v, want ErrEmptyKey", name, err)
+		if err := op(); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("%s(\"\") = %v, want ErrInvalidKey", name, err)
 		}
 	}
 	if r := requests(); len(r) != 0 {

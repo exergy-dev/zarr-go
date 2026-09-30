@@ -49,6 +49,13 @@ func (errKeyNotFound) Is(target error) bool {
 // the whole object instead of erroring).
 var ErrInvalidRange = errors.New("store: invalid range")
 
+// ErrInvalidKey is returned (wrapped with the backend and key) for a key the
+// backend refuses to address: an empty key on the cloud backends, a key
+// with a ".." segment on the fs and http stores, or one the fs store can't
+// map to a path beneath its root. The check is client-side; no request or
+// file operation is issued.
+var ErrInvalidKey = errors.New("store: invalid key")
+
 // ErrReadOnly reports a write attempted through a Store that is not a
 // Writer. The zarr write paths return it; zarr.ErrReadOnly is the same
 // value.

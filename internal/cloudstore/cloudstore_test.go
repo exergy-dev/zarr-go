@@ -37,8 +37,8 @@ func TestJoinKeyRejectsEmptyKey(t *testing.T) {
 	for _, prefix := range []string{"", "p", "/p/"} {
 		for _, key := range []string{"", "/", "//"} {
 			got, err := JoinKey("s3", prefix, key)
-			if !errors.Is(err, ErrEmptyKey) || got != "" {
-				t.Errorf("JoinKey(%q, %q) = %q, %v, want \"\", ErrEmptyKey", prefix, key, got, err)
+			if !errors.Is(err, store.ErrInvalidKey) || got != "" {
+				t.Errorf("JoinKey(%q, %q) = %q, %v, want \"\", ErrInvalidKey", prefix, key, got, err)
 			}
 			if err != nil && !strings.HasPrefix(err.Error(), "s3: ") {
 				t.Errorf("JoinKey(%q, %q) error %q lacks the backend name", prefix, key, err)
