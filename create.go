@@ -254,7 +254,7 @@ func CreateGroup(ctx context.Context, s store.Store, path string, opts ...Create
 	if err := writeMetaAtomic(ctx, ws, joinKey(path, "zarr.json"), raw, co.overwrite, "group", path); err != nil {
 		return nil, err
 	}
-	return &Group{store: s, path: path, meta: gm, opts: co.openOpts}, nil
+	return &Group{store: s, path: path, meta: gm}, nil
 }
 
 // deleteStaleChunks removes every existing key under path (chunks, and any
