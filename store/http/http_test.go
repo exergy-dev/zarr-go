@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -208,6 +209,11 @@ func TestGetRangeFallbackWhenServerIgnoresRange(t *testing.T) {
 	if string(got) != "CDEFG" {
 		t.Fatalf("GetRange fallback returned %q want %q", got, "CDEFG")
 	}
+	// off+n overflows int64: the read bound must not wrap negative.
+	got, err = s.GetRange(context.Background(), "x", 5, math.MaxInt64)
+	if err != nil || string(got) != "FGHIJ" {
+		t.Fatalf("GetRange(5, MaxInt64) fallback = %q, %v, want %q", got, err, "FGHIJ")
+	}
 }
 
 func TestExists(t *testing.T) {
@@ -409,6 +415,36 @@ func TestGetSuffixBoundsPartialContentBody(t *testing.T) {
 	}
 	if len(got) != 16 {
 		t.Fatalf("GetSuffix len = %d, want 16", len(got))
+	}
+}
+
+// TestGetRangeBoundsIgnoredRangeBody: a server that ignores Range and
+// answers 200 with an endless body must not make GetRange read forever;
+// only the first off+n bytes can matter.
+func TestGetRangeBoundsIgnoredRangeBody(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := []byte("0123456789abcdef")
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := s.GetRange(ctx, "k", 4, 8)
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	if string(got) != "456789ab" {
+		t.Fatalf("GetRange = %q, want %q", got, "456789ab")
 	}
 }
 

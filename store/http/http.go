@@ -222,8 +222,15 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		}
 		return body, nil
 	case http.StatusOK:
-		// Server ignored the Range header; slice manually.
-		body, err := io.ReadAll(resp.Body)
+		// Server ignored the Range header; slice manually. Only the first
+		// off+n bytes matter, so read no further (an endless body must not
+		// grow memory without limit). The overflow guard above keeps
+		// off+n-1 representable; off+n itself can still wrap.
+		limit := off + n
+		if limit < 0 {
+			limit = math.MaxInt64
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (range fallback): read body: %w", u.Redacted(), err)
 		}
