@@ -301,6 +301,21 @@ func unmarshalKnown(fields map[string]json.RawMessage, dst any, known map[string
 	return json.Unmarshal(buf, dst)
 }
 
+// DefaultFillValue returns the spec default fill_value JSON for the named
+// Zarr v3 canonical dtype, used when none was supplied: false for bool, a
+// 2-element zero array for complex dtypes (which need one real+imaginary
+// component each), 0 otherwise.
+func DefaultFillValue(dtype string) json.RawMessage {
+	switch dtype {
+	case "bool":
+		return json.RawMessage("false")
+	case "complex64", "complex128":
+		return json.RawMessage("[0,0]")
+	default:
+		return json.RawMessage("0")
+	}
+}
+
 // MarshalArray serializes an ArrayMeta into the canonical v3 zarr.json form.
 //
 // Required fields (zarr_format, node_type, shape, data_type, chunk_grid,
@@ -323,7 +338,7 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 		out.ChunkKeyEnc.Configuration.Separator = defaultSeparator(out.ChunkKeyEnc.Name)
 	}
 	if len(out.FillValue) == 0 {
-		out.FillValue = codec.DefaultFillValueJSON(out.DataType)
+		out.FillValue = DefaultFillValue(out.DataType)
 	}
 	// Build the raw object as a map[string]json.RawMessage; encoding/json
 	// emits map keys in sorted order, so the output is reproducible.

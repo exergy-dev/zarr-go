@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/exergy-dev/zarr-go/codec"
 )
 
 // TestMarshalArrayDeterministic locks down that two marshals of equivalent
@@ -350,6 +352,36 @@ func TestChunkKeyPathNormalization(t *testing.T) {
 	for _, tc := range cases {
 		if got := ChunkKey(tc.path, tc.enc, tc.coord); got != tc.want {
 			t.Errorf("ChunkKey(%q, %s, %v) = %q, want %q", tc.path, tc.enc.Name, tc.coord, got, tc.want)
+		}
+	}
+}
+
+// TestMarshalArrayDefaultFillValue checks MarshalArray fills in the spec
+// default fill_value for each dtype family when none is set: false for
+// bool, [0,0] for complex, 0 otherwise.
+func TestMarshalArrayDefaultFillValue(t *testing.T) {
+	for dtype, want := range map[string]string{
+		"bool":       "false",
+		"complex64":  "[0,0]",
+		"complex128": "[0,0]",
+		"int32":      "0",
+		"float64":    "0",
+	} {
+		raw, err := MarshalArray(&ArrayMeta{
+			Shape:     []int64{4},
+			DataType:  dtype,
+			ChunkGrid: ChunkGrid{Name: "regular", Configuration: ChunkGridRegularCfg{ChunkShape: []int64{2}}},
+			Codecs:    []codec.Spec{{Name: "bytes"}},
+		})
+		if err != nil {
+			t.Fatalf("%s: MarshalArray: %v", dtype, err)
+		}
+		m, err := DecodeArray(raw)
+		if err != nil {
+			t.Fatalf("%s: DecodeArray: %v", dtype, err)
+		}
+		if got := string(m.FillValue); got != want {
+			t.Errorf("%s: fill_value = %s, want %s", dtype, got, want)
 		}
 	}
 }

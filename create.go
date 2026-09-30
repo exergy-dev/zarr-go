@@ -193,7 +193,7 @@ func CreateArray[T Numeric](
 		return nil, err
 	}
 	if len(co.fillValue) == 0 {
-		co.fillValue = codec.DefaultFillValueJSON(dt.String())
+		co.fillValue = metadata.DefaultFillValue(dt.String())
 	}
 	fill, err := parseFillValue(co.fillValue, dt)
 	if err != nil {
