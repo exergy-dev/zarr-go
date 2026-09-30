@@ -16,9 +16,9 @@ Initial release.
   (`sharding_indexed`), partial decode of sharded chunks (fetches only the
   inner chunks a read actually intersects, not the whole shard), and
   rank-0 (scalar) arrays.
-- Codec pipeline: `bytes`, `gzip`, `zlib`, `zstd` (pure-Go by default, cgo
-  via the opt-in `zarrcgo` build tag), `blosc` (cgo-only), `transpose`,
-  `crc32c`, `sharding_indexed`.
+- Codec pipeline: `bytes`, `gzip`, `zlib`, `zstd` (pure Go), `blosc`
+  (cgo-only, via the opt-in `zarrcgo` build tag), `transpose`, `crc32c`,
+  `sharding_indexed`.
 - Store backends: local filesystem (atomic creates via
   `CreateTemp`+fsync+rename/link, optional mmap reads), in-memory, HTTP
   (read-only), S3, Google Cloud Storage, Azure Blob Storage, and an LRU
@@ -42,10 +42,19 @@ Initial release.
   unmatchable error), and a `..` segment, reserved staging-file segment or
   non-local path on the filesystem and HTTP stores.
 - Fuzz targets for the N-d copy kernel (`internal/ndcopy`), sharded index
-  trailer parsing, and v2/v3 metadata decoding.
+  trailer parsing, sharded partial decode, and v2/v3 metadata decoding.
 
 ### Changed
 
+- Codecs are constructed in one step: `codec.Factory` is
+  `func(config json.RawMessage) (Codec, error)` and `Codec.Configure` is
+  gone. Every codec package has a `New(config)` constructor, and codecs
+  must be safe for concurrent use (a pipeline is shared by all of an
+  array's reader goroutines). Only relevant to custom codec
+  implementations. The cgo zstd variant is removed.
+- The zstd codec decodes with up to GOMAXPROCS concurrent decoders
+  (previously one per array, which serialized every read) and encodes with
+  up to min(4, GOMAXPROCS).
 - The S3, GCS and Azure Blob stores are separate modules:
   `github.com/exergy-dev/zarr-go/store/s3`, `.../store/gcs` and
   `.../store/azblob`, each with its own `go.mod` (import paths are
@@ -94,6 +103,36 @@ Initial release.
   parameter's concrete type, so a derived type (e.g. `type MyFloat32
   float32`) previously satisfied the constraint but silently resolved to
   `DtypeInvalid` instead of being a compile error.
+
+### Fixed
+
+- A shard index whose (offset, length) entries overflow no longer panics
+  the partial-decode path (which runs in a `Read` goroutine and so took
+  down the process); such entries, and inner chunks that decode to the
+  wrong size, are rejected with an error.
+- `fs.Store.GetRange` no longer panics when `off+n` overflows, and the S3,
+  GCS and Azure stores clamp such ranges instead of sending a malformed
+  Range header.
+- Node paths are normalized (`"a/"`, `"/a"` and `"a"` are the same node):
+  previously a leading or trailing slash made every chunk key miss, so
+  reads silently returned fill values. Root-array chunk keys no longer
+  start with `/`.
+- The cache no longer serves or stores a value that predates a completed
+  `Set`/`Delete`, and a value larger than `MaxBytes` no longer evicts the
+  whole cache.
+- Cloud `List` with a store prefix no longer yields objects outside it
+  (e.g. `data2/...` for prefix `data`); an empty key is rejected instead
+  of addressing the object named like the prefix.
+- Integer fill values are range-checked against the dtype; v2 integer fill
+  values keep full 64-bit precision; float16 fill values round to
+  nearest-even; fill bytes and the shard index table use native byte
+  order.
+- The filesystem store publishes files with mode 0644 (was 0600), rejects
+  keys that escape its root on Windows, and `Exists` is false for
+  directories.
+- The HTTP store bounds response bodies to the requested range, redacts
+  credentials in error messages, and drains bodies so connections are
+  reused.
 
 ### Notes
 
