@@ -247,7 +247,7 @@ func (c *Codec) decodeIndex(in []byte, n int64) ([]uint64, error) {
 	}
 	entries := make([]uint64, n*2)
 	for i := range entries {
-		entries[i] = binary.LittleEndian.Uint64(out.Data[i*8:])
+		entries[i] = binary.NativeEndian.Uint64(out.Data[i*8:])
 	}
 	return entries, nil
 }
@@ -256,7 +256,7 @@ func (c *Codec) decodeIndex(in []byte, n int64) ([]uint64, error) {
 func (c *Codec) encodeIndexEntries(entries []uint64) ([]byte, error) {
 	buf := make([]byte, len(entries)*8)
 	for i, v := range entries {
-		binary.LittleEndian.PutUint64(buf[i*8:], v)
+		binary.NativeEndian.PutUint64(buf[i*8:], v)
 	}
 	chunk := codec.ArrayChunk{
 		Shape: []int64{int64(len(entries))},
