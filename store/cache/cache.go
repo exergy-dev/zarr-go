@@ -11,7 +11,9 @@
 // caller can't fail out every other waiter, and a waiter's own cancellation
 // doesn't block on the leader), and a Set/Delete that completes while a
 // fetch is in flight poisons that fetch so its result is never admitted —
-// closing a stale-cache window a naive invalidate-then-write has.
+// closing a stale-cache window a naive invalidate-then-write has — and
+// detaches it, so a Get that starts after the Set/Delete returns fetches
+// afresh and sees the write.
 //
 // GetRange/GetSuffix consult a cached whole value first (sliced in memory)
 // before falling back to the underlying store, so a cached shard serves
@@ -62,12 +64,16 @@ type entry struct {
 }
 
 // flight tracks one in-flight underlying Get for a key, shared by every
-// concurrent Get miss on that key.
+// concurrent Get miss on that key until a Set/Delete detaches it.
 type flight struct {
-	done     chan struct{}
-	val      []byte
-	err      error
-	poisoned bool // a Set/Delete for this key completed while the fetch was in flight
+	done chan struct{}
+	val  []byte
+	err  error
+	// poisoned: a Set/Delete for this key completed while the fetch was in
+	// flight. The result is not admitted and the flight is removed from
+	// Store.flights. Waiters that had already joined still receive it,
+	// which is linearizable because their Gets overlapped the write.
+	poisoned bool
 }
 
 // testHookWaiterJoined, when non-nil, is called each time Get finds an
@@ -76,6 +82,13 @@ type flight struct {
 // waiters to join a flight before releasing the leader, instead of racing
 // on goroutine scheduling. Never set outside tests.
 var testHookWaiterJoined func()
+
+// testHookFetchPublished, when non-nil, is called by a fetch leader right
+// after the locked section that retires its flight (removes it, reads
+// poisoned, admits the result), before fl.done is closed. Used by tests to
+// land a Set/Delete in that window and check that it can't leave a stale
+// value cached. Never set outside tests.
+var testHookFetchPublished func()
 
 // New constructs a cache wrapping cfg.Underlying.
 //
@@ -109,14 +122,17 @@ func (s *Store) lookup(key string) ([]byte, bool) {
 	return el.Value.(*entry).val, true
 }
 
-// admit installs (key,val) into the cache, evicting older entries as needed
-// to satisfy MaxBytes / MaxEntries. The provided val is taken by reference
-// and MUST NOT be mutated by the caller after admission; callers should pass
-// freshly-allocated buffers.
-func (s *Store) admit(key string, val []byte) {
+// admitLocked installs (key,val) into the cache, evicting older entries as
+// needed to satisfy MaxBytes / MaxEntries. Caller must hold s.mu. The
+// provided val is taken by reference and MUST NOT be mutated by the caller
+// after admission; callers should pass freshly-allocated buffers. A value
+// larger than MaxBytes is not admitted: it could never fit, and admitting it
+// would evict every other entry first.
+func (s *Store) admitLocked(key string, val []byte) {
 	size := int64(len(val))
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.maxBytes > 0 && size > s.maxBytes {
+		return
+	}
 
 	if el, ok := s.index[key]; ok {
 		// Replace existing.
@@ -137,8 +153,10 @@ func (s *Store) admit(key string, val []byte) {
 
 // invalidate removes any cached entry for key and poisons any in-flight
 // fetch for key, so a fill that started before this mutation can't admit a
-// stale value after it. Must be called AFTER the underlying mutation
-// completes — see Set/Delete.
+// stale value after it. The poisoned flight is also detached from s.flights
+// so a Get that starts after the mutation begins a fresh fetch instead of
+// joining the stale one (read-your-writes). Must be called AFTER the
+// underlying mutation completes — see Set/Delete.
 func (s *Store) invalidate(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,6 +165,7 @@ func (s *Store) invalidate(key string) {
 	}
 	if fl, ok := s.flights[key]; ok {
 		fl.poisoned = true
+		delete(s.flights, key)
 	}
 }
 
@@ -244,17 +263,24 @@ func leaderCtxErr(err error) bool {
 func (s *Store) runFetch(ctx context.Context, key string, fl *flight) {
 	raw, err := s.underlying.Get(ctx, key)
 	s.mu.Lock()
-	delete(s.flights, key)
-	poisoned := fl.poisoned
+	if s.flights[key] == fl { // invalidate may have already detached fl and a fresh flight replaced it
+		delete(s.flights, key)
+	}
+	// Admit under the same lock as the poisoned check: a Set/Delete either
+	// poisons fl before this point or finds the entry and invalidates it
+	// after, so a stale value can't be admitted once the write has completed.
+	if err == nil && !fl.poisoned {
+		s.admitLocked(key, raw)
+	}
 	s.mu.Unlock()
+	if testHookFetchPublished != nil {
+		testHookFetchPublished()
+	}
 
 	if err != nil {
 		fl.err = err
 		close(fl.done)
 		return
-	}
-	if !poisoned {
-		s.admit(key, raw)
 	}
 	fl.val = raw
 	close(fl.done)
