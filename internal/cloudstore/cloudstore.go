@@ -28,7 +28,7 @@ var ErrEmptyKey = errors.New("empty key")
 // KeyFromObject hides from List; with no prefix, the empty object name the
 // SDKs reject anyway.
 func JoinKey(backend, prefix, key string) (string, error) {
-	prefix = TrimSlashes(prefix)
+	prefix = strings.Trim(prefix, "/")
 	k := strings.TrimLeft(key, "/")
 	if k == "" {
 		return "", fmt.Errorf("%s: key %q: %w", backend, key, ErrEmptyKey)
@@ -39,17 +39,12 @@ func JoinKey(backend, prefix, key string) (string, error) {
 	return prefix + "/" + k, nil
 }
 
-// TrimSlashes strips leading and trailing slashes from s.
-func TrimSlashes(s string) string {
-	return strings.Trim(s, "/")
-}
-
 // ListPrefix returns the object-name prefix to list for a store-level List
 // prefix. With a non-empty storePrefix the result always includes the
 // separating slash, so listing never matches sibling objects such as
 // storePrefix+"2/x" or an object named exactly storePrefix.
 func ListPrefix(storePrefix, prefix string) string {
-	storePrefix = TrimSlashes(storePrefix)
+	storePrefix = strings.Trim(storePrefix, "/")
 	prefix = strings.TrimLeft(prefix, "/")
 	if storePrefix == "" {
 		return prefix
@@ -61,7 +56,7 @@ func ListPrefix(storePrefix, prefix string) string {
 // for objects outside storePrefix+"/" and for the bare directory marker
 // storePrefix+"/", which has no store key.
 func KeyFromObject(storePrefix, objKey string) (key string, ok bool) {
-	storePrefix = TrimSlashes(storePrefix)
+	storePrefix = strings.Trim(storePrefix, "/")
 	if storePrefix == "" {
 		return objKey, objKey != ""
 	}

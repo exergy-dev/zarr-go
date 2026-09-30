@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
@@ -31,7 +32,8 @@ import (
 // Config configures a Store.
 type Config struct {
 	// AccountName is the Azure storage account name, e.g. "mystorageaccount".
-	// Required unless ServiceURL fully specifies the endpoint.
+	// Required: shared-key auth signs every request with it, even when
+	// ServiceURL specifies the endpoint.
 	AccountName string
 	// AccountKey is the shared-key credential for the storage account. When
 	// empty, this package currently has no fallback authentication and New
@@ -58,8 +60,8 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.Container == "" {
 		return nil, errors.New("azblob: Container is required")
 	}
-	if cfg.AccountName == "" && cfg.ServiceURL == "" {
-		return nil, errors.New("azblob: AccountName or ServiceURL is required")
+	if cfg.AccountName == "" {
+		return nil, errors.New("azblob: AccountName is required (shared-key auth signs requests with it, even with ServiceURL set)")
 	}
 
 	serviceURL := cfg.ServiceURL
@@ -85,7 +87,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	return &Store{
 		client:    client,
 		container: cfg.Container,
-		prefix:    cloudstore.TrimSlashes(cfg.Prefix),
+		prefix:    strings.Trim(cfg.Prefix, "/"),
 	}, nil
 }
 
@@ -124,7 +126,7 @@ func isInvalidRange(err error) bool {
 }
 
 // notFoundErr wraps store.ErrKeyNotFound with context about the missing key.
-func notFoundErr(key string, _ error) error {
+func notFoundErr(key string) error {
 	return fmt.Errorf("azblob: key %q: %w", key, zstore.ErrKeyNotFound)
 }
 
@@ -151,7 +153,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	resp, err := s.client.DownloadStream(ctx, s.container, k, nil)
 	if err != nil {
 		if isNotFound(err) {
-			return nil, notFoundErr(key, err)
+			return nil, notFoundErr(key)
 		}
 		return nil, fmt.Errorf("azblob: DownloadStream %q: %w", k, err)
 	}
@@ -185,7 +187,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 			return nil, err
 		}
 		if !ok {
-			return nil, notFoundErr(key, nil)
+			return nil, notFoundErr(key)
 		}
 		return []byte{}, nil
 	}
@@ -194,7 +196,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	})
 	if err != nil {
 		if isNotFound(err) {
-			return nil, notFoundErr(key, err)
+			return nil, notFoundErr(key)
 		}
 		if isInvalidRange(err) {
 			return []byte{}, nil

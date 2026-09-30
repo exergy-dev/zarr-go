@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"math"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
@@ -27,7 +27,7 @@ func TestIsNotFound(t *testing.T) {
 }
 
 func TestNotFoundErrIsErrKeyNotFound(t *testing.T) {
-	err := notFoundErr("k", fmt.Errorf("orig: %w", errors.New("BlobNotFound")))
+	err := notFoundErr("k")
 	if !errors.Is(err, store.ErrKeyNotFound) {
 		t.Errorf("expected errors.Is(err, store.ErrKeyNotFound), got %v", err)
 	}
@@ -53,10 +53,18 @@ func TestNew_RequiresContainer(t *testing.T) {
 	}
 }
 
-func TestNew_RequiresAccountNameOrServiceURL(t *testing.T) {
-	_, err := New(context.Background(), Config{Container: "c", AccountKey: "k"})
-	if err == nil {
-		t.Fatal("expected error when AccountName and ServiceURL are both empty")
+// TestNew_RequiresAccountName: shared-key auth signs every request with the
+// account name, so it is required even when ServiceURL gives the endpoint.
+func TestNew_RequiresAccountName(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("key"))
+	for _, cfg := range []Config{
+		{Container: "c", AccountKey: key},
+		{Container: "c", AccountKey: key, ServiceURL: "https://acct.blob.core.windows.net/"},
+	} {
+		_, err := New(context.Background(), cfg)
+		if err == nil || !strings.Contains(err.Error(), "AccountName is required") {
+			t.Errorf("New(ServiceURL=%q, no AccountName) error = %v, want \"AccountName is required\"", cfg.ServiceURL, err)
+		}
 	}
 }
 

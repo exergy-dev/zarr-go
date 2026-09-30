@@ -21,6 +21,8 @@ func TestJoinKey(t *testing.T) {
 		{"/p/", "foo", "p/foo"},
 		{"/p/", "/foo", "p/foo"},
 		{"a/b", "c/d", "a/b/c/d"},
+		{"///a/b//", "//c", "a/b/c"},
+		{"/", "foo", "foo"},
 		{"p", "foo/", "p/foo/"},
 	}
 	for _, c := range cases {
@@ -148,22 +150,6 @@ func TestListNamespace(t *testing.T) {
 		got := listObjects(objects, c.storePrefix, c.prefix)
 		if !slices.Equal(got, c.want) {
 			t.Errorf("List(storePrefix=%q, prefix=%q) = %q, want %q", c.storePrefix, c.prefix, got, c.want)
-		}
-	}
-}
-
-func TestTrimSlashes(t *testing.T) {
-	cases := map[string]string{
-		"":         "",
-		"/":        "",
-		"//a//":    "a",
-		"a/b":      "a/b",
-		"/a/b/":    "a/b",
-		"///a/b//": "a/b",
-	}
-	for in, want := range cases {
-		if got := TrimSlashes(in); got != want {
-			t.Errorf("TrimSlashes(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

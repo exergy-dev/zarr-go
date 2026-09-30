@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
@@ -51,7 +52,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		client: client,
 		bucket: client.Bucket(cfg.Bucket),
 		name:   cfg.Bucket,
-		prefix: cloudstore.TrimSlashes(cfg.Prefix),
+		prefix: strings.Trim(cfg.Prefix, "/"),
 	}, nil
 }
 

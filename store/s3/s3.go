@@ -13,6 +13,7 @@ import (
 	"io"
 	"iter"
 	"net/http"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -75,7 +76,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	return &Store{
 		client: client,
 		bucket: cfg.Bucket,
-		prefix: cloudstore.TrimSlashes(cfg.Prefix),
+		prefix: strings.Trim(cfg.Prefix, "/"),
 	}, nil
 }
 
