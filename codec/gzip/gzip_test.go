@@ -2,6 +2,7 @@ package gzip
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"math/rand"
 	"testing"
@@ -177,5 +178,43 @@ func TestNameAndRegistration(t *testing.T) {
 	c := &Codec{}
 	if got := c.Name(); got != "gzip" {
 		t.Fatalf("Name() = %q, want %q", got, "gzip")
+	}
+}
+
+// TestDecodeMultiMember checks that concatenated gzip members decode in
+// full: the trailer's ISIZE covers only the last member, so it may only
+// ever be used as a capacity hint.
+func TestDecodeMultiMember(t *testing.T) {
+	c := newConfigured(t, "")
+	a := bytes.Repeat([]byte("first member "), 4096)
+	b := []byte("second")
+	encA, err := c.EncodeBB(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encB, err := c.EncodeBB(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := c.DecodeBB(append(append([]byte{}, encA...), encB...))
+	if err != nil {
+		t.Fatalf("DecodeBB: %v", err)
+	}
+	if want := append(append([]byte{}, a...), b...); !bytes.Equal(dec, want) {
+		t.Fatalf("got %d bytes, want %d", len(dec), len(want))
+	}
+}
+
+// TestDecodeForgedSize checks that a trailer claiming a huge decoded size
+// is rejected (by the size check) rather than trusted.
+func TestDecodeForgedSize(t *testing.T) {
+	c := newConfigured(t, "")
+	enc, err := c.EncodeBB([]byte("small payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(enc[len(enc)-4:], 0xFFFFFFFF)
+	if _, err := c.DecodeBB(enc); err == nil {
+		t.Fatal("expected error for forged ISIZE, got nil")
 	}
 }
