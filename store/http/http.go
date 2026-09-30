@@ -200,12 +200,12 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 				return nil, fmt.Errorf("http store: GET %s (range): server returned Content-Range %q for requested offset %d", u, cr, off)
 			}
 		}
-		body, err := io.ReadAll(resp.Body)
+		// Bound the read at n: a misbehaving server streaming more than
+		// the requested range (or an endless body) must not grow memory
+		// without limit.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, n))
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (range): read body: %w", u, err)
-		}
-		if int64(len(body)) > n {
-			body = body[:n]
 		}
 		return body, nil
 	case http.StatusOK:
@@ -264,12 +264,11 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		body, err := io.ReadAll(resp.Body)
+		// Bound the read at n, as in GetRange: a compliant server sends
+		// exactly the suffix, and anything beyond n is not trusted.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, n))
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (suffix range): read body: %w", u, err)
-		}
-		if int64(len(body)) > n {
-			body = body[int64(len(body))-n:]
 		}
 		return body, nil
 	case http.StatusOK:

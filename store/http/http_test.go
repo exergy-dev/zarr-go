@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
@@ -353,5 +354,61 @@ func TestUnexpectedStatusIsError(t *testing.T) {
 	}
 	if _, err := s.Exists(context.Background(), "k"); err == nil {
 		t.Fatal("expected error for 500")
+	}
+}
+
+// endlessPartialContentServer answers every request with 206 and then streams
+// bytes until a write fails (i.e. the client hangs up), modeling a
+// misbehaving origin or proxy that ignores the requested range length.
+func endlessPartialContentServer(t *testing.T, contentRange string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", contentRange)
+		w.WriteHeader(http.StatusPartialContent)
+		chunk := make([]byte, 32<<10)
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestGetRangeBoundsPartialContentBody(t *testing.T) {
+	t.Parallel()
+	srv := endlessPartialContentServer(t, "bytes 0-15/*")
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Without a bound, GetRange keeps reading until the deadline fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := s.GetRange(ctx, "k", 0, 16)
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	if len(got) != 16 {
+		t.Fatalf("GetRange len = %d, want 16", len(got))
+	}
+}
+
+func TestGetSuffixBoundsPartialContentBody(t *testing.T) {
+	t.Parallel()
+	srv := endlessPartialContentServer(t, "bytes 0-15/16")
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := s.GetSuffix(ctx, "k", 16)
+	if err != nil {
+		t.Fatalf("GetSuffix: %v", err)
+	}
+	if len(got) != 16 {
+		t.Fatalf("GetSuffix len = %d, want 16", len(got))
 	}
 }
