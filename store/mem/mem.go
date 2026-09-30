@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -128,23 +128,25 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-// List yields all keys under prefix in lexicographic order.
+// List yields all keys under prefix in lexicographic order. Keys are
+// snapshotted when the sequence is iterated, not when List is called, so
+// (like the fs and cloud backends) each iteration sees the current contents.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	s.mu.RLock()
-	keys := make([]string, 0, len(s.data))
-	for k := range s.data {
-		if strings.HasPrefix(k, prefix) {
-			keys = append(keys, k)
-		}
-	}
-	s.mu.RUnlock()
-	sort.Strings(keys)
-
 	return func(yield func(string, error) bool) {
 		if err := ctx.Err(); err != nil {
 			yield("", err)
 			return
 		}
+		s.mu.RLock()
+		keys := make([]string, 0, len(s.data))
+		for k := range s.data {
+			if strings.HasPrefix(k, prefix) {
+				keys = append(keys, k)
+			}
+		}
+		s.mu.RUnlock()
+		slices.Sort(keys)
+
 		for _, k := range keys {
 			if err := ctx.Err(); err != nil {
 				yield("", err)

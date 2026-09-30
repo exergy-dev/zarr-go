@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
@@ -353,5 +356,146 @@ func TestUnexpectedStatusIsError(t *testing.T) {
 	}
 	if _, err := s.Exists(context.Background(), "k"); err == nil {
 		t.Fatal("expected error for 500")
+	}
+}
+
+// endlessPartialContentServer answers every request with 206 and then streams
+// bytes until a write fails (i.e. the client hangs up), modeling a
+// misbehaving origin or proxy that ignores the requested range length.
+func endlessPartialContentServer(t *testing.T, contentRange string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", contentRange)
+		w.WriteHeader(http.StatusPartialContent)
+		chunk := make([]byte, 32<<10)
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestGetRangeBoundsPartialContentBody(t *testing.T) {
+	t.Parallel()
+	srv := endlessPartialContentServer(t, "bytes 0-15/*")
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Without a bound, GetRange keeps reading until the deadline fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := s.GetRange(ctx, "k", 0, 16)
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	if len(got) != 16 {
+		t.Fatalf("GetRange len = %d, want 16", len(got))
+	}
+}
+
+func TestGetSuffixBoundsPartialContentBody(t *testing.T) {
+	t.Parallel()
+	srv := endlessPartialContentServer(t, "bytes 0-15/16")
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := s.GetSuffix(ctx, "k", 16)
+	if err != nil {
+		t.Fatalf("GetSuffix: %v", err)
+	}
+	if len(got) != 16 {
+		t.Fatalf("GetSuffix len = %d, want 16", len(got))
+	}
+}
+
+func TestErrorsRedactBaseURLPassword(t *testing.T) {
+	t.Parallel()
+	const password = "s3cret-pw"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	base := strings.Replace(srv.URL, "http://", "http://user:"+password+"@", 1) + "/"
+
+	checkRedacted := func(op string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: expected error", op)
+		}
+		if strings.Contains(err.Error(), password) {
+			t.Errorf("%s: error leaks password: %v", op, err)
+		}
+	}
+
+	_, err := New(Config{BaseURL: strings.TrimSuffix(base, "/")})
+	checkRedacted("New (no trailing slash)", err)
+	_, err = New(Config{BaseURL: "http://user:" + password + "@host:badport/"})
+	checkRedacted("New (unparseable)", err)
+
+	s, err := New(Config{BaseURL: base})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	_, err = s.Get(ctx, "k")
+	checkRedacted("Get", err)
+	_, err = s.GetRange(ctx, "k", 0, 4)
+	checkRedacted("GetRange", err)
+	_, err = s.GetSuffix(ctx, "k", 4)
+	checkRedacted("GetSuffix", err)
+	_, err = s.Exists(ctx, "k")
+	checkRedacted("Exists", err)
+}
+
+// TestErrorResponsesReuseConnection checks that non-2xx bodies are drained
+// before Close so the keep-alive connection goes back to the pool instead of
+// being torn down.
+func TestErrorResponsesReuseConnection(t *testing.T) {
+	t.Parallel()
+	var newConns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fail":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	s, err := New(Config{BaseURL: srv.URL + "/", Client: srv.Client()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := s.Get(ctx, "missing"); !errors.Is(err, store.ErrKeyNotFound) {
+			t.Fatalf("Get #%d: got %v, want ErrKeyNotFound", i, err)
+		}
+	}
+	if _, err := s.GetRange(ctx, "missing", 0, 4); !errors.Is(err, store.ErrKeyNotFound) {
+		t.Fatalf("GetRange: got %v, want ErrKeyNotFound", err)
+	}
+	if _, err := s.Get(ctx, "fail"); err == nil {
+		t.Fatal("Get fail: expected error for 500")
+	}
+	if _, err := s.GetSuffix(ctx, "fail", 4); err == nil {
+		t.Fatal("GetSuffix fail: expected error for 500")
+	}
+	if got := newConns.Load(); got != 1 {
+		t.Fatalf("server saw %d new connections, want 1 (keep-alive reuse)", got)
 	}
 }
