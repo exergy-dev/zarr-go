@@ -11,7 +11,9 @@
 // caller can't fail out every other waiter, and a waiter's own cancellation
 // doesn't block on the leader), and a Set/Delete that completes while a
 // fetch is in flight poisons that fetch so its result is never admitted —
-// closing a stale-cache window a naive invalidate-then-write has.
+// closing a stale-cache window a naive invalidate-then-write has — and
+// detaches it, so a Get that starts after the Set/Delete returns fetches
+// afresh and sees the write.
 //
 // GetRange/GetSuffix consult a cached whole value first (sliced in memory)
 // before falling back to the underlying store, so a cached shard serves
@@ -62,12 +64,16 @@ type entry struct {
 }
 
 // flight tracks one in-flight underlying Get for a key, shared by every
-// concurrent Get miss on that key.
+// concurrent Get miss on that key until a Set/Delete detaches it.
 type flight struct {
-	done     chan struct{}
-	val      []byte
-	err      error
-	poisoned bool // a Set/Delete for this key completed while the fetch was in flight
+	done chan struct{}
+	val  []byte
+	err  error
+	// poisoned: a Set/Delete for this key completed while the fetch was in
+	// flight. The result is not admitted and the flight is removed from
+	// Store.flights. Waiters that had already joined still receive it,
+	// which is linearizable because their Gets overlapped the write.
+	poisoned bool
 }
 
 // testHookWaiterJoined, when non-nil, is called each time Get finds an
@@ -137,8 +143,10 @@ func (s *Store) admit(key string, val []byte) {
 
 // invalidate removes any cached entry for key and poisons any in-flight
 // fetch for key, so a fill that started before this mutation can't admit a
-// stale value after it. Must be called AFTER the underlying mutation
-// completes — see Set/Delete.
+// stale value after it. The poisoned flight is also detached from s.flights
+// so a Get that starts after the mutation begins a fresh fetch instead of
+// joining the stale one (read-your-writes). Must be called AFTER the
+// underlying mutation completes — see Set/Delete.
 func (s *Store) invalidate(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,6 +155,7 @@ func (s *Store) invalidate(key string) {
 	}
 	if fl, ok := s.flights[key]; ok {
 		fl.poisoned = true
+		delete(s.flights, key)
 	}
 }
 
@@ -244,7 +253,9 @@ func leaderCtxErr(err error) bool {
 func (s *Store) runFetch(ctx context.Context, key string, fl *flight) {
 	raw, err := s.underlying.Get(ctx, key)
 	s.mu.Lock()
-	delete(s.flights, key)
+	if s.flights[key] == fl { // invalidate may have already detached fl and a fresh flight replaced it
+		delete(s.flights, key)
+	}
 	poisoned := fl.poisoned
 	s.mu.Unlock()
 

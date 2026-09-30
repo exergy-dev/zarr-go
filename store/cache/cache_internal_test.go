@@ -31,6 +31,12 @@ type gatedStore struct {
 
 	gate    chan struct{} // if non-nil, Get blocks here (or on ctx.Done()) after the real read, before returning
 	entered chan struct{} // if non-nil, Get blocks sending here before the real read
+
+	// gates, if non-nil, overrides gate per call: the Nth Get (1-based)
+	// blocks on gates[N-1] instead (nil = don't block), so a test can
+	// release one specific in-flight fetch while others stay blocked. Must
+	// be set before the first Get and cover every call the test makes.
+	gates []chan struct{}
 }
 
 func newGatedStore(inner store.Store) *gatedStore {
@@ -40,6 +46,10 @@ func newGatedStore(inner store.Store) *gatedStore {
 func (g *gatedStore) Get(ctx context.Context, key string) ([]byte, error) {
 	g.mu.Lock()
 	g.calls++
+	gate := g.gate
+	if g.gates != nil {
+		gate = g.gates[g.calls-1]
+	}
 	g.mu.Unlock()
 	// Perform the real read BEFORE signaling entered, so a test that
 	// receives from entered and then mutates the key can rely on this call
@@ -54,9 +64,9 @@ func (g *gatedStore) Get(ctx context.Context, key string) ([]byte, error) {
 			return nil, ctx.Err()
 		}
 	}
-	if g.gate != nil {
+	if gate != nil {
 		select {
-		case <-g.gate:
+		case <-gate:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -374,4 +384,147 @@ func TestCacheWaiterOwnCtxCancelReturnsImmediately(t *testing.T) {
 
 	close(gate) // let the leader finish so its goroutine doesn't leak past the test
 	<-leaderDone
+}
+
+// TestCacheGetAfterSetDoesNotJoinStaleFlight is the regression test for a
+// read-your-writes violation: a Get that STARTS after Set has returned must
+// not join a fetch that began before the Set (and so captured the old
+// value). It must start a fresh fetch and observe the write.
+func TestCacheGetAfterSetDoesNotJoinStaleFlight(t *testing.T) {
+	ctx := context.Background()
+	inner := mem.New()
+	if err := inner.Set(ctx, "k", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	gated := newGatedStore(inner)
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	gated.gate = gate
+	gated.entered = entered
+	c := New(Config{Underlying: gated})
+
+	waiterJoined := make(chan struct{}, 1)
+	testHookWaiterJoined = func() { waiterJoined <- struct{}{} }
+	t.Cleanup(func() { testHookWaiterJoined = nil })
+
+	g1Done := make(chan struct{})
+	var g1Val []byte
+	var g1Err error
+	go func() {
+		g1Val, g1Err = c.Get(ctx, "k")
+		close(g1Done)
+	}()
+	<-entered // leader's underlying Get has captured "v1"
+
+	if err := c.Set(ctx, "k", []byte("v2")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	g2Done := make(chan struct{})
+	var g2Val []byte
+	var g2Err error
+	go func() {
+		g2Val, g2Err = c.Get(ctx, "k")
+		close(g2Done)
+	}()
+	// The second Get either joins the stale flight (the bug) or starts its
+	// own fetch, which reads "v2" and signals entered. Exactly one happens.
+	select {
+	case <-waiterJoined:
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Get neither joined a flight nor started a fetch")
+	}
+	close(gate)
+	<-g1Done
+	<-g2Done
+
+	// The first Get started before the Set completed, so the old value is a
+	// legitimate (linearizable) result for it.
+	if g1Err != nil || string(g1Val) != "v1" {
+		t.Fatalf("first Get: got %q err=%v, want %q,nil", g1Val, g1Err, "v1")
+	}
+	if g2Err != nil {
+		t.Fatalf("second Get: %v", g2Err)
+	}
+	if string(g2Val) != "v2" {
+		t.Fatalf("Get started after Set returned %q, want %q (read-your-writes)", g2Val, "v2")
+	}
+}
+
+// TestCacheStaleLeaderKeepsFreshFlight checks that when a flight detached
+// by Set finishes while a fresh flight for the same key is still running,
+// the stale leader does not remove the fresh flight from the tracker: a
+// later Get must join the fresh flight rather than start a third fetch.
+func TestCacheStaleLeaderKeepsFreshFlight(t *testing.T) {
+	ctx := context.Background()
+	inner := mem.New()
+	if err := inner.Set(ctx, "k", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	gated := newGatedStore(inner)
+	gate1, gate2 := make(chan struct{}), make(chan struct{})
+	entered := make(chan struct{})
+	gated.gates = []chan struct{}{gate1, gate2, nil}
+	gated.entered = entered
+	c := New(Config{Underlying: gated})
+
+	waiterJoined := make(chan struct{}, 1)
+	testHookWaiterJoined = func() { waiterJoined <- struct{}{} }
+	t.Cleanup(func() { testHookWaiterJoined = nil })
+
+	type result struct {
+		val  []byte
+		err  error
+		done chan struct{}
+	}
+	get := func() *result {
+		r := &result{done: make(chan struct{})}
+		go func() {
+			r.val, r.err = c.Get(ctx, "k")
+			close(r.done)
+		}()
+		return r
+	}
+
+	r1 := get()
+	<-entered // fetch #1 captured "v1"
+	if err := c.Set(ctx, "k", []byte("v2")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	r2 := get()
+	select {
+	case <-entered: // fetch #2 captured "v2"
+	case <-waiterJoined:
+		t.Fatal("Get after Set joined the stale flight")
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Get did not start a fetch")
+	}
+
+	close(gate1) // stale fetch #1 completes while fresh fetch #2 is in flight
+	<-r1.done
+
+	r3 := get()
+	select {
+	case <-waiterJoined: // joined fetch #2, as it should
+	case <-entered:
+		t.Fatal("stale leader dropped the fresh flight: third Get started a new fetch")
+	case <-time.After(5 * time.Second):
+		t.Fatal("third Get neither joined a flight nor started a fetch")
+	}
+	close(gate2)
+	<-r2.done
+	<-r3.done
+
+	if r1.err != nil || string(r1.val) != "v1" {
+		t.Fatalf("first Get: got %q err=%v, want %q,nil", r1.val, r1.err, "v1")
+	}
+	for i, r := range []*result{r2, r3} {
+		if r.err != nil || string(r.val) != "v2" {
+			t.Fatalf("Get %d: got %q err=%v, want %q,nil", i+2, r.val, r.err, "v2")
+		}
+	}
+	if got := gated.Calls(); got != 2 {
+		t.Fatalf("underlying Get calls = %d, want 2", got)
+	}
 }
