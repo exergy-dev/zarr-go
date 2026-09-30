@@ -16,7 +16,6 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/exergy-dev/zarr-go/internal/cloudstore"
 	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
@@ -89,6 +88,7 @@ func fakeStore(t *testing.T, endpoint string) *Store {
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "config"))
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "credentials"))
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required") // the fake sends no checksums
 	s, err := New(context.Background(), Config{
 		Bucket:    "b",
 		Region:    "us-east-1",
@@ -101,19 +101,33 @@ func fakeStore(t *testing.T, endpoint string) *Store {
 	return s
 }
 
+// TestFakeConformance runs the read side of the store contract (Basics,
+// GetRange, GetSuffix) against the credential-free fake.
+func TestFakeConformance(t *testing.T) {
+	srv := cloudstoretest.NewServer(t, "Range")
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return fakeStore(t, srv.URL)
+	}, storetest.Options{
+		ReadOnly: true,
+		NoList:   true,
+		Seed:     func(_ *testing.T, _ store.Store, key string, value []byte) { srv.Put(key, value) },
+	})
+}
+
 // TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
 // object size, including when off+n-1 overflows int64 (n = MaxInt64).
 func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
-	url, ranges := cloudstoretest.RangeServer(t, "Range", []byte("0123456789"))
-	s := fakeStore(t, url)
+	srv := cloudstoretest.NewServer(t, "Range")
+	srv.Put("k", []byte("0123456789"))
+	s := fakeStore(t, srv.URL)
 	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
 	if err != nil {
-		t.Fatalf("GetRange(5, MaxInt64): %v (Range headers sent: %q)", err, ranges())
+		t.Fatalf("GetRange(5, MaxInt64): %v (Range headers sent: %q)", err, srv.Ranges())
 	}
 	if string(got) != "56789" {
 		t.Fatalf("GetRange(5, MaxInt64) = %q, want %q", got, "56789")
 	}
-	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
+	if r, want := srv.Ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
 		t.Fatalf("range headers sent = %q, want [%q]", r, want)
 	}
 }
@@ -122,8 +136,9 @@ func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
 // issuing any request, rather than addressing the object named exactly
 // Prefix (outside the store's Prefix+"/" namespace).
 func TestEmptyKeyRejected(t *testing.T) {
-	url, requests := cloudstoretest.RangeServer(t, "Range", []byte("x"))
-	s := fakeStore(t, url)
+	srv := cloudstoretest.NewServer(t, "Range")
+	srv.Put("k", []byte("x"))
+	s := fakeStore(t, srv.URL)
 	s.prefix = "data"
 	ctx := context.Background()
 	ops := map[string]func() error{
@@ -136,11 +151,11 @@ func TestEmptyKeyRejected(t *testing.T) {
 		"Exists":         func() error { _, err := s.Exists(ctx, ""); return err },
 	}
 	for name, op := range ops {
-		if err := op(); !errors.Is(err, cloudstore.ErrEmptyKey) {
-			t.Errorf("%s(\"\") = %v, want ErrEmptyKey", name, err)
+		if err := op(); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("%s(\"\") = %v, want ErrInvalidKey", name, err)
 		}
 	}
-	if r := requests(); len(r) != 0 {
+	if r := srv.Ranges(); len(r) != 0 {
 		t.Errorf("empty-key operations issued %d requests, want 0", len(r))
 	}
 }

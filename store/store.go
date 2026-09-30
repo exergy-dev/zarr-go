@@ -49,6 +49,18 @@ func (errKeyNotFound) Is(target error) bool {
 // the whole object instead of erroring).
 var ErrInvalidRange = errors.New("store: invalid range")
 
+// ErrInvalidKey is returned (wrapped with the backend and key) for a key the
+// backend refuses to address: an empty key on the cloud backends, a key
+// with a ".." segment on the fs and http stores, or one the fs store can't
+// map to a path beneath its root. The check is client-side; no request or
+// file operation is issued.
+var ErrInvalidKey = errors.New("store: invalid key")
+
+// ErrReadOnly reports a write attempted through a Store that is not a
+// Writer. The zarr write paths return it; zarr.ErrReadOnly is the same
+// value.
+var ErrReadOnly = errors.New("store is read-only")
+
 // ClampRange returns the sub-slice of v covering [off, off+n), clamped to
 // len(v) per the GetRange contract: off >= len(v) or n == 0 returns an empty
 // slice; off+n > len(v) (including int64 overflow) clamps to len(v). Callers
@@ -66,8 +78,11 @@ func ClampRange(v []byte, off, n int64) []byte {
 	return v[off:end]
 }
 
-// Store is the read/write key-value abstraction over the underlying object/file
-// store. Keys are forward-slash separated; backends translate as needed.
+// Store is the read side of the key-value abstraction over the underlying
+// object/file store. Keys are forward-slash separated; backends translate as
+// needed. A Store that can also be written implements Writer; one that
+// can't (e.g. the http store) is read-only, and the zarr write paths reject
+// it with ErrReadOnly.
 //
 // # GetRange contract
 //
@@ -79,6 +94,15 @@ func ClampRange(v []byte, off, n int64) []byte {
 //   - off >= size (key exists): returns ([]byte{}, nil), not an error.
 //   - off+n > size: clamped to return size-off bytes (the largest slice
 //     available at or after off).
+//
+// # GetSuffix contract
+//
+// GetSuffix follows the same conventions, with n as the suffix length:
+//   - n < 0: returns ErrInvalidRange, without issuing any request.
+//   - key missing: returns ErrKeyNotFound, even when n == 0.
+//   - n == 0 and key exists: returns ([]byte{}, nil).
+//   - n >= size: returns the whole value.
+//   - otherwise: returns the last n bytes.
 //
 // # List contract
 //
@@ -94,11 +118,10 @@ type Store interface {
 	// the Store-level "GetRange contract" doc for the full behavior matrix.
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 
-	// Set writes value at key, replacing any existing value.
-	Set(ctx context.Context, key string, value []byte) error
-
-	// Delete removes the value at key. Missing keys are not an error.
-	Delete(ctx context.Context, key string) error
+	// GetSuffix returns the last n bytes of the value at key without
+	// knowing its size up front (the sharding codec reads a shard's index
+	// trailer this way). See the Store-level "GetSuffix contract" doc.
+	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
 
 	// List yields all keys under prefix. See the Store-level "List contract"
 	// doc. Errors during pagination are surfaced via the second tuple value.
@@ -108,25 +131,18 @@ type Store interface {
 	Exists(ctx context.Context, key string) (bool, error)
 }
 
-// SuffixReader is an optional Store extension implemented by backends that
-// can serve "last N bytes" requests — natively (HTTP Range: bytes=-N-style
-// backends) or otherwise. Consumers that need this (e.g. the sharding codec,
-// reading a shard's index trailer) probe for it via a type assertion and
-// fall back to Get + slice when a backend doesn't implement it.
-//
-// GetSuffix follows the same off/n conventions as GetRange with n playing
-// the role of the suffix length: n < 0 returns ErrInvalidRange; n == 0
-// returns ([]byte{}, nil) if the key exists (ErrKeyNotFound if not); n >=
-// size returns the whole value; otherwise the last n bytes.
-type SuffixReader interface {
-	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
-}
-
-// WritableStore extends Store with operations needed for safe concurrent
-// creation. Not all backends support these (e.g., HTTP read-only). The M2
-// write path will require this.
-type WritableStore interface {
+// Writer is a Store that can also be written. The zarr write paths
+// (CreateArray, CreateGroup, Array.Write) require one and return
+// ErrReadOnly for a Store that isn't.
+type Writer interface {
 	Store
+
+	// Set writes value at key, replacing any existing value.
+	Set(ctx context.Context, key string, value []byte) error
+
+	// Delete removes the value at key. Missing keys are not an error.
+	Delete(ctx context.Context, key string) error
+
 	// SetIfNotExists writes value at key only if the key does not already
 	// exist. Returns false (without error) if the key was already present.
 	SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error)

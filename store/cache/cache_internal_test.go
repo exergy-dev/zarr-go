@@ -3,7 +3,6 @@ package cache
 import (
 	"context"
 	"errors"
-	"iter"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,7 +12,7 @@ import (
 	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
-// gatedStore wraps a store.Store, letting tests pause Get at a controlled
+// gatedStore wraps a store.Writer, letting tests pause Get at a controlled
 // point. Each call to Get first (optionally) blocks sending on entered —
 // letting the test observe exactly when this call started, and how many
 // have started — then performs the real underlying read (capturing
@@ -24,7 +23,7 @@ import (
 // defeating tests that need a read known to have captured a value that a
 // later Set/Delete makes stale.
 type gatedStore struct {
-	inner store.Store
+	store.Writer // everything but Get passes straight through
 
 	mu    sync.Mutex
 	calls int
@@ -39,8 +38,8 @@ type gatedStore struct {
 	gates []chan struct{}
 }
 
-func newGatedStore(inner store.Store) *gatedStore {
-	return &gatedStore{inner: inner}
+func newGatedStore(inner store.Writer) *gatedStore {
+	return &gatedStore{Writer: inner}
 }
 
 func (g *gatedStore) Get(ctx context.Context, key string) ([]byte, error) {
@@ -56,7 +55,7 @@ func (g *gatedStore) Get(ctx context.Context, key string) ([]byte, error) {
 	// having already captured its (possibly soon-to-be-stale) value — a
 	// send on entered before the read would only prove the call started,
 	// racing the read itself against the test's mutation.
-	val, err := g.inner.Get(ctx, key)
+	val, err := g.Writer.Get(ctx, key)
 	if g.entered != nil {
 		select {
 		case g.entered <- struct{}{}:
@@ -80,24 +79,6 @@ func (g *gatedStore) Calls() int {
 	return g.calls
 }
 
-func (g *gatedStore) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	return g.inner.GetRange(ctx, key, off, n)
-}
-func (g *gatedStore) Set(ctx context.Context, key string, value []byte) error {
-	return g.inner.Set(ctx, key, value)
-}
-func (g *gatedStore) Delete(ctx context.Context, key string) error {
-	return g.inner.Delete(ctx, key)
-}
-func (g *gatedStore) Exists(ctx context.Context, key string) (bool, error) {
-	return g.inner.Exists(ctx, key)
-}
-func (g *gatedStore) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	return g.inner.List(ctx, prefix)
-}
-
-var _ store.Store = (*gatedStore)(nil)
-
 // TestCacheConcurrentMissCoalescesDeterministic proves N concurrent misses
 // on the same key result in exactly one underlying Get, using
 // testHookWaiterJoined (not a scheduling race) to know precisely when all
@@ -111,7 +92,7 @@ func TestCacheConcurrentMissCoalescesDeterministic(t *testing.T) {
 	gated := newGatedStore(inner)
 	gate := make(chan struct{})
 	gated.gate = gate
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	const n = 32
 	var joined int32
@@ -169,7 +150,7 @@ func TestCacheStaleReAdmitOnSet(t *testing.T) {
 	entered := make(chan struct{})
 	gated.gate = gate
 	gated.entered = entered
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	getDone := make(chan struct{})
 	var getVal []byte
@@ -224,7 +205,7 @@ func TestCacheStaleReAdmitOnDelete(t *testing.T) {
 	entered := make(chan struct{})
 	gated.gate = gate
 	gated.entered = entered
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	getDone := make(chan struct{})
 	var getVal []byte
@@ -270,7 +251,7 @@ func TestCacheLeaderCancelWaiterSucceeds(t *testing.T) {
 	entered := make(chan struct{})
 	gated.gate = gate
 	gated.entered = entered
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	leaderCtx, cancel := context.WithCancel(ctx)
 	leaderDone := make(chan struct{})
@@ -345,7 +326,7 @@ func TestCacheWaiterOwnCtxCancelReturnsImmediately(t *testing.T) {
 	entered := make(chan struct{})
 	gated.gate = gate
 	gated.entered = entered
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	leaderDone := make(chan struct{})
 	go func() {
@@ -401,7 +382,7 @@ func TestCacheGetAfterSetDoesNotJoinStaleFlight(t *testing.T) {
 	entered := make(chan struct{})
 	gated.gate = gate
 	gated.entered = entered
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	waiterJoined := make(chan struct{}, 1)
 	testHookWaiterJoined = func() { waiterJoined <- struct{}{} }
@@ -467,7 +448,7 @@ func TestCacheStaleLeaderKeepsFreshFlight(t *testing.T) {
 	entered := make(chan struct{})
 	gated.gates = []chan struct{}{gate1, gate2, nil}
 	gated.entered = entered
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	waiterJoined := make(chan struct{}, 1)
 	testHookWaiterJoined = func() { waiterJoined <- struct{}{} }
@@ -541,7 +522,7 @@ func TestCacheSetDuringFetchPublishNotStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	gated := newGatedStore(inner)
-	c := New(Config{Underlying: gated})
+	c := NewWriter(gated, Config{})
 
 	var once sync.Once
 	var setErr error

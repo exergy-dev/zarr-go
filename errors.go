@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/exergy-dev/zarr-go/codec"
+	"github.com/exergy-dev/zarr-go/store"
 )
 
 // Sentinel errors. Wrap with fmt.Errorf("...: %w", ...) at boundaries.
@@ -36,8 +37,8 @@ var (
 	ErrUnknownCodec = codec.ErrUnknownCodec
 
 	// ErrReadOnly is returned by Array.Write, CreateArray, and CreateGroup
-	// when the underlying store does not implement store.WritableStore.
-	ErrReadOnly = errors.New("zarr: store is read-only")
+	// when the store is not a store.Writer. It aliases store.ErrReadOnly.
+	ErrReadOnly = store.ErrReadOnly
 )
 
 // DecodeError is returned from chunk decode failures with enough context to

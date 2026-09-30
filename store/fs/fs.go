@@ -30,7 +30,7 @@ import (
 const tempPrefix = ".zarr-tmp-"
 
 // Store is a local-filesystem implementation of store.Store and
-// store.WritableStore. All keys are resolved relative to a fixed root.
+// store.Writer. All keys are resolved relative to a fixed root.
 type Store struct {
 	root        string
 	mmapEnabled bool
@@ -78,15 +78,15 @@ func (s *Store) resolve(key string) (string, error) {
 	// Reject "..": split on '/' so we catch it regardless of OS separator.
 	for _, seg := range strings.Split(key, "/") {
 		if seg == ".." {
-			return "", fmt.Errorf("fs: key %q contains forbidden \"..\" segment", key)
+			return "", fmt.Errorf("fs: key %q contains a \"..\" segment: %w", key, store.ErrInvalidKey)
 		}
 		if strings.HasPrefix(seg, tempPrefix) {
-			return "", fmt.Errorf("fs: key %q contains reserved segment %q (prefix %q is reserved for staging files)", key, seg, tempPrefix)
+			return "", fmt.Errorf("fs: key %q contains segment %q (prefix %q is reserved for staging files): %w", key, seg, tempPrefix, store.ErrInvalidKey)
 		}
 	}
 	rel := filepath.FromSlash(key)
 	if !filepath.IsLocal(rel) {
-		return "", fmt.Errorf("fs: key %q is not a local path beneath the store root", key)
+		return "", fmt.Errorf("fs: key %q is not a local path beneath the store root: %w", key, store.ErrInvalidKey)
 	}
 	return filepath.Join(s.root, rel), nil
 }
@@ -155,7 +155,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 }
 
 // GetSuffix returns the last n bytes of the value at key, per the
-// store.SuffixReader contract.
+// store.Store GetSuffix contract.
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -438,9 +438,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time interface assertions.
-var (
-	_ store.Store         = (*Store)(nil)
-	_ store.WritableStore = (*Store)(nil)
-	_ store.SuffixReader  = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ store.Writer = (*Store)(nil)

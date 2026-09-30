@@ -67,8 +67,7 @@ func FuzzDecodeIndex(f *testing.F) {
 }
 
 // FuzzDecodePartial feeds arbitrary shard bytes and region bounds to
-// DecodePartial, through both the suffix-read path (mem store) and the
-// whole-blob fallback (range-only fetcher). The shard blob, and so its
+// DecodePartial, served from a mem store. The shard blob, and so its
 // index, is untrusted store data; Array.Read runs DecodePartial in a
 // goroutine, so it must return an error rather than panic.
 func FuzzDecodePartial(f *testing.F) {
@@ -102,20 +101,14 @@ func FuzzDecodePartial(f *testing.F) {
 		malicious = binary.LittleEndian.AppendUint64(malicious, e)
 	}
 	for _, shard := range [][]byte{valid, malicious} {
-		for _, suffix := range []bool{true, false} {
-			f.Add(shard, int64(0), int64(dim), suffix)
-			f.Add(shard, int64(1), int64(5), suffix)
-		}
+		f.Add(shard, int64(0), int64(dim))
+		f.Add(shard, int64(1), int64(5))
 	}
 
-	f.Fuzz(func(t *testing.T, shard []byte, start, stop int64, suffix bool) {
+	f.Fuzz(func(t *testing.T, shard []byte, start, stop int64) {
 		st := mem.New()
 		if err := st.Set(context.Background(), "shard", shard); err != nil {
 			t.Fatal(err)
-		}
-		var fetcher codec.RangeFetcher = st
-		if !suffix {
-			fetcher = rangeOnly{st}
 		}
 		var out []byte
 		if 0 <= start && start <= stop && stop <= dim {
@@ -126,10 +119,6 @@ func FuzzDecodePartial(f *testing.F) {
 			Region: []codec.DimRange{{Start: start, Stop: stop, Step: 1}},
 			Out:    out, GapBytes: 4 << 20,
 		}
-		_ = c.DecodePartial(context.Background(), fetcher, &req)
+		_ = c.DecodePartial(context.Background(), st, &req)
 	})
 }
-
-// rangeOnly hides a store's GetSuffix so DecodePartial takes the whole-blob
-// fallback path.
-type rangeOnly struct{ codec.RangeFetcher }

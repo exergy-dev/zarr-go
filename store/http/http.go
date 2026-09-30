@@ -3,8 +3,8 @@
 //
 // It is intended for serving zarr datasets from static web servers, object
 // stores fronted by HTTP (S3 website endpoints, GCS public buckets, etc.), or
-// any other URL-addressable origin. Set, Delete, and SetIfNotExists are not
-// supported and return ErrReadOnly.
+// any other URL-addressable origin. *Store is not a store.Writer, so the
+// zarr write paths reject it with store.ErrReadOnly.
 //
 // Listing is not supported because HTTP has no portable directory-listing
 // protocol; consumers that require listing should rely on consolidated zarr
@@ -26,10 +26,6 @@ import (
 
 	"github.com/exergy-dev/zarr-go/store"
 )
-
-// ErrReadOnly is returned by Set and Delete because the HTTP backend does not
-// support mutation.
-var ErrReadOnly = errors.New("http store is read-only")
 
 // ErrListUnsupported is returned (via the iterator) by List because HTTP
 // listing requires consolidated metadata.
@@ -102,7 +98,7 @@ func New(cfg Config) (*Store, error) {
 func (s *Store) resolve(key string) (*url.URL, error) {
 	for _, seg := range strings.Split(key, "/") {
 		if seg == ".." {
-			return nil, fmt.Errorf("http store: key %q contains forbidden %q segment", key, "..")
+			return nil, fmt.Errorf("http store: key %q contains a \"..\" segment: %w", key, store.ErrInvalidKey)
 		}
 	}
 	return s.baseURL.JoinPath(key), nil
@@ -226,8 +222,15 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 		}
 		return body, nil
 	case http.StatusOK:
-		// Server ignored the Range header; slice manually.
-		body, err := io.ReadAll(resp.Body)
+		// Server ignored the Range header; slice manually. Only the first
+		// off+n bytes matter, so read no further (an endless body must not
+		// grow memory without limit). The overflow guard above keeps
+		// off+n-1 representable; off+n itself can still wrap.
+		limit := off + n
+		if limit < 0 {
+			limit = math.MaxInt64
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 		if err != nil {
 			return nil, fmt.Errorf("http store: GET %s (range fallback): read body: %w", u.Redacted(), err)
 		}
@@ -247,7 +250,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	}
 }
 
-// GetSuffix implements store.SuffixReader using an HTTP suffix range
+// GetSuffix implements store.Store using an HTTP suffix range
 // request (Range: bytes=-N). Falls back to a whole-body fetch and manual
 // slice if the server returns 200 (ignoring Range) or 416 (rejecting a
 // suffix longer than the resource).
@@ -278,6 +281,13 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), err)
 	}
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		// n is at or past the resource's size; the contract calls for the
+		// whole value in that case. Release this response first, so the
+		// follow-up GET can reuse its keep-alive connection.
+		drainAndClose(resp.Body)
+		return s.Get(ctx, key)
+	}
 	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
@@ -302,10 +312,6 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 		return body[start:], nil
 	case http.StatusNotFound:
 		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), store.ErrKeyNotFound)
-	case http.StatusRequestedRangeNotSatisfiable:
-		// n is at or past the resource's size; the contract calls for the
-		// whole value in that case.
-		return s.Get(ctx, key)
 	default:
 		return nil, fmt.Errorf("http store: GET %s (suffix range): unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
@@ -329,21 +335,6 @@ func parseContentRangeStart(h string) (start int64, ok bool) {
 		return 0, false
 	}
 	return start, true
-}
-
-// Set is unsupported and always returns ErrReadOnly.
-func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	return ErrReadOnly
-}
-
-// Delete is unsupported and always returns ErrReadOnly.
-func (s *Store) Delete(ctx context.Context, key string) error {
-	return ErrReadOnly
-}
-
-// SetIfNotExists is unsupported and always returns (false, ErrReadOnly).
-func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	return false, ErrReadOnly
 }
 
 // Exists implements store.Store using HEAD.
@@ -380,8 +371,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time interface assertions.
-var (
-	_ store.Store        = (*Store)(nil)
-	_ store.SuffixReader = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ store.Store = (*Store)(nil)

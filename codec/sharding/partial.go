@@ -4,7 +4,8 @@
 // outer shard (in chunk-local coordinates) and a RangeFetcher pointing at the
 // shard blob, it:
 //
-//  1. Range-fetches the index trailer (small, few KB).
+//  1. Fetches the index (small, few KB): GetSuffix for a trailing index,
+//     GetRange for a leading one.
 //  2. Decodes the index to recover (offset, length) for every inner chunk.
 //  3. Identifies the inner chunks intersecting the requested region.
 //  4. Coalesces their byte ranges (see coalesceRanges)
@@ -33,9 +34,6 @@ import (
 // decoding so any region overlapping an absent inner chunk reads back as
 // fill.
 func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, req *codec.PartialReadRequest) error {
-	if c.inner == nil || c.index == nil {
-		return fmt.Errorf("sharding_indexed: codec not configured")
-	}
 	if c.indexLocation != indexEnd && c.indexLocation != indexStart {
 		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.indexLocation)
 	}
@@ -98,38 +96,23 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	}
 
 	var indexBytes []byte
-	shardLen := int64(-1) // known only when the whole shard was fetched
 	if c.indexLocation == indexEnd {
-		if sf, ok := fetcher.(codec.SuffixRangeFetcher); ok {
-			indexBytes, err = sf.GetSuffix(ctx, key, idxLen)
-			if err != nil {
-				return fmt.Errorf("sharding_indexed: fetch index trailer: %w", err)
-			}
-			if int64(len(indexBytes)) != idxLen {
-				return fmt.Errorf("sharding_indexed: index trailer short: got %d want %d", len(indexBytes), idxLen)
-			}
-		} else {
-			whole, err := fetcher.GetRange(ctx, key, 0, maxRangeBytes)
-			if err != nil {
-				return fmt.Errorf("sharding_indexed: fetch shard: %w", err)
-			}
-			shardLen = int64(len(whole))
-			if shardLen < idxLen {
-				return fmt.Errorf("sharding_indexed: shard too short: %d < %d", shardLen, idxLen)
-			}
-			indexBytes = whole[shardLen-idxLen:]
-			fetcher = &slicedFetcher{key: key, base: whole}
+		indexBytes, err = fetcher.GetSuffix(ctx, key, idxLen)
+		if err != nil {
+			return fmt.Errorf("sharding_indexed: fetch index trailer: %w", err)
+		}
+		if int64(len(indexBytes)) != idxLen {
+			return fmt.Errorf("sharding_indexed: index trailer short: got %d want %d", len(indexBytes), idxLen)
 		}
 	} else { // indexStart
 		// The index sits at offset 0; one positional range read is enough.
-		head, err := fetcher.GetRange(ctx, key, 0, idxLen)
+		indexBytes, err = fetcher.GetRange(ctx, key, 0, idxLen)
 		if err != nil {
 			return fmt.Errorf("sharding_indexed: fetch index header: %w", err)
 		}
-		if int64(len(head)) != idxLen {
-			return fmt.Errorf("sharding_indexed: index header short: got %d want %d", len(head), idxLen)
+		if int64(len(indexBytes)) != idxLen {
+			return fmt.Errorf("sharding_indexed: index header short: got %d want %d", len(indexBytes), idxLen)
 		}
-		indexBytes = head
 	}
 
 	entries, err := c.decodeIndex(indexBytes, n)
@@ -176,16 +159,13 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 				// that don't fit in an int64 before ever casting them (a
 				// silent uint64->int64 wrap could otherwise produce a
 				// negative offset/length downstream), and ranges whose end
-				// overflows int64 or runs past a known shard length.
+				// overflows int64. A range past the end of the shard is
+				// caught as a short read below.
 				if off == emptyMarker || ln == emptyMarker {
 					return fmt.Errorf("sharding_indexed: index entry %d half-empty (off=%d len=%d)", i, off, ln)
 				}
 				if off > math.MaxInt64 || ln > math.MaxInt64 || off > math.MaxInt64-ln {
 					return fmt.Errorf("sharding_indexed: index entry %d out of range (off=%d len=%d)", i, off, ln)
-				}
-				if shardLen >= 0 && off+ln > uint64(shardLen) {
-					return fmt.Errorf("sharding_indexed: index entry %d out of bounds (off=%d len=%d shard=%d)",
-						i, off, ln, shardLen)
 				}
 				innerShape := innerShapeAt(coord, c.chunkShape, fullShape)
 				lr := make([]innerRange, rank)
@@ -271,32 +251,6 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		)
 	}
 	return nil
-}
-
-// maxRangeBytes is used as the "fetch everything available" sentinel for
-// fallback range reads when the fetcher doesn't expose a suffix API. All
-// in-tree store backends clamp n to the remaining blob length.
-const maxRangeBytes int64 = 1 << 62
-
-// slicedFetcher serves range reads against an already-fetched whole blob.
-// It's used as a fallback when we had to fetch the whole shard to find the
-// trailer — subsequent inner reads are then satisfied from memory rather
-// than re-issued to the network.
-type slicedFetcher struct {
-	key  string
-	base []byte
-}
-
-func (s *slicedFetcher) GetRange(_ context.Context, key string, off, n int64) ([]byte, error) {
-	if key != s.key {
-		return nil, fmt.Errorf("sharding_indexed: unexpected key %q (want %q)", key, s.key)
-	}
-	if off < 0 || n < 0 || off > int64(len(s.base)) {
-		return nil, fmt.Errorf("sharding_indexed: invalid range (off=%d n=%d len=%d)", off, n, len(s.base))
-	}
-	// Clamp n to the bytes left rather than computing off+n, which can
-	// overflow int64.
-	return s.base[off : off+min(n, int64(len(s.base))-off)], nil
 }
 
 // innerRange describes the inner-chunk-local sub-range we want to extract from

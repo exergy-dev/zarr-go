@@ -16,10 +16,8 @@ import (
 	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
-// countingFetcher serves range and suffix reads from an in-memory blob and
-// counts the number of calls. It implements both codec.RangeFetcher and
-// codec.SuffixRangeFetcher so the codec exercises the suffix-range path
-// (the dominant cloud codepath).
+// countingFetcher is a codec.RangeFetcher serving range and suffix reads
+// from an in-memory blob, counting the calls of each kind.
 type countingFetcher struct {
 	key  string
 	blob []byte
@@ -156,92 +154,6 @@ func TestDecodePartialFetchCount(t *testing.T) {
 	}
 }
 
-// TestDecodePartialFallback verifies that when the fetcher does NOT implement
-// SuffixRangeFetcher, DecodePartial still produces correct results (via the
-// whole-blob fetch fallback) and uses exactly one GetRange call.
-func TestDecodePartialFallback(t *testing.T) {
-	c := newCodec(t, cfgPartial)
-	pd, ok := c.(codec.PartialDecoder)
-	if !ok {
-		t.Fatalf("sharding_indexed does not implement PartialDecoder")
-	}
-
-	const dim = 8
-	vals := make([]int32, dim*dim)
-	for i := range vals {
-		vals[i] = int32(i + 1)
-	}
-	in := codec.ArrayChunk{
-		Shape: []int64{dim, dim},
-		Dtype: "int32",
-		Data:  int32Bytes(vals),
-	}
-	encoded, err := c.EncodeAB(in)
-	if err != nil {
-		t.Fatalf("EncodeAB: %v", err)
-	}
-
-	region := []codec.DimRange{
-		{Start: 2, Stop: 6, Step: 1},
-		{Start: 2, Stop: 6, Step: 1},
-	}
-	regionBytes := 4 * 4 * 4
-	out := make([]byte, regionBytes)
-	f := &rangeOnlyFetcher{key: "shard", blob: encoded}
-	req := codec.PartialReadRequest{
-		Key: "shard", FullShape: []int64{dim, dim}, Dtype: "int32",
-		Region: region, Out: out, GapBytes: 4 << 20,
-	}
-	if err := pd.DecodePartial(context.Background(), f, &req); err != nil {
-		t.Fatalf("DecodePartial: %v", err)
-	}
-
-	ref := codec.ArrayChunk{Shape: []int64{dim, dim}, Dtype: "int32"}
-	if err := c.DecodeAB(encoded, &ref); err != nil {
-		t.Fatalf("reference DecodeAB: %v", err)
-	}
-	want := make([]byte, regionBytes)
-	for r := int64(0); r < 4; r++ {
-		srcRow := (2+r)*dim + 2
-		dstRow := r * 4
-		copy(
-			want[dstRow*4:dstRow*4+4*4],
-			ref.Data[srcRow*4:srcRow*4+4*4],
-		)
-	}
-	if !bytes.Equal(out, want) {
-		t.Fatalf("partial decode mismatch (fallback path)")
-	}
-	if got := atomic.LoadInt64(&f.gets); got != 1 {
-		t.Errorf("fallback path expected exactly 1 GetRange (whole-blob fetch), got %d", got)
-	}
-}
-
-// rangeOnlyFetcher implements codec.RangeFetcher but NOT
-// codec.SuffixRangeFetcher, exercising the whole-blob fallback path.
-type rangeOnlyFetcher struct {
-	key  string
-	blob []byte
-	gets int64
-}
-
-func (f *rangeOnlyFetcher) GetRange(_ context.Context, key string, off, n int64) ([]byte, error) {
-	atomic.AddInt64(&f.gets, 1)
-	if key != f.key {
-		return nil, errKey(key)
-	}
-	if off < 0 || off > int64(len(f.blob)) {
-		return nil, errBounds(off)
-	}
-	end := off + n
-	if end > int64(len(f.blob)) {
-		end = int64(len(f.blob))
-	}
-	out := make([]byte, end-off)
-	copy(out, f.blob[off:end])
-	return out, nil
-}
-
 // TestDecodePartialEdgeCases exercises corner cases of the partial decoder
 // (region equal to the full chunk, region of zero size, and a region that
 // includes a fill (sentinel) inner chunk).
@@ -315,8 +227,7 @@ func rawShard(data []byte, entries ...uint64) []byte {
 }
 
 // TestDecodePartialRejectsBadIndexEntries feeds hostile (offset, length)
-// index entries through both fetch paths (suffix read via the mem store,
-// and the whole-blob fallback). Each must produce an error, never a panic:
+// index entries through a mem store. Each must produce an error, never a panic:
 // Array.Read runs DecodePartial in a goroutine, so a panic here takes down
 // the process.
 func TestDecodePartialRejectsBadIndexEntries(t *testing.T) {
@@ -335,32 +246,21 @@ func TestDecodePartialRejectsBadIndexEntries(t *testing.T) {
 		{"past-end", []uint64{0, 2, 30, 10}},
 	}
 	for _, tc := range cases {
-		shard := rawShard(data, tc.entries...)
-		st := mem.New()
-		if err := st.Set(context.Background(), "shard", shard); err != nil {
-			t.Fatal(err)
-		}
-		fetchers := []struct {
-			name string
-			f    codec.RangeFetcher
-		}{
-			{"suffix", st},
-			{"fallback", &rangeOnlyFetcher{key: "shard", blob: shard}},
-		}
-		for _, fc := range fetchers {
-			f := fc.f
-			t.Run(tc.name+"/"+fc.name, func(t *testing.T) {
-				pd := newCodec(t, cfgRawIndex).(codec.PartialDecoder)
-				req := codec.PartialReadRequest{
-					Key: "shard", FullShape: []int64{4}, Dtype: "uint8",
-					Region: []codec.DimRange{{Start: 0, Stop: 3, Step: 1}},
-					Out:    make([]byte, 3), GapBytes: 4 << 20,
-				}
-				if err := pd.DecodePartial(context.Background(), f, &req); err == nil {
-					t.Fatalf("DecodePartial accepted index %v", tc.entries)
-				}
-			})
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			st := mem.New()
+			if err := st.Set(context.Background(), "shard", rawShard(data, tc.entries...)); err != nil {
+				t.Fatal(err)
+			}
+			pd := newCodec(t, cfgRawIndex).(codec.PartialDecoder)
+			req := codec.PartialReadRequest{
+				Key: "shard", FullShape: []int64{4}, Dtype: "uint8",
+				Region: []codec.DimRange{{Start: 0, Stop: 3, Step: 1}},
+				Out:    make([]byte, 3), GapBytes: 4 << 20,
+			}
+			if err := pd.DecodePartial(context.Background(), st, &req); err == nil {
+				t.Fatalf("DecodePartial accepted index %v", tc.entries)
+			}
+		})
 	}
 }
 
@@ -404,9 +304,5 @@ func TestDecodePartialRejectsWrongInnerSize(t *testing.T) {
 	}
 }
 
-// Compile-time interface assertions.
-var (
-	_ codec.RangeFetcher       = (*countingFetcher)(nil)
-	_ codec.SuffixRangeFetcher = (*countingFetcher)(nil)
-	_ codec.RangeFetcher       = (*rangeOnlyFetcher)(nil)
-)
+// Compile-time interface assertion.
+var _ codec.RangeFetcher = (*countingFetcher)(nil)

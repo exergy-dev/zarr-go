@@ -75,12 +75,9 @@ func TestNew_RequiresAccountKey(t *testing.T) {
 	}
 }
 
-// TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
-// blob size, including when off+n-1 overflows int64 (n = MaxInt64). The SDK
-// formats x-ms-range as "bytes=Offset-(Offset+Count-1)" itself, so an
-// unclamped Count overflows inside the SDK.
-func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
-	url, ranges := cloudstoretest.RangeServer(t, "x-ms-range", []byte("0123456789"))
+// fakeStore returns a Store for container "c" on a cloudstoretest.Server.
+func fakeStore(t *testing.T, url string) *Store {
+	t.Helper()
 	s, err := New(context.Background(), Config{
 		AccountName: "acct",
 		AccountKey:  base64.StdEncoding.EncodeToString([]byte("key")),
@@ -90,14 +87,65 @@ func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	return s
+}
+
+// TestFakeConformance runs the read side of the store contract (Basics,
+// GetRange, GetSuffix) against the credential-free fake.
+func TestFakeConformance(t *testing.T) {
+	srv := cloudstoretest.NewServer(t, "x-ms-range")
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		return fakeStore(t, srv.URL)
+	}, storetest.Options{
+		ReadOnly: true,
+		NoList:   true,
+		Seed:     func(_ *testing.T, _ store.Store, key string, value []byte) { srv.Put(key, value) },
+	})
+}
+
+// TestGetSuffixRequests: Azure has no suffix range, so GetSuffix reads the
+// size with GetProperties (a HEAD) and then downloads the closed range
+// covering the last n bytes, clamped to the blob.
+func TestGetSuffixRequests(t *testing.T) {
+	cases := []struct {
+		n      int64
+		want   string
+		ranges []string // x-ms-range per request; "" for the HEAD
+	}{
+		{0, "", []string{""}},
+		{4, "6789", []string{"", "bytes=6-9"}},
+		{10, "0123456789", []string{"", "bytes=0-9"}},
+		{math.MaxInt64, "0123456789", []string{"", "bytes=0-9"}},
+	}
+	for _, tc := range cases {
+		srv := cloudstoretest.NewServer(t, "x-ms-range")
+		srv.Put("k", []byte("0123456789"))
+		got, err := fakeStore(t, srv.URL).GetSuffix(context.Background(), "k", tc.n)
+		if err != nil || string(got) != tc.want {
+			t.Errorf("GetSuffix(%d) = %q, %v, want %q", tc.n, got, err, tc.want)
+		}
+		if r := srv.Ranges(); !slices.Equal(r, tc.ranges) {
+			t.Errorf("GetSuffix(%d) sent x-ms-range %q, want %q", tc.n, r, tc.ranges)
+		}
+	}
+}
+
+// TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
+// blob size, including when off+n-1 overflows int64 (n = MaxInt64). The SDK
+// formats x-ms-range as "bytes=Offset-(Offset+Count-1)" itself, so an
+// unclamped Count overflows inside the SDK.
+func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
+	srv := cloudstoretest.NewServer(t, "x-ms-range")
+	srv.Put("k", []byte("0123456789"))
+	s := fakeStore(t, srv.URL)
 	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
 	if err != nil {
-		t.Fatalf("GetRange(5, MaxInt64): %v (x-ms-range headers sent: %q)", err, ranges())
+		t.Fatalf("GetRange(5, MaxInt64): %v (x-ms-range headers sent: %q)", err, srv.Ranges())
 	}
 	if string(got) != "56789" {
 		t.Fatalf("GetRange(5, MaxInt64) = %q, want %q", got, "56789")
 	}
-	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
+	if r, want := srv.Ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
 		t.Fatalf("range headers sent = %q, want [%q]", r, want)
 	}
 }

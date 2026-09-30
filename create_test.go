@@ -173,45 +173,6 @@ func TestWithChunkKeySeparatorOverridesV2Default(t *testing.T) {
 	}
 }
 
-// TestCreateArrayReadOnlyStore checks CreateArray and CreateGroup both
-// return the exported, errors.Is-matchable ErrReadOnly sentinel against a
-// store that doesn't implement store.WritableStore.
-func TestCreateArrayReadOnlyStore(t *testing.T) {
-	ctx := context.Background()
-	ro := readOnlyStore{mem.New()}
-	if _, err := zarr.CreateArray[int32](ctx, ro, "arr", []int64{4}, []int64{2}); !errors.Is(err, zarr.ErrReadOnly) {
-		t.Fatalf("CreateArray: got %v, want ErrReadOnly", err)
-	}
-	if _, err := zarr.CreateGroup(ctx, ro, "g"); !errors.Is(err, zarr.ErrReadOnly) {
-		t.Fatalf("CreateGroup: got %v, want ErrReadOnly", err)
-	}
-}
-
-// TestArrayWriteReadOnlyStore checks Array.Write returns the exported
-// ErrReadOnly sentinel (not an unexported/ad-hoc error) against a
-// read-only store.
-func TestArrayWriteReadOnlyStore(t *testing.T) {
-	ctx := context.Background()
-	s := mem.New()
-	if _, err := zarr.CreateArray[int32](ctx, s, "arr", []int64{4}, []int64{2}); err != nil {
-		t.Fatalf("CreateArray: %v", err)
-	}
-	ro, err := zarr.OpenArray[int32](ctx, readOnlyStore{s}, "arr")
-	if err != nil {
-		t.Fatalf("OpenArray via read-only store: %v", err)
-	}
-	err = ro.Write(ctx, zarr.All([]int64{4}), []int32{1, 2, 3, 4})
-	if !errors.Is(err, zarr.ErrReadOnly) {
-		t.Fatalf("Write: got %v, want ErrReadOnly", err)
-	}
-}
-
-// readOnlyStore wraps a store.Store but deliberately does NOT implement
-// store.WritableStore, so type-asserting for it fails as intended.
-type readOnlyStore struct {
-	store.Store
-}
-
 // TestGroupAttrsDoesNotAliasCaller checks that CreateGroup's WithAttributes
 // map and Group.Attrs()'s return value don't let a caller mutate the
 // group's in-memory metadata (which would silently diverge from the

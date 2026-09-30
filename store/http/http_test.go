@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -45,8 +46,7 @@ func newFileServerStore(t *testing.T) store.Store {
 
 func TestIntegration_Conformance(t *testing.T) {
 	storetest.RunConformance(t, newFileServerStore, storetest.Options{
-		ReadOnly: true,
-		NoList:   true, // the http store has no listing protocol (ErrListUnsupported)
+		NoList: true, // the http store has no listing protocol (ErrListUnsupported)
 		Seed: func(t *testing.T, s store.Store, key string, value []byte) {
 			t.Helper()
 			fs := s.(fileServerStore)
@@ -209,6 +209,11 @@ func TestGetRangeFallbackWhenServerIgnoresRange(t *testing.T) {
 	if string(got) != "CDEFG" {
 		t.Fatalf("GetRange fallback returned %q want %q", got, "CDEFG")
 	}
+	// off+n overflows int64: the read bound must not wrap negative.
+	got, err = s.GetRange(context.Background(), "x", 5, math.MaxInt64)
+	if err != nil || string(got) != "FGHIJ" {
+		t.Fatalf("GetRange(5, MaxInt64) fallback = %q, %v, want %q", got, err, "FGHIJ")
+	}
 }
 
 func TestExists(t *testing.T) {
@@ -225,19 +230,14 @@ func TestExists(t *testing.T) {
 	}
 }
 
-func TestSetAndDeleteReturnReadOnly(t *testing.T) {
+// TestNotAWriter: the http store is read-only, so it must not satisfy
+// store.Writer — that type check is how the zarr write paths detect a
+// read-only store and return ErrReadOnly.
+func TestNotAWriter(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestStore(t, nil, nil, [2]string{})
-
-	if err := s.Set(context.Background(), "k", []byte("v")); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("Set: expected ErrReadOnly, got %v", err)
-	}
-	if err := s.Delete(context.Background(), "k"); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("Delete: expected ErrReadOnly, got %v", err)
-	}
-	ok, err := s.SetIfNotExists(context.Background(), "k", []byte("v"))
-	if ok || !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("SetIfNotExists: expected (false, ErrReadOnly), got (%v, %v)", ok, err)
+	if _, ok := any(s).(store.Writer); ok {
+		t.Fatal("*http.Store implements store.Writer; want read-only")
 	}
 }
 
@@ -265,14 +265,17 @@ func TestRejectsDotDotKey(t *testing.T) {
 	s, _ := newTestStore(t, nil, nil, [2]string{})
 
 	for _, key := range []string{"..", "../etc/passwd", "a/../b", "foo/.."} {
-		if _, err := s.Get(context.Background(), key); err == nil {
-			t.Fatalf("Get(%q): expected error for .. segment", key)
+		if _, err := s.Get(context.Background(), key); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("Get(%q) = %v, want ErrInvalidKey", key, err)
 		}
-		if _, err := s.GetRange(context.Background(), key, 0, 4); err == nil {
-			t.Fatalf("GetRange(%q): expected error for .. segment", key)
+		if _, err := s.GetRange(context.Background(), key, 0, 4); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("GetRange(%q) = %v, want ErrInvalidKey", key, err)
 		}
-		if _, err := s.Exists(context.Background(), key); err == nil {
-			t.Fatalf("Exists(%q): expected error for .. segment", key)
+		if _, err := s.GetSuffix(context.Background(), key, 4); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("GetSuffix(%q) = %v, want ErrInvalidKey", key, err)
+		}
+		if _, err := s.Exists(context.Background(), key); !errors.Is(err, store.ErrInvalidKey) {
+			t.Fatalf("Exists(%q) = %v, want ErrInvalidKey", key, err)
 		}
 	}
 }
@@ -412,6 +415,71 @@ func TestGetSuffixBoundsPartialContentBody(t *testing.T) {
 	}
 	if len(got) != 16 {
 		t.Fatalf("GetSuffix len = %d, want 16", len(got))
+	}
+}
+
+// TestGetRangeBoundsIgnoredRangeBody: a server that ignores Range and
+// answers 200 with an endless body must not make GetRange read forever;
+// only the first off+n bytes can matter.
+func TestGetRangeBoundsIgnoredRangeBody(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := []byte("0123456789abcdef")
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	s, err := New(Config{BaseURL: srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := s.GetRange(ctx, "k", 4, 8)
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	if string(got) != "456789ab" {
+		t.Fatalf("GetRange = %q, want %q", got, "456789ab")
+	}
+}
+
+// TestGetSuffix416ReleasesConnection: when a server rejects the suffix
+// range with 416, GetSuffix falls back to a whole-value GET. It must
+// release the 416 response first so that GET reuses the keep-alive
+// connection instead of dialing a second one.
+func TestGetSuffix416ReleasesConnection(t *testing.T) {
+	t.Parallel()
+	var newConns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			http.Error(w, "suffix longer than the resource", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		_, _ = w.Write([]byte("abc"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	s, err := New(Config{BaseURL: srv.URL + "/", Client: srv.Client()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := s.GetSuffix(context.Background(), "k", 10)
+	if err != nil || string(got) != "abc" {
+		t.Fatalf("GetSuffix = %q, %v, want %q", got, err, "abc")
+	}
+	if n := newConns.Load(); n != 1 {
+		t.Fatalf("server saw %d new connections, want 1 (416 response released before the fallback GET)", n)
 	}
 }
 

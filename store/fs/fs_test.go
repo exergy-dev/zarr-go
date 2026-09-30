@@ -299,8 +299,8 @@ func TestListFiltersStagingFiles(t *testing.T) {
 func TestResolveRejectsReservedTempSegment(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
-	if err := s.Set(ctx, tempPrefix+"whatever", []byte("x")); err == nil {
-		t.Fatal("expected error for a key using the reserved temp-file prefix")
+	if err := s.Set(ctx, tempPrefix+"whatever", []byte("x")); !errors.Is(err, store.ErrInvalidKey) {
+		t.Fatalf("Set(reserved) = %v, want ErrInvalidKey", err)
 	}
 }
 
@@ -407,14 +407,14 @@ func TestRejectDotDotInKey(t *testing.T) {
 	s := newStore(t)
 
 	for _, k := range []string{"../escape", "a/../b", "..", "a/b/.."} {
-		if err := s.Set(ctx, k, []byte("x")); err == nil {
-			t.Errorf("Set %q: expected error, got nil", k)
+		if err := s.Set(ctx, k, []byte("x")); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Set %q: got %v, want ErrInvalidKey", k, err)
 		}
-		if _, err := s.Get(ctx, k); err == nil {
-			t.Errorf("Get %q: expected error, got nil", k)
+		if _, err := s.Get(ctx, k); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Get %q: got %v, want ErrInvalidKey", k, err)
 		}
-		if _, err := s.Exists(ctx, k); err == nil {
-			t.Errorf("Exists %q: expected error, got nil", k)
+		if _, err := s.Exists(ctx, k); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Exists %q: got %v, want ErrInvalidKey", k, err)
 		}
 	}
 }
@@ -440,20 +440,26 @@ func TestResolveRejectsEscapingKeys(t *testing.T) {
 		keys = append(keys, `..\x`, `a\..\..\x`, `C:x`, `C:\x`, `\x`)
 	}
 	for _, k := range keys {
-		if err := s.Set(ctx, k, []byte("x")); err == nil {
-			t.Errorf("Set %q: expected error, got nil", k)
+		if err := s.Set(ctx, k, []byte("x")); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Set %q: got %v, want ErrInvalidKey", k, err)
 		}
-		if ok, err := s.SetIfNotExists(ctx, k, []byte("x")); err == nil {
-			t.Errorf("SetIfNotExists %q: ok=%v, expected error", k, ok)
+		if ok, err := s.SetIfNotExists(ctx, k, []byte("x")); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("SetIfNotExists %q: ok=%v err=%v, want ErrInvalidKey", k, ok, err)
 		}
-		if _, err := s.Get(ctx, k); err == nil {
-			t.Errorf("Get %q: expected error, got nil", k)
+		if _, err := s.Get(ctx, k); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Get %q: got %v, want ErrInvalidKey", k, err)
 		}
-		if _, err := s.Exists(ctx, k); err == nil {
-			t.Errorf("Exists %q: expected error, got nil", k)
+		if _, err := s.GetRange(ctx, k, 0, 1); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("GetRange %q: got %v, want ErrInvalidKey", k, err)
 		}
-		if err := s.Delete(ctx, k); err == nil {
-			t.Errorf("Delete %q: expected error, got nil", k)
+		if _, err := s.GetSuffix(ctx, k, 1); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("GetSuffix %q: got %v, want ErrInvalidKey", k, err)
+		}
+		if _, err := s.Exists(ctx, k); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Exists %q: got %v, want ErrInvalidKey", k, err)
+		}
+		if err := s.Delete(ctx, k); !errors.Is(err, store.ErrInvalidKey) {
+			t.Errorf("Delete %q: got %v, want ErrInvalidKey", k, err)
 		}
 	}
 	entries, err := os.ReadDir(parent)

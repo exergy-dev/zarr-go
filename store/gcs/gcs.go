@@ -153,7 +153,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
-// GetSuffix implements store.SuffixReader. GCS's NewRangeReader overloads a
+// GetSuffix implements store.Store. GCS's NewRangeReader overloads a
 // negative offset to mean "read the last abs(offset) bytes" (with length
 // forced to -1), which is exactly GetSuffix's semantics for n > 0 — but that
 // trick can't express n==0 (there's no negative zero), so that case is
@@ -190,7 +190,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	return b, nil
 }
 
-// Set implements store.Store.
+// Set implements store.Writer.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
 	if err != nil {
@@ -207,7 +207,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	return nil
 }
 
-// SetIfNotExists implements store.WritableStore. It uses an
+// SetIfNotExists implements store.Writer. It uses an
 // "x-goog-if-generation-match: 0" precondition (DoesNotExist) so concurrent
 // writers can race safely; the loser receives a 412 and we return (false, nil).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
@@ -233,7 +233,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 	return true, nil
 }
 
-// Delete implements store.Store. Missing keys are not an error.
+// Delete implements store.Writer. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
 	if err != nil {
@@ -296,9 +296,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 	}
 }
 
-// Compile-time checks that *Store satisfies the store interfaces.
-var (
-	_ zstore.Store         = (*Store)(nil)
-	_ zstore.WritableStore = (*Store)(nil)
-	_ zstore.SuffixReader  = (*Store)(nil)
-)
+// Compile-time interface assertion.
+var _ zstore.Writer = (*Store)(nil)

@@ -10,6 +10,7 @@ import (
 	"github.com/exergy-dev/zarr-go/codec"
 	_ "github.com/exergy-dev/zarr-go/codec/bytes"
 	_ "github.com/exergy-dev/zarr-go/codec/crc32c"
+	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
 // TestEncodeDecodeFillNonZero confirms that an inner chunk whose elements
@@ -196,10 +197,12 @@ func TestDecodePartialRespectsFill(t *testing.T) {
 		t.Fatalf("EncodeAB: %v", err)
 	}
 
-	// Use slicedFetcher (already in-package) to serve range reads from the
-	// encoded blob in memory. partial decode the FULL outer region and
-	// confirm fill bytes appear where we expect.
-	f := &slicedFetcher{key: "shard", base: encoded}
+	// Serve the encoded blob from a mem store, partial decode the FULL outer
+	// region and confirm fill bytes appear where we expect.
+	f := mem.New()
+	if err := f.Set(context.Background(), "shard", encoded); err != nil {
+		t.Fatal(err)
+	}
 	region := []codec.DimRange{{Start: 0, Stop: 4, Step: 1}, {Start: 0, Stop: 4, Step: 1}}
 	out := make([]byte, 4*4*elem)
 	req := codec.PartialReadRequest{
