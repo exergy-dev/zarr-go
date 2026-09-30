@@ -448,6 +448,41 @@ func TestGetRangeBoundsIgnoredRangeBody(t *testing.T) {
 	}
 }
 
+// TestGetSuffix416ReleasesConnection: when a server rejects the suffix
+// range with 416, GetSuffix falls back to a whole-value GET. It must
+// release the 416 response first so that GET reuses the keep-alive
+// connection instead of dialing a second one.
+func TestGetSuffix416ReleasesConnection(t *testing.T) {
+	t.Parallel()
+	var newConns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			http.Error(w, "suffix longer than the resource", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		_, _ = w.Write([]byte("abc"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	s, err := New(Config{BaseURL: srv.URL + "/", Client: srv.Client()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := s.GetSuffix(context.Background(), "k", 10)
+	if err != nil || string(got) != "abc" {
+		t.Fatalf("GetSuffix = %q, %v, want %q", got, err, "abc")
+	}
+	if n := newConns.Load(); n != 1 {
+		t.Fatalf("server saw %d new connections, want 1 (416 response released before the fallback GET)", n)
+	}
+}
+
 func TestErrorsRedactBaseURLPassword(t *testing.T) {
 	t.Parallel()
 	const password = "s3cret-pw"

@@ -281,6 +281,13 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), err)
 	}
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		// n is at or past the resource's size; the contract calls for the
+		// whole value in that case. Release this response first, so the
+		// follow-up GET can reuse its keep-alive connection.
+		drainAndClose(resp.Body)
+		return s.Get(ctx, key)
+	}
 	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
@@ -305,10 +312,6 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 		return body[start:], nil
 	case http.StatusNotFound:
 		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), store.ErrKeyNotFound)
-	case http.StatusRequestedRangeNotSatisfiable:
-		// n is at or past the resource's size; the contract calls for the
-		// whole value in that case.
-		return s.Get(ctx, key)
 	default:
 		return nil, fmt.Errorf("http store: GET %s (suffix range): unexpected status %d", u.Redacted(), resp.StatusCode)
 	}
