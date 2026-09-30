@@ -211,6 +211,56 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
+// GetSuffix implements the store.SuffixReader contract. Azure has no suffix
+// range ("bytes=-N"), so it reads the blob's size and ETag with
+// GetProperties, then downloads the closed range holding the last n bytes,
+// conditional on that ETag: a blob replaced in between fails the download
+// instead of returning bytes from the wrong offset.
+func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
+	if err := cloudstore.ValidateRange("azblob", "GetSuffix", 0, n); err != nil {
+		return nil, err
+	}
+	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
+	bbClient := s.client.ServiceClient().NewContainerClient(s.container).NewBlockBlobClient(k)
+	props, err := bbClient.GetProperties(ctx, nil)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, notFoundErr(key)
+		}
+		return nil, fmt.Errorf("azblob: GetProperties %q: %w", k, err)
+	}
+	var size int64
+	if props.ContentLength != nil {
+		size = *props.ContentLength
+	}
+	n = min(n, size)
+	if n == 0 {
+		// Nothing to read, and a zero Count would mean "to the end".
+		return []byte{}, nil
+	}
+	resp, err := s.client.DownloadStream(ctx, s.container, k, &azblob.DownloadStreamOptions{
+		Range: blob.HTTPRange{Offset: size - n, Count: n},
+		AccessConditions: &blob.AccessConditions{
+			ModifiedAccessConditions: &blob.ModifiedAccessConditions{IfMatch: props.ETag},
+		},
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, notFoundErr(key)
+		}
+		return nil, fmt.Errorf("azblob: DownloadStream %q last %d bytes: %w", k, n, err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("azblob: read body %q: %w", k, err)
+	}
+	return b, nil
+}
+
 // Set implements store.Writer.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
@@ -317,5 +367,6 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 
 // Compile-time checks that *Store satisfies the store interfaces.
 var (
-	_ zstore.Writer = (*Store)(nil)
+	_ zstore.Writer       = (*Store)(nil)
+	_ zstore.SuffixReader = (*Store)(nil)
 )

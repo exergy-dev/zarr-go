@@ -103,6 +103,33 @@ func TestFakeConformance(t *testing.T) {
 	})
 }
 
+// TestGetSuffixRequests: Azure has no suffix range, so GetSuffix reads the
+// size with GetProperties (a HEAD) and then downloads the closed range
+// covering the last n bytes, clamped to the blob.
+func TestGetSuffixRequests(t *testing.T) {
+	cases := []struct {
+		n      int64
+		want   string
+		ranges []string // x-ms-range per request; "" for the HEAD
+	}{
+		{0, "", []string{""}},
+		{4, "6789", []string{"", "bytes=6-9"}},
+		{10, "0123456789", []string{"", "bytes=0-9"}},
+		{math.MaxInt64, "0123456789", []string{"", "bytes=0-9"}},
+	}
+	for _, tc := range cases {
+		srv := cloudstoretest.NewServer(t, "x-ms-range")
+		srv.Put("k", []byte("0123456789"))
+		got, err := fakeStore(t, srv.URL).GetSuffix(context.Background(), "k", tc.n)
+		if err != nil || string(got) != tc.want {
+			t.Errorf("GetSuffix(%d) = %q, %v, want %q", tc.n, got, err, tc.want)
+		}
+		if r := srv.Ranges(); !slices.Equal(r, tc.ranges) {
+			t.Errorf("GetSuffix(%d) sent x-ms-range %q, want %q", tc.n, r, tc.ranges)
+		}
+	}
+}
+
 // TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
 // blob size, including when off+n-1 overflows int64 (n = MaxInt64). The SDK
 // formats x-ms-range as "bytes=Offset-(Offset+Count-1)" itself, so an
