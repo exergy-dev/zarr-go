@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+	"unsafe"
 )
 
 // nativeBytesFromLE converts a little-endian element encoding to the host's
@@ -71,6 +72,46 @@ func TestParseFillValueIntRange(t *testing.T) {
 			}
 			if !bytes.Equal(got, nativeBytesFromLE(tc.want)) {
 				t.Fatalf("parseFillValue(%s, %s) = %x, want %x", tc.raw, tc.dt, got, tc.want)
+			}
+		})
+	}
+}
+
+// memBytes returns the in-memory (host byte order) representation of v.
+func memBytes[T any](v T) []byte {
+	return slices.Clone(unsafe.Slice((*byte)(unsafe.Pointer(&v)), unsafe.Sizeof(v)))
+}
+
+// TestParseFillValueNativeByteOrder checks the fill bytes are the host's
+// in-memory representation of the typed value, since fillTyped memcpys them
+// straight into T. (Only distinguishable from little-endian on big-endian
+// hosts.)
+func TestParseFillValueNativeByteOrder(t *testing.T) {
+	cases := []struct {
+		dt   Dtype
+		raw  string
+		want []byte
+	}{
+		{DtypeInt16, `-2`, memBytes(int16(-2))},
+		{DtypeInt32, `305419896`, memBytes(int32(0x12345678))},
+		{DtypeInt64, `-81985529216486896`, memBytes(int64(-0x123456789abcdf0))},
+		{DtypeUint16, `4660`, memBytes(uint16(0x1234))},
+		{DtypeUint32, `305419896`, memBytes(uint32(0x12345678))},
+		{DtypeUint64, `81985529216486895`, memBytes(uint64(0x123456789abcdef))},
+		{DtypeFloat16, `1.5`, memBytes(Float16(0x3e00))},
+		{DtypeFloat32, `1.5`, memBytes(float32(1.5))},
+		{DtypeFloat64, `1.5`, memBytes(float64(1.5))},
+		{DtypeComplex64, `[1.5, -2]`, memBytes(complex64(complex(1.5, -2)))},
+		{DtypeComplex128, `[1.5, -2]`, memBytes(complex(1.5, -2))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.dt.String(), func(t *testing.T) {
+			got, err := parseFillValue(json.RawMessage(tc.raw), tc.dt)
+			if err != nil {
+				t.Fatalf("parseFillValue(%s, %s): %v", tc.raw, tc.dt, err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("parseFillValue(%s, %s) = %x, want native %x", tc.raw, tc.dt, got, tc.want)
 			}
 		})
 	}
