@@ -32,44 +32,48 @@ const (
 	Big
 )
 
-// Codec is the v3 "bytes" array→bytes codec.
+// Codec is the v3 "bytes" array→bytes codec. Construct it with New; its
+// configuration is fixed at construction and it is safe for concurrent use.
 type Codec struct {
-	Endian Endian
+	endian Endian
 }
 
 type configJSON struct {
 	Endian *string `json:"endian,omitempty"`
 }
 
-// Name returns the codec's v3 spec name.
-func (c *Codec) Name() string { return "bytes" }
-
-// Configure parses the v3 codec configuration object.
+// New builds a bytes codec from its v3 configuration object.
 //
 // Accepted shape: {"endian":"little"} or {"endian":"big"}. If "endian" is
 // absent (or the configuration itself is empty/nil), the default is "little".
-func (c *Codec) Configure(raw json.RawMessage) error {
-	c.Endian = Little // default
+func New(raw json.RawMessage) (*Codec, error) {
+	c := &Codec{endian: Little}
 	if len(raw) == 0 {
-		return nil
+		return c, nil
 	}
 	var cfg configJSON
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("bytes codec: invalid configuration: %w", err)
+		return nil, fmt.Errorf("bytes codec: invalid configuration: %w", err)
 	}
 	if cfg.Endian == nil {
-		return nil
+		return c, nil
 	}
 	switch *cfg.Endian {
 	case "little":
-		c.Endian = Little
+		c.endian = Little
 	case "big":
-		c.Endian = Big
+		c.endian = Big
 	default:
-		return fmt.Errorf("bytes codec: invalid endian %q (want \"little\" or \"big\")", *cfg.Endian)
+		return nil, fmt.Errorf("bytes codec: invalid endian %q (want \"little\" or \"big\")", *cfg.Endian)
 	}
-	return nil
+	return c, nil
 }
+
+// Name returns the codec's v3 spec name.
+func (c *Codec) Name() string { return "bytes" }
+
+// Endian returns the configured byte order.
+func (c *Codec) Endian() Endian { return c.endian }
 
 // swapUnit returns the byte-swap chunk size used for a dtype. Complex numbers
 // have two equally-sized real components that are each byte-swapped
@@ -138,7 +142,7 @@ func (c *Codec) needsSwap(elemSize int) bool {
 	if elemSize == 1 {
 		return false
 	}
-	wantLittle := c.Endian == Little
+	wantLittle := c.endian == Little
 	return wantLittle != hostLittleEndian
 }
 
@@ -201,5 +205,11 @@ func elementCount(shape []int64) int64 {
 }
 
 func init() {
-	codec.Register("bytes", func() codec.Codec { return &Codec{} })
+	codec.Register("bytes", func(raw json.RawMessage) (codec.Codec, error) {
+		c, err := New(raw)
+		if err != nil {
+			return nil, err // not a typed-nil codec.Codec
+		}
+		return c, nil
+	})
 }

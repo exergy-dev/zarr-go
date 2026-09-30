@@ -370,7 +370,6 @@ func TestDecodePartialRejectsBadIndexEntries(t *testing.T) {
 type shortAB struct{}
 
 func (shortAB) Name() string                                 { return "sharding_test_short_ab" }
-func (shortAB) Configure(json.RawMessage) error              { return nil }
 func (shortAB) EncodeAB(in codec.ArrayChunk) ([]byte, error) { return in.Data, nil }
 func (shortAB) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	out.Data = in[:len(in)/2]
@@ -378,7 +377,9 @@ func (shortAB) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 }
 
 func init() {
-	codec.Register("sharding_test_short_ab", func() codec.Codec { return shortAB{} })
+	codec.Register("sharding_test_short_ab", func(json.RawMessage) (codec.Codec, error) {
+		return shortAB{}, nil
+	})
 }
 
 // TestDecodePartialRejectsWrongInnerSize: an inner pipeline that decodes to

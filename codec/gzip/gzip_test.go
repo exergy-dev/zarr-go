@@ -14,13 +14,13 @@ import (
 // empty raw value selects the codec's default level.
 func newConfigured(t *testing.T, raw string) *Codec {
 	t.Helper()
-	c := &Codec{}
 	var msg json.RawMessage
 	if raw != "" {
 		msg = json.RawMessage(raw)
 	}
-	if err := c.Configure(msg); err != nil {
-		t.Fatalf("Configure(%q): %v", raw, err)
+	c, err := New(msg)
+	if err != nil {
+		t.Fatalf("New(%q): %v", raw, err)
 	}
 	return c
 }
@@ -62,7 +62,7 @@ func TestRoundTripLargeRandom(t *testing.T) {
 	}
 }
 
-func TestConfigureLevels(t *testing.T) {
+func TestNewLevels(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  string
@@ -81,8 +81,8 @@ func TestConfigureLevels(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newConfigured(t, tc.raw)
-			if c.Level != tc.want {
-				t.Fatalf("Level = %d, want %d", c.Level, tc.want)
+			if c.level != tc.want {
+				t.Fatalf("level = %d, want %d", c.level, tc.want)
 			}
 			enc, err := c.EncodeBB(in)
 			if err != nil {
@@ -93,22 +93,21 @@ func TestConfigureLevels(t *testing.T) {
 				t.Fatalf("DecodeBB: %v", err)
 			}
 			if !bytes.Equal(in, dec) {
-				t.Fatalf("round-trip mismatch at level %d", c.Level)
+				t.Fatalf("round-trip mismatch at level %d", c.level)
 			}
 		})
 	}
 }
 
-func TestConfigureInvalid(t *testing.T) {
+func TestNewInvalid(t *testing.T) {
 	bad := []string{
 		`{"level":10}`,
 		`{"level":-2}`,
 		`not-json`,
 	}
 	for _, raw := range bad {
-		c := &Codec{}
-		if err := c.Configure(json.RawMessage(raw)); err == nil {
-			t.Fatalf("Configure(%q): expected error, got nil", raw)
+		if _, err := New(json.RawMessage(raw)); err == nil {
+			t.Fatalf("New(%q): expected error, got nil", raw)
 		}
 	}
 }

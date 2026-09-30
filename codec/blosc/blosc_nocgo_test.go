@@ -10,11 +10,13 @@ import (
 	"github.com/exergy-dev/zarr-go/codec"
 )
 
-func TestStubConfigureReturnsRequiresCGO(t *testing.T) {
-	c := &Codec{}
-	err := c.Configure(json.RawMessage(`{"cname":"lz4","clevel":5}`))
+func TestStubNewReturnsRequiresCGO(t *testing.T) {
+	c, err := New(json.RawMessage(`{"cname":"lz4","clevel":5}`))
 	if !errors.Is(err, codec.ErrRequiresCGO) {
-		t.Fatalf("Configure err = %v, want codec.ErrRequiresCGO", err)
+		t.Fatalf("New err = %v, want codec.ErrRequiresCGO", err)
+	}
+	if c != nil {
+		t.Fatalf("New returned a codec alongside the error: %v", c)
 	}
 }
 
@@ -35,13 +37,25 @@ func TestStubName(t *testing.T) {
 	}
 }
 
+// TestStubRegistration checks blosc is registered in the default build and
+// that its factory reports ErrRequiresCGO (with no typed-nil codec), which
+// BuildPipeline surfaces at array open.
 func TestStubRegistration(t *testing.T) {
 	f := codec.Lookup("blosc")
 	if f == nil {
 		t.Fatal("blosc codec not registered in default build")
 	}
-	inst := f()
-	if _, ok := inst.(codec.BytesToBytesCodec); !ok {
-		t.Fatalf("registered blosc codec does not implement BytesToBytesCodec (got %T)", inst)
+	inst, err := f(nil)
+	if !errors.Is(err, codec.ErrRequiresCGO) {
+		t.Fatalf("factory err = %v, want codec.ErrRequiresCGO", err)
+	}
+	if inst != nil {
+		t.Fatalf("factory returned non-nil codec %#v alongside the error", inst)
+	}
+	// The factory fails before BuildPipeline checks codec ordering, so a
+	// lone blosc spec is enough (and needs no other codec registered).
+	_, err = codec.BuildPipeline([]codec.Spec{{Name: "blosc"}})
+	if !errors.Is(err, codec.ErrRequiresCGO) {
+		t.Fatalf("BuildPipeline err = %v, want codec.ErrRequiresCGO", err)
 	}
 }

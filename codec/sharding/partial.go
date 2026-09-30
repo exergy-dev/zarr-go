@@ -36,8 +36,8 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 	if c.inner == nil || c.index == nil {
 		return fmt.Errorf("sharding_indexed: codec not configured")
 	}
-	if c.IndexLocation != IndexEnd && c.IndexLocation != IndexStart {
-		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.IndexLocation)
+	if c.indexLocation != indexEnd && c.indexLocation != indexStart {
+		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.indexLocation)
 	}
 	fullShape := req.FullShape
 	region := req.Region
@@ -84,7 +84,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		return nil
 	}
 
-	grid, err := gridDims(fullShape, c.ChunkShape)
+	grid, err := gridDims(fullShape, c.chunkShape)
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 
 	var indexBytes []byte
 	shardLen := int64(-1) // known only when the whole shard was fetched
-	if c.IndexLocation == IndexEnd {
+	if c.indexLocation == indexEnd {
 		if sf, ok := fetcher.(codec.SuffixRangeFetcher); ok {
 			indexBytes, err = sf.GetSuffix(ctx, key, idxLen)
 			if err != nil {
@@ -120,7 +120,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 			indexBytes = whole[shardLen-idxLen:]
 			fetcher = &slicedFetcher{key: key, base: whole}
 		}
-	} else { // IndexStart
+	} else { // indexStart
 		// The index sits at offset 0; one positional range read is enough.
 		head, err := fetcher.GetRange(ctx, key, 0, idxLen)
 		if err != nil {
@@ -159,8 +159,8 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		var end = make([]int64, rank)
 		intersects := true
 		for d := 0; d < rank; d++ {
-			origin[d] = coord[d] * c.ChunkShape[d]
-			end[d] = origin[d] + c.ChunkShape[d]
+			origin[d] = coord[d] * c.chunkShape[d]
+			end[d] = origin[d] + c.chunkShape[d]
 			if end[d] > fullShape[d] {
 				end[d] = fullShape[d]
 			}
@@ -187,7 +187,7 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 					return fmt.Errorf("sharding_indexed: index entry %d out of bounds (off=%d len=%d shard=%d)",
 						i, off, ln, shardLen)
 				}
-				innerShape := innerShapeAt(coord, c.ChunkShape, fullShape)
+				innerShape := innerShapeAt(coord, c.chunkShape, fullShape)
 				lr := make([]innerRange, rank)
 				for d := 0; d < rank; d++ {
 					lo := region[d].Start - origin[d]

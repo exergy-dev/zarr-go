@@ -20,15 +20,15 @@ import (
 // never panic on malformed input: it must either return a valid n-entry
 // table or a clean error.
 func FuzzDecodeIndex(f *testing.F) {
-	c := &Codec{}
 	cfg, _ := json.Marshal(map[string]any{
 		"chunk_shape": []int{2, 2},
 		"codecs": []map[string]any{
 			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
 		},
 	})
-	if err := c.Configure(cfg); err != nil {
-		f.Fatalf("Configure: %v", err)
+	c, err := New(cfg)
+	if err != nil {
+		f.Fatalf("New: %v", err)
 	}
 
 	// Seed with real encoded indexes (default index_codecs: bytes+crc32c)
@@ -73,7 +73,6 @@ func FuzzDecodeIndex(f *testing.F) {
 // goroutine, so it must return an error rather than panic.
 func FuzzDecodePartial(f *testing.F) {
 	const dim = 8
-	c := &Codec{}
 	// Index without crc32c so mutated index entries reach the range logic
 	// instead of failing the checksum.
 	cfg, _ := json.Marshal(map[string]any{
@@ -85,8 +84,9 @@ func FuzzDecodePartial(f *testing.F) {
 			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
 		},
 	})
-	if err := c.Configure(cfg); err != nil {
-		f.Fatalf("Configure: %v", err)
+	c, err := New(cfg)
+	if err != nil {
+		f.Fatalf("New: %v", err)
 	}
 
 	valid, err := c.EncodeAB(codec.ArrayChunk{

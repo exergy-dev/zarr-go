@@ -23,21 +23,23 @@ import (
 // chunk that is absent (logically all fill-value).
 const emptyMarker uint64 = math.MaxUint64
 
-// IndexLocation indicates whether the index trailer is stored at the start or
+// indexLocation indicates whether the index trailer is stored at the start or
 // end of the shard.
-type IndexLocation uint8
+type indexLocation uint8
 
 const (
-	// IndexEnd places the index at the end of the shard (default).
-	IndexEnd IndexLocation = iota
-	// IndexStart places the index at the start of the shard.
-	IndexStart
+	// indexEnd places the index at the end of the shard (default).
+	indexEnd indexLocation = iota
+	// indexStart places the index at the start of the shard.
+	indexStart
 )
 
-// Codec is the v3 "sharding_indexed" array→bytes codec.
+// Codec is the v3 "sharding_indexed" array→bytes codec. Construct it with
+// New; the zero value is not usable. Its configuration is fixed at
+// construction and it is safe for concurrent use.
 type Codec struct {
-	ChunkShape    []int64
-	IndexLocation IndexLocation
+	chunkShape    []int64
+	indexLocation indexLocation
 
 	inner *codec.Pipeline
 	index *codec.Pipeline
@@ -56,44 +58,46 @@ type configJSON struct {
 // Name returns the v3 codec name.
 func (*Codec) Name() string { return "sharding_indexed" }
 
-// Configure parses the codec configuration and builds the inner and index
-// pipelines.
-func (c *Codec) Configure(raw json.RawMessage) error {
+// New builds a sharding_indexed codec from its v3 configuration object,
+// including its inner and index pipelines (whose codecs must already be
+// registered).
+func New(raw json.RawMessage) (*Codec, error) {
 	if len(raw) == 0 {
-		return fmt.Errorf("sharding_indexed: missing configuration")
+		return nil, fmt.Errorf("sharding_indexed: missing configuration")
 	}
 	var cfg configJSON
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("sharding_indexed: invalid configuration: %w", err)
+		return nil, fmt.Errorf("sharding_indexed: invalid configuration: %w", err)
 	}
 	if len(cfg.ChunkShape) == 0 {
-		return fmt.Errorf("sharding_indexed: chunk_shape is required")
+		return nil, fmt.Errorf("sharding_indexed: chunk_shape is required")
 	}
 	for i, d := range cfg.ChunkShape {
 		if d <= 0 {
-			return fmt.Errorf("sharding_indexed: chunk_shape[%d]=%d must be positive", i, d)
+			return nil, fmt.Errorf("sharding_indexed: chunk_shape[%d]=%d must be positive", i, d)
 		}
 	}
-	c.ChunkShape = append([]int64(nil), cfg.ChunkShape...)
-
-	c.IndexLocation = IndexEnd
+	c := &Codec{
+		chunkShape:    append([]int64(nil), cfg.ChunkShape...),
+		indexLocation: indexEnd,
+	}
 	if cfg.IndexLocation != nil {
 		switch *cfg.IndexLocation {
 		case "end":
-			c.IndexLocation = IndexEnd
+			c.indexLocation = indexEnd
 		case "start":
-			c.IndexLocation = IndexStart
+			c.indexLocation = indexStart
 		default:
-			return fmt.Errorf("sharding_indexed: invalid index_location %q", *cfg.IndexLocation)
+			return nil, fmt.Errorf("sharding_indexed: invalid index_location %q", *cfg.IndexLocation)
 		}
 	}
 
 	if len(cfg.Codecs) == 0 {
-		return fmt.Errorf("sharding_indexed: inner codecs is required")
+		return nil, fmt.Errorf("sharding_indexed: inner codecs is required")
 	}
 	inner, err := codec.BuildPipeline(cfg.Codecs)
 	if err != nil {
-		return fmt.Errorf("sharding_indexed: build inner pipeline: %w", err)
+		return nil, fmt.Errorf("sharding_indexed: build inner pipeline: %w", err)
 	}
 	c.inner = inner
 
@@ -103,17 +107,17 @@ func (c *Codec) Configure(raw json.RawMessage) error {
 	}
 	index, err := codec.BuildPipeline(indexSpecs)
 	if err != nil {
-		return fmt.Errorf("sharding_indexed: build index pipeline: %w", err)
+		return nil, fmt.Errorf("sharding_indexed: build index pipeline: %w", err)
 	}
 	if len(index.AA) != 0 {
 		// encodeIndex/decodeIndex only ever invoke index.AB and index.BB —
 		// an array→array codec here would be silently skipped rather than
 		// applied, which is worse than rejecting it up front.
-		return fmt.Errorf("sharding_indexed: array→array codecs are not supported in index_codecs")
+		return nil, fmt.Errorf("sharding_indexed: array→array codecs are not supported in index_codecs")
 	}
 	c.index = index
 
-	return nil
+	return c, nil
 }
 
 // defaultIndexCodecs is the default index_codecs pipeline:
@@ -373,15 +377,12 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	if out == nil {
 		return fmt.Errorf("sharding_indexed: nil output chunk")
 	}
-	if c.inner == nil || c.index == nil {
-		return fmt.Errorf("sharding_indexed: codec not configured")
-	}
 	esz := codec.DtypeSize(out.Dtype)
 	if esz == 0 {
 		return fmt.Errorf("sharding_indexed: unsupported dtype %q", out.Dtype)
 	}
 
-	grid, err := gridDims(out.Shape, c.ChunkShape)
+	grid, err := gridDims(out.Shape, c.chunkShape)
 	if err != nil {
 		return err
 	}
@@ -396,13 +397,13 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 	}
 	// Locate the index payload according to the configured layout.
 	var idxBytes []byte
-	switch c.IndexLocation {
-	case IndexEnd:
+	switch c.indexLocation {
+	case indexEnd:
 		idxBytes = in[int64(len(in))-idxLen:]
-	case IndexStart:
+	case indexStart:
 		idxBytes = in[:idxLen]
 	default:
-		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.IndexLocation)
+		return fmt.Errorf("sharding_indexed: unknown index_location %d", c.indexLocation)
 	}
 	entries, err := c.decodeIndex(idxBytes, n)
 	if err != nil {
@@ -444,7 +445,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 			return fmt.Errorf("sharding_indexed: index entry %d out of bounds (off=%d len=%d shard=%d)",
 				i, off, ln, len(in))
 		}
-		innerShape := innerShapeAt(coord, c.ChunkShape, out.Shape)
+		innerShape := innerShapeAt(coord, c.chunkShape, out.Shape)
 		innerChunk := codec.ArrayChunk{
 			Shape: innerShape,
 			Dtype: out.Dtype,
@@ -458,7 +459,7 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 			return fmt.Errorf("sharding_indexed: inner chunk %d data size %d != expected %d",
 				i, len(innerChunk.Data), expected)
 		}
-		copyRegion(out.Data, out.Shape, coord, c.ChunkShape, innerShape, innerChunk.Data, esz, ndSc, dstRegion, srcRegion)
+		copyRegion(out.Data, out.Shape, coord, c.chunkShape, innerShape, innerChunk.Data, esz, ndSc, dstRegion, srcRegion)
 		if !nextCoord(coord, grid) && i != n-1 {
 			return fmt.Errorf("sharding_indexed: ran out of grid coords")
 		}
@@ -473,18 +474,15 @@ func (c *Codec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 // Zarr convention that fill-value regions are not stored. When in.Fill is nil
 // the codec falls back to "all-zero means absent".
 //
-// IndexLocation controls whether the index trailer sits before (IndexStart)
-// or after (IndexEnd, default) the body of inner-chunk bytes.
+// The configured index_location controls whether the index trailer sits
+// before ("start") or after ("end", default) the body of inner-chunk bytes.
 func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
-	if c.inner == nil || c.index == nil {
-		return nil, fmt.Errorf("sharding_indexed: codec not configured")
-	}
 	esz := codec.DtypeSize(in.Dtype)
 	if esz == 0 {
 		return nil, fmt.Errorf("sharding_indexed: unsupported dtype %q", in.Dtype)
 	}
 
-	grid, err := gridDims(in.Shape, c.ChunkShape)
+	grid, err := gridDims(in.Shape, c.chunkShape)
 	if err != nil {
 		return nil, err
 	}
@@ -496,13 +494,13 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	}
 
 	// Pre-compute the index encoded size so we can lay out body offsets in
-	// the IndexStart layout. The trailer length is deterministic for fixed n.
+	// the indexStart layout. The trailer length is deterministic for fixed n.
 	idxLen, err := c.indexEncodedSize(n)
 	if err != nil {
 		return nil, fmt.Errorf("sharding_indexed: compute index size: %w", err)
 	}
 	var bodyOffset int64
-	if c.IndexLocation == IndexStart {
+	if c.indexLocation == indexStart {
 		bodyOffset = idxLen
 	}
 
@@ -524,8 +522,8 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	srcRegion := make([]ndcopy.Region, rank)
 	coord := make([]int64, rank)
 	for i := int64(0); i < n; i++ {
-		innerShape := innerShapeAt(coord, c.ChunkShape, in.Shape)
-		innerBytes := extractRegion(in.Data, in.Shape, coord, c.ChunkShape, innerShape, esz, ndSc, dstRegion, srcRegion)
+		innerShape := innerShapeAt(coord, c.chunkShape, in.Shape)
+		innerBytes := extractRegion(in.Data, in.Shape, coord, c.chunkShape, innerShape, esz, ndSc, dstRegion, srcRegion)
 		if matchesFill(innerBytes, fill) {
 			entries[2*i] = emptyMarker
 			entries[2*i+1] = emptyMarker
@@ -559,11 +557,11 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 			len(indexBytes), idxLen)
 	}
 	out := make([]byte, 0, len(body)+len(indexBytes))
-	switch c.IndexLocation {
-	case IndexStart:
+	switch c.indexLocation {
+	case indexStart:
 		out = append(out, indexBytes...)
 		out = append(out, body...)
-	default: // IndexEnd
+	default: // indexEnd
 		out = append(out, body...)
 		out = append(out, indexBytes...)
 	}
@@ -571,5 +569,11 @@ func (c *Codec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 }
 
 func init() {
-	codec.Register("sharding_indexed", func() codec.Codec { return &Codec{} })
+	codec.Register("sharding_indexed", func(raw json.RawMessage) (codec.Codec, error) {
+		c, err := New(raw)
+		if err != nil {
+			return nil, err // not a typed-nil codec.Codec
+		}
+		return c, nil
+	})
 }

@@ -44,10 +44,10 @@ func makeData(n int) []byte {
 
 func configure(t *testing.T, endian string) *Codec {
 	t.Helper()
-	c := &Codec{}
 	cfg := json.RawMessage(fmt.Sprintf(`{"endian":%q}`, endian))
-	if err := c.Configure(cfg); err != nil {
-		t.Fatalf("Configure(%q): %v", endian, err)
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(%q): %v", endian, err)
 	}
 	return c
 }
@@ -192,38 +192,47 @@ func TestFloat16LittleEndian(t *testing.T) {
 	}
 }
 
-func TestConfigureDefaults(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(nil); err != nil {
-		t.Fatalf("Configure(nil): %v", err)
+func TestNewDefaults(t *testing.T) {
+	c, err := New(nil)
+	if err != nil {
+		t.Fatalf("New(nil): %v", err)
 	}
-	if c.Endian != Little {
-		t.Fatalf("default endian = %v, want Little", c.Endian)
+	if c.Endian() != Little {
+		t.Fatalf("default endian = %v, want Little", c.Endian())
 	}
 
-	c2 := &Codec{}
-	if err := c2.Configure(json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("Configure({}): %v", err)
+	c2, err := New(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("New({}): %v", err)
 	}
-	if c2.Endian != Little {
-		t.Fatalf("empty-object endian = %v, want Little", c2.Endian)
+	if c2.Endian() != Little {
+		t.Fatalf("empty-object endian = %v, want Little", c2.Endian())
+	}
+
+	c3, err := New(json.RawMessage(`{"endian":"big"}`))
+	if err != nil {
+		t.Fatalf("New(big): %v", err)
+	}
+	if c3.Endian() != Big {
+		t.Fatalf("big endian = %v, want Big", c3.Endian())
 	}
 }
 
-func TestConfigureInvalidEndian(t *testing.T) {
+func TestNewInvalidEndian(t *testing.T) {
 	for _, bad := range []string{"native", "LITTLE", "", "middle"} {
-		c := &Codec{}
 		raw := json.RawMessage(fmt.Sprintf(`{"endian":%q}`, bad))
-		err := c.Configure(raw)
+		c, err := New(raw)
 		if err == nil {
-			t.Fatalf("Configure(endian=%q): expected error, got nil", bad)
+			t.Fatalf("New(endian=%q): expected error, got nil", bad)
+		}
+		if c != nil {
+			t.Fatalf("New(endian=%q): returned a codec alongside the error", bad)
 		}
 	}
 }
 
-func TestConfigureMalformedJSON(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{not json`)); err == nil {
+func TestNewMalformedJSON(t *testing.T) {
+	if _, err := New(json.RawMessage(`{not json`)); err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
@@ -332,7 +341,10 @@ func TestRegistered(t *testing.T) {
 	if f == nil {
 		t.Fatal("bytes codec not registered")
 	}
-	c := f()
+	c, err := f(nil)
+	if err != nil {
+		t.Fatalf("factory(nil): %v", err)
+	}
 	if _, ok := c.(codec.ArrayToBytesCodec); !ok {
 		t.Fatalf("registered factory did not return ArrayToBytesCodec, got %T", c)
 	}

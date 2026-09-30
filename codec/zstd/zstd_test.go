@@ -1,5 +1,3 @@
-//go:build !cgo || !zarrcgo
-
 package zstd
 
 import (
@@ -15,9 +13,9 @@ import (
 
 func newConfigured(t *testing.T, raw string) *Codec {
 	t.Helper()
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(raw)); err != nil {
-		t.Fatalf("Configure(%q) failed: %v", raw, err)
+	c, err := New(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("New(%q) failed: %v", raw, err)
 	}
 	return c
 }
@@ -57,13 +55,27 @@ func TestRoundTrip1MiBRandom(t *testing.T) {
 	roundTrip(t, c, buf)
 }
 
+// frameHasChecksum reports the Content_Checksum_flag (bit 2 of the
+// Frame_Header_Descriptor) of a zstd frame; see RFC 8478 §3.1.1.1.1.
+func frameHasChecksum(t *testing.T, frame []byte) bool {
+	t.Helper()
+	if len(frame) < 5 || binary.LittleEndian.Uint32(frame[:4]) != 0xFD2FB528 {
+		t.Fatalf("not a zstd frame: % x", frame[:min(len(frame), 8)])
+	}
+	return frame[4]&0x04 != 0
+}
+
 func TestRoundTripChecksum(t *testing.T) {
 	c := newConfigured(t, `{"level":1,"checksum":true}`)
-	if !c.Checksum {
-		t.Fatal("expected Checksum=true after Configure")
-	}
 	payload := bytes.Repeat([]byte("zarr"), 1024)
 	roundTrip(t, c, payload)
+	enc, err := c.EncodeBB(payload)
+	if err != nil {
+		t.Fatalf("EncodeBB: %v", err)
+	}
+	if !frameHasChecksum(t, enc) {
+		t.Fatal("checksum:true produced a frame without a content checksum")
+	}
 }
 
 func TestDecodeGarbage(t *testing.T) {
@@ -83,16 +95,24 @@ func TestNameAndRegistration(t *testing.T) {
 	if f == nil {
 		t.Fatal("zstd codec not registered")
 	}
-	inst := f()
+	inst, err := f(nil)
+	if err != nil {
+		t.Fatalf("factory(nil): %v", err)
+	}
 	if _, ok := inst.(codec.BytesToBytesCodec); !ok {
 		t.Fatalf("registered zstd codec does not implement BytesToBytesCodec (got %T)", inst)
 	}
 }
 
-func TestConfigureInvalidJSON(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{not json`)); err == nil {
-		t.Fatal("expected error for invalid JSON")
+func TestNewInvalid(t *testing.T) {
+	for _, raw := range []string{`{not json`, `{"level":"fast"}`, `{"checksum":1}`} {
+		c, err := New(json.RawMessage(raw))
+		if err == nil {
+			t.Fatalf("New(%q): expected error", raw)
+		}
+		if c != nil {
+			t.Fatalf("New(%q): returned a codec alongside the error", raw)
+		}
 	}
 }
 
@@ -116,7 +136,7 @@ func TestDecodeBombRejectsForgedFrameContentSize(t *testing.T) {
 	}
 	forged := forgeFrameContentSize(t, enc, 0xF0000000) // ~4 GiB
 
-	c2 := newConfigured(t, ``) // fresh instance: init() samples the cap at first use
+	c2 := newConfigured(t, ``) // fresh instance: New samples the cap
 	if _, err := c2.DecodeBB(forged); err == nil {
 		t.Fatal("expected error decoding a frame with a forged oversized Frame_Content_Size, got nil")
 	}
@@ -149,15 +169,17 @@ func forgeFrameContentSize(t *testing.T, frame []byte, v uint32) []byte {
 	return out
 }
 
-func TestConfigureDefaults(t *testing.T) {
-	c := &Codec{Level: 7, Checksum: true}
-	if err := c.Configure(json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("Configure({}) failed: %v", err)
-	}
-	if c.Level != 0 {
-		t.Errorf("Level = %d, want 0", c.Level)
-	}
-	if c.Checksum {
-		t.Error("Checksum = true, want false")
+// TestNewDefaults checks that an absent or empty configuration builds a
+// codec that omits the content checksum.
+func TestNewDefaults(t *testing.T) {
+	for _, raw := range []string{``, `{}`, `{"checksum":false}`} {
+		c := newConfigured(t, raw)
+		enc, err := c.EncodeBB([]byte("zarr-go zstd defaults"))
+		if err != nil {
+			t.Fatalf("EncodeBB: %v", err)
+		}
+		if frameHasChecksum(t, enc) {
+			t.Errorf("config %q: frame has a content checksum, want none", raw)
+		}
 	}
 }

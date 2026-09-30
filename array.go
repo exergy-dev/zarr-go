@@ -55,9 +55,9 @@ func isRawCopyFastPipeline(p *codec.Pipeline) bool {
 		return false
 	}
 	if hostLittleEndian {
-		return bc.Endian == bytescodec.Little
+		return bc.Endian() == bytescodec.Little
 	}
-	return bc.Endian == bytescodec.Big
+	return bc.Endian() == bytescodec.Big
 }
 
 // Array is the typed view of a Zarr array. Construct via OpenArray[T].

@@ -27,25 +27,25 @@ var ErrChecksumMismatch = errors.New("crc32c: checksum mismatch")
 // and arm64 via the standard library.
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
-// Codec implements codec.BytesToBytesCodec for "crc32c".
+// Codec implements codec.BytesToBytesCodec for "crc32c". It is stateless:
+// the zero value is ready to use and safe for concurrent use.
 type Codec struct{}
 
 // Name returns the v3 codec name.
 func (*Codec) Name() string { return "crc32c" }
 
-// Configure accepts the codec's configuration JSON. The crc32c codec has no
-// configurable parameters; an empty configuration (or nil) is accepted, and
-// any well-formed JSON object is also accepted and ignored.
-func (*Codec) Configure(raw json.RawMessage) error {
-	if len(raw) == 0 {
-		return nil
+// New builds a crc32c codec from its v3 configuration object. The codec has
+// no configurable parameters; an empty configuration (or nil) is accepted,
+// and any well-formed JSON object is also accepted and ignored.
+func New(raw json.RawMessage) (*Codec, error) {
+	if len(raw) > 0 {
+		// Accept an empty/arbitrary object; reject only malformed JSON.
+		var ignored map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &ignored); err != nil {
+			return nil, fmt.Errorf("crc32c: invalid configuration: %w", err)
+		}
 	}
-	// Accept an empty/arbitrary object; reject only malformed JSON.
-	var ignored map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &ignored); err != nil {
-		return fmt.Errorf("crc32c: invalid configuration: %w", err)
-	}
-	return nil
+	return &Codec{}, nil
 }
 
 // EncodeBB returns a fresh slice consisting of in followed by a 4-byte
@@ -77,5 +77,11 @@ func (*Codec) DecodeBB(in []byte) ([]byte, error) {
 }
 
 func init() {
-	codec.Register("crc32c", func() codec.Codec { return &Codec{} })
+	codec.Register("crc32c", func(raw json.RawMessage) (codec.Codec, error) {
+		c, err := New(raw)
+		if err != nil {
+			return nil, err // not a typed-nil codec.Codec
+		}
+		return c, nil
+	})
 }

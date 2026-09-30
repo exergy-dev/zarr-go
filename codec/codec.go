@@ -34,11 +34,11 @@ var ErrUnknownCodec = errors.New("codec: unknown codec")
 // Data is the typed element buffer in row-major order; its byte length must
 // equal product(Shape) * Dtype.Size().
 //
-// Fill, when non-nil, is one element's worth of native-LE bytes representing
-// the array's fill value. Codecs that need fill-aware semantics (notably
-// sharding_indexed, which represents missing inner chunks) should consult it.
-// Codecs that don't care MAY ignore it. Length, when non-zero, must equal
-// the dtype's element size.
+// Fill, when non-nil, is one element's worth of native-byte-order bytes
+// representing the array's fill value. Codecs that need fill-aware
+// semantics (notably sharding_indexed, which represents missing inner
+// chunks) should consult it. Codecs that don't care MAY ignore it. Length,
+// when non-zero, must equal the dtype's element size.
 type ArrayChunk struct {
 	Shape []int64
 	Dtype string // canonical v3 dtype name (e.g., "float32")
@@ -47,11 +47,13 @@ type ArrayChunk struct {
 }
 
 // Codec is the common interface; every codec is one of the three kinds below.
+//
+// Codecs must be safe for concurrent use; a Pipeline is shared by all of an
+// Array's reader goroutines. A codec is fully configured by the Factory that
+// builds it and its configuration never changes afterwards.
 type Codec interface {
+	// Name returns the codec's v3 spec name.
 	Name() string
-	// Configure parses the codec's configuration JSON object (the value of
-	// the v3 "configuration" field). Called once at array open.
-	Configure(json.RawMessage) error
 }
 
 // ArrayToArrayCodec transforms an array chunk into another array chunk.
@@ -79,7 +81,7 @@ type BytesToBytesCodec interface {
 
 // RangeFetcher is the minimal interface the sharding codec needs to read
 // inner chunks from the underlying store. It exists here (not in store/) so
-// codec packages don't have to import store. The scheduler implements it.
+// codec packages don't have to import store.
 type RangeFetcher interface {
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 }
@@ -129,7 +131,7 @@ type PartialReadRequest struct {
 	// elementSize(Dtype) bytes, populated in row-major order matching the
 	// region shape.
 	Out []byte
-	// Fill, when non-nil, is one element's worth of native-LE bytes
+	// Fill, when non-nil, is one element's worth of native-byte-order bytes
 	// representing the array's fill value. Sharded codecs use it to fill
 	// regions corresponding to missing inner chunks; codecs that don't care
 	// MAY ignore it.
@@ -170,8 +172,11 @@ type Pipeline struct {
 
 // --- Registry --------------------------------------------------------------
 
-// Factory constructs a fresh, unconfigured codec instance.
-type Factory func() Codec
+// Factory constructs a ready-to-use codec from its configuration JSON object
+// (the value of the v3 "configuration" field; nil or empty when the metadata
+// has none). It returns an error if the configuration is invalid.
+// BuildPipeline calls it once per codec spec at array open.
+type Factory func(config json.RawMessage) (Codec, error)
 
 var (
 	regMu sync.RWMutex
@@ -197,9 +202,9 @@ func Lookup(name string) Factory {
 	return reg[name]
 }
 
-// BuildPipeline constructs and configures a Pipeline from an ordered list of
-// codec specs as they appear in v3 metadata. Exactly one ArrayToBytesCodec
-// must be present.
+// BuildPipeline constructs a Pipeline from an ordered list of codec specs as
+// they appear in v3 metadata. Exactly one ArrayToBytesCodec must be present.
+// A configuration error is wrapped with the codec's name.
 func BuildPipeline(specs []Spec) (*Pipeline, error) {
 	p := &Pipeline{}
 	seenAB := false
@@ -208,9 +213,12 @@ func BuildPipeline(specs []Spec) (*Pipeline, error) {
 		if f == nil {
 			return nil, fmt.Errorf("%w: %q", ErrUnknownCodec, s.Name)
 		}
-		c := f()
-		if err := c.Configure(s.Configuration); err != nil {
+		c, err := f(s.Configuration)
+		if err != nil {
 			return nil, fmt.Errorf("configure codec %q: %w", s.Name, err)
+		}
+		if c == nil {
+			return nil, fmt.Errorf("configure codec %q: factory returned no codec", s.Name)
 		}
 		switch v := c.(type) {
 		case ArrayToBytesCodec:
