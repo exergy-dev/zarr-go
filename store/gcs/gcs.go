@@ -117,14 +117,16 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 
 // GetRange implements store.Store, per the store.Store GetRange contract.
 //
-// off/n are passed straight through to NewRangeReader, which already
-// implements the n==0 (empty, existence-checked via a real request) and
-// clamp-past-EOF behavior the contract calls for; only the negative-off/n
-// rejection and the off-at/past-EOF (416) case need translating here.
+// off/n are passed through to NewRangeReader, which already implements the
+// n==0 (empty, existence-checked via a real request) and clamp-past-EOF
+// behavior the contract calls for; only the negative-off/n rejection, the
+// off-at/past-EOF (416) case, and clamping n so the SDK's unguarded
+// off+n-1 Range end cannot overflow need handling here.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	if err := cloudstore.ValidateRange("gcs", "GetRange", off, n); err != nil {
 		return nil, err
 	}
+	n = cloudstore.ClampLen(off, n)
 	k := cloudstore.JoinKey(s.prefix, key)
 	r, err := s.bucket.Object(k).NewRangeReader(ctx, off, n)
 	if err != nil {

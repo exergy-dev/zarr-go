@@ -167,6 +167,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	if err := cloudstore.ValidateRange("s3", "GetRange", off, n); err != nil {
 		return nil, err
 	}
+	n = cloudstore.ClampLen(off, n)
 	k := cloudstore.JoinKey(s.prefix, key)
 	if n == 0 {
 		ok, err := s.headExists(ctx, k)

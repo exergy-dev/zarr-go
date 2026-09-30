@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 
+	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
 )
@@ -50,6 +52,33 @@ func TestNew_RequiresBucket(t *testing.T) {
 	_, err := New(context.Background(), Config{})
 	if err == nil {
 		t.Fatal("expected error when Bucket is empty")
+	}
+}
+
+// TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
+// object size, including when off+n-1 overflows int64 (n = MaxInt64). The
+// GCS HTTP reader builds "bytes=off-(off+length-1)" itself, so an unclamped
+// length overflows inside the SDK.
+func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
+	url, ranges := cloudstoretest.RangeServer(t, "Range", []byte("0123456789"))
+	t.Setenv("STORAGE_EMULATOR_HOST", url)
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	s := &Store{client: client, bucket: client.Bucket("b"), name: "b"}
+
+	got, err := s.GetRange(ctx, "k", 5, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("GetRange(5, MaxInt64): %v (Range headers sent: %q)", err, ranges())
+	}
+	if string(got) != "56789" {
+		t.Fatalf("GetRange(5, MaxInt64) = %q, want %q", got, "56789")
+	}
+	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
+		t.Fatalf("range headers sent = %q, want [%q]", r, want)
 	}
 }
 

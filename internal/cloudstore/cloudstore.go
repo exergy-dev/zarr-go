@@ -6,6 +6,7 @@ package cloudstore
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/exergy-dev/zarr-go/store"
@@ -56,6 +57,18 @@ func KeyFromObject(storePrefix, objKey string) (key string, ok bool) {
 		return "", false
 	}
 	return key, true
+}
+
+// ClampLen returns n reduced so that off+n cannot overflow int64, for
+// non-negative off and n (call ValidateRange first). Range reads build a
+// closed "bytes=off-(off+n-1)" header, and every backend (S3 here, GCS and
+// Azure inside their SDKs) computes that end offset unguarded, so an
+// unclamped n near MaxInt64 wraps to a negative, malformed end. The clamp
+// only shrinks requests ending past MaxInt64, far beyond any real object, so
+// the GetRange contract's clamp-to-size result is unchanged. off == MaxInt64
+// clamps n to 0, which callers already treat as an existence check.
+func ClampLen(off, n int64) int64 {
+	return min(n, math.MaxInt64-off)
 }
 
 // ValidateRange returns store.ErrInvalidRange (wrapped with the calling

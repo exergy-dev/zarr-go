@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -14,6 +16,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
 )
@@ -71,6 +74,46 @@ func TestNew_RequiresBucket(t *testing.T) {
 	_, err := New(context.Background(), Config{})
 	if err == nil {
 		t.Fatal("expected error when Bucket is empty")
+	}
+}
+
+// fakeStore returns a Store pointed at a credential-free httptest endpoint,
+// isolated from the host's AWS config and credentials.
+func fakeStore(t *testing.T, endpoint string) *Store {
+	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "credentials"))
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	s, err := New(context.Background(), Config{
+		Bucket:    "b",
+		Region:    "us-east-1",
+		Endpoint:  endpoint,
+		PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
+// TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
+// object size, including when off+n-1 overflows int64 (n = MaxInt64).
+func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
+	url, ranges := cloudstoretest.RangeServer(t, "Range", []byte("0123456789"))
+	s := fakeStore(t, url)
+	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("GetRange(5, MaxInt64): %v (Range headers sent: %q)", err, ranges())
+	}
+	if string(got) != "56789" {
+		t.Fatalf("GetRange(5, MaxInt64) = %q, want %q", got, "56789")
+	}
+	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
+		t.Fatalf("range headers sent = %q, want [%q]", r, want)
 	}
 }
 

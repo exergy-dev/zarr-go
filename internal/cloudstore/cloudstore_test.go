@@ -2,6 +2,7 @@ package cloudstore
 
 import (
 	"errors"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -133,6 +134,30 @@ func TestTrimSlashes(t *testing.T) {
 	for in, want := range cases {
 		if got := TrimSlashes(in); got != want {
 			t.Errorf("TrimSlashes(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestClampLen(t *testing.T) {
+	cases := []struct {
+		off, n, want int64
+	}{
+		{0, 0, 0},
+		{0, 10, 10},
+		{5, 10, 10},
+		{0, math.MaxInt64, math.MaxInt64},
+		{5, math.MaxInt64, math.MaxInt64 - 5},
+		{math.MaxInt64 - 1, 5, 1},
+		{math.MaxInt64, 1, 0},
+		{math.MaxInt64, math.MaxInt64, 0},
+	}
+	for _, c := range cases {
+		got := ClampLen(c.off, c.n)
+		if got != c.want {
+			t.Errorf("ClampLen(%d, %d) = %d, want %d", c.off, c.n, got, c.want)
+		}
+		if end := c.off + got; end < c.off {
+			t.Errorf("ClampLen(%d, %d) = %d: off+n overflows to %d", c.off, c.n, got, end)
 		}
 	}
 }
