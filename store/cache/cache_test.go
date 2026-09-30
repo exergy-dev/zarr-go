@@ -155,6 +155,45 @@ func TestCacheEvictionBySize(t *testing.T) {
 	}
 }
 
+// TestCacheOversizedValueNotAdmitted checks that a value larger than
+// MaxBytes is served but not admitted, instead of evicting every other
+// entry and then itself.
+func TestCacheOversizedValueNotAdmitted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	inner := mem.New()
+	small := []byte("0123456789")
+	for i := 0; i < 4; i++ {
+		if err := inner.Set(ctx, fmt.Sprintf("k%d", i), small); err != nil {
+			t.Fatal(err)
+		}
+	}
+	big := make([]byte, 200)
+	if err := inner.Set(ctx, "big", big); err != nil {
+		t.Fatal(err)
+	}
+	c := cache.New(cache.Config{Underlying: inner, MaxBytes: 100})
+	for i := 0; i < 4; i++ {
+		if _, err := c.Get(ctx, fmt.Sprintf("k%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := c.Get(ctx, "big")
+	if err != nil {
+		t.Fatalf("Get big: %v", err)
+	}
+	if len(got) != len(big) {
+		t.Fatalf("Get big: got %d bytes want %d", len(got), len(big))
+	}
+	if got := c.Len(); got != 4 {
+		t.Fatalf("Len after oversized Get: got %d want 4 (small entries evicted)", got)
+	}
+	if got := c.Bytes(); got != 40 {
+		t.Fatalf("Bytes after oversized Get: got %d want 40", got)
+	}
+}
+
 func TestCacheInvalidatesOnSet(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

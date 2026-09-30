@@ -118,9 +118,13 @@ func (s *Store) lookup(key string) ([]byte, bool) {
 // admit installs (key,val) into the cache, evicting older entries as needed
 // to satisfy MaxBytes / MaxEntries. The provided val is taken by reference
 // and MUST NOT be mutated by the caller after admission; callers should pass
-// freshly-allocated buffers.
+// freshly-allocated buffers. A value larger than MaxBytes is not admitted:
+// it could never fit, and admitting it would evict every other entry first.
 func (s *Store) admit(key string, val []byte) {
 	size := int64(len(val))
+	if s.maxBytes > 0 && size > s.maxBytes {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
