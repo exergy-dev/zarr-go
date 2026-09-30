@@ -9,9 +9,9 @@ import (
 	stdfs "io/fs"
 	"os"
 	"sync"
+	"syscall"
 
 	"github.com/exergy-dev/zarr-go/store"
-	"golang.org/x/sys/unix"
 )
 
 // noopRelease is a non-nil release callback for paths where no resources are
@@ -65,7 +65,9 @@ func (s *Store) GetMmap(ctx context.Context, key string) ([]byte, func(), error)
 	if size > int64(^uint(0)>>1) {
 		return nil, noopRelease, fmt.Errorf("fs.GetMmap: file %q too large for mmap (%d bytes)", path, size)
 	}
-	data, err := unix.Mmap(int(f.Fd()), 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
+	// The standard library's syscall.Mmap exists on every platform in this
+	// file's build constraint, so this needs no golang.org/x/sys.
+	data, err := syscall.Mmap(int(f.Fd()), 0, int(size), syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		return nil, noopRelease, fmt.Errorf("fs.GetMmap: mmap %q: %w", path, err)
 	}
@@ -73,7 +75,7 @@ func (s *Store) GetMmap(ctx context.Context, key string) ([]byte, func(), error)
 	// already-freed pages (possibly reused by a later mapping) — silent UB
 	// on Linux otherwise.
 	release := sync.OnceFunc(func() {
-		_ = unix.Munmap(data)
+		_ = syscall.Munmap(data)
 	})
 	return data, release, nil
 }
