@@ -109,7 +109,7 @@ func TestOpenErrorMatrix(t *testing.T) {
 			name:      "v2 group",
 			files:     map[string]string{"n/.zgroup": v2GroupDoc, "n/.zattrs": v2AttrsDoc},
 			open:      openWant{typ: "*zarr.Group", attr: "v2"},
-			openArray: openWant{msg: `"n"`},
+			openArray: openWant{msg: "not an array"},
 		},
 		{
 			name:      "v3 wins over v2",
@@ -120,8 +120,8 @@ func TestOpenErrorMatrix(t *testing.T) {
 		{
 			name:      "missing",
 			files:     map[string]string{"other/zarr.json": v3GroupDoc},
-			open:      openWant{msg: "metadata found at"},
-			openArray: openWant{msg: "metadata found at"},
+			open:      openWant{msg: "no v2 or v3 metadata found at"},
+			openArray: openWant{msg: "no v2 or v3 metadata found at"},
 		},
 		{
 			name:      "corrupt zarr.json",
@@ -139,7 +139,7 @@ func TestOpenErrorMatrix(t *testing.T) {
 			name:      "corrupt .zgroup",
 			files:     map[string]string{"n/.zgroup": `{"zarr_format": `},
 			open:      openWant{is: corrupt},
-			openArray: openWant{msg: `"n"`},
+			openArray: openWant{is: corrupt},
 		},
 		{
 			name:      "corrupt .zattrs",

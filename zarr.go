@@ -58,118 +58,14 @@ func Open(ctx context.Context, s store.Store, path string, opts ...OpenOption) (
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if raw, err := s.Get(ctx, joinKey(path, "zarr.json")); err == nil {
-		return openV3(ctx, s, path, raw, o)
-	} else if !errors.Is(err, store.ErrKeyNotFound) {
-		return nil, fmt.Errorf("read zarr.json at %q: %w", path, err)
-	}
-	return openV2(ctx, s, path, o)
-}
-
-func openV3(ctx context.Context, s store.Store, path string, raw []byte, o arrayOptions) (Node, error) {
-	nt, err := metadata.PeekNodeType(raw)
+	am, gm, err := loadMeta(ctx, s, path)
 	if err != nil {
-		return nil, wrapCorrupt(err)
+		return nil, err
 	}
-	switch nt {
-	case metadata.NodeGroup:
-		gm, err := metadata.DecodeGroup(raw)
-		if err != nil {
-			return nil, wrapCorrupt(err)
-		}
+	if gm != nil {
 		return &Group{store: s, path: path, meta: gm, opts: o}, nil
-	case metadata.NodeArray:
-		am, err := metadata.DecodeArray(raw)
-		if err != nil {
-			return nil, wrapCorrupt(err)
-		}
-		return openArrayDynamic(s, path, am, o)
 	}
-	return nil, errors.New("unknown node type")
-}
-
-func openV2(ctx context.Context, s store.Store, path string, o arrayOptions) (Node, error) {
-	if raw, err := s.Get(ctx, joinKey(path, ".zarray")); err == nil {
-		am, err := metadata.DecodeArrayV2(raw)
-		if err != nil {
-			return nil, wrapCorrupt(err)
-		}
-		attrs, err := loadAttrs(ctx, s, path)
-		if err != nil {
-			return nil, err
-		}
-		am.Attributes = attrs
-		return openArrayDynamic(s, path, am, o)
-	} else if !errors.Is(err, store.ErrKeyNotFound) {
-		return nil, fmt.Errorf("read .zarray at %q: %w", path, err)
-	}
-	if raw, err := s.Get(ctx, joinKey(path, ".zgroup")); err == nil {
-		gm, err := metadata.DecodeGroupV2(raw)
-		if err != nil {
-			return nil, wrapCorrupt(err)
-		}
-		attrs, err := loadAttrs(ctx, s, path)
-		if err != nil {
-			return nil, err
-		}
-		gm.Attributes = attrs
-		return &Group{store: s, path: path, meta: gm, opts: o}, nil
-	} else if !errors.Is(err, store.ErrKeyNotFound) {
-		return nil, fmt.Errorf("read .zgroup at %q: %w", path, err)
-	}
-	return nil, fmt.Errorf("no v2 or v3 metadata found at %q", path)
-}
-
-func loadArrayMeta(ctx context.Context, s store.Store, path string) (*metadata.ArrayMeta, error) {
-	if raw, err := s.Get(ctx, joinKey(path, "zarr.json")); err == nil {
-		nt, perr := metadata.PeekNodeType(raw)
-		if perr != nil {
-			return nil, wrapCorrupt(perr)
-		}
-		if nt != metadata.NodeArray {
-			return nil, fmt.Errorf("node at %q is not an array", path)
-		}
-		am, derr := metadata.DecodeArray(raw)
-		if derr != nil {
-			return nil, wrapCorrupt(derr)
-		}
-		return am, nil
-	} else if !errors.Is(err, store.ErrKeyNotFound) {
-		return nil, fmt.Errorf("read zarr.json at %q: %w", path, err)
-	}
-	if raw, err := s.Get(ctx, joinKey(path, ".zarray")); err == nil {
-		am, derr := metadata.DecodeArrayV2(raw)
-		if derr != nil {
-			return nil, wrapCorrupt(derr)
-		}
-		attrs, lerr := loadAttrs(ctx, s, path)
-		if lerr != nil {
-			return nil, lerr
-		}
-		am.Attributes = attrs
-		return am, nil
-	} else if !errors.Is(err, store.ErrKeyNotFound) {
-		return nil, fmt.Errorf("read .zarray at %q: %w", path, err)
-	}
-	return nil, fmt.Errorf("no v2 or v3 array metadata found at %q", path)
-}
-
-// loadAttrs fetches and parses the optional .zattrs sidecar at path. A
-// missing file returns (nil, nil); any other read or parse error is
-// surfaced with path context.
-func loadAttrs(ctx context.Context, s store.Store, path string) (map[string]any, error) {
-	raw, err := s.Get(ctx, joinKey(path, ".zattrs"))
-	if errors.Is(err, store.ErrKeyNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read .zattrs at %q: %w", path, err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("parse .zattrs at %q: %w", path, err)
-	}
-	return out, nil
+	return openArrayDynamic(s, path, am, o)
 }
 
 // OpenArray opens the array at path and asserts its dtype matches T. Detects
@@ -180,27 +76,130 @@ func OpenArray[T Numeric](ctx context.Context, s store.Store, path string, opts 
 	for _, opt := range opts {
 		opt(&o)
 	}
-	am, err := loadArrayMeta(ctx, s, path)
+	am, _, err := loadMeta(ctx, s, path)
 	if err != nil {
 		return nil, err
 	}
+	if am == nil {
+		return nil, fmt.Errorf("node at %q is not an array", path)
+	}
+	dt, pipe, fill, err := resolveArray(am)
+	if err != nil {
+		return nil, err
+	}
+	if want := DtypeOf[T](); want != dt {
+		return nil, fmt.Errorf("dtype mismatch: array is %s, T is %s", dt, want)
+	}
+	return newTypedArray[T](s, path, am, pipe, dt, fill, o), nil
+}
+
+// loadMeta reads the metadata of the node at path: v3 zarr.json first, else
+// v2 .zarray or .zgroup plus the optional .zattrs sidecar. On success exactly
+// one of the returned array and group metadata is non-nil.
+func loadMeta(ctx context.Context, s store.Store, path string) (*metadata.ArrayMeta, *metadata.GroupMeta, error) {
+	raw, found, err := getMeta(ctx, s, path, "zarr.json")
+	if err != nil {
+		return nil, nil, err
+	}
+	if found {
+		am, gm, err := decodeV3(raw)
+		if err != nil {
+			return nil, nil, wrapCorrupt(err)
+		}
+		return am, gm, nil
+	}
+	var (
+		am *metadata.ArrayMeta
+		gm *metadata.GroupMeta
+	)
+	if raw, found, err = getMeta(ctx, s, path, ".zarray"); err != nil {
+		return nil, nil, err
+	} else if found {
+		am, err = metadata.DecodeArrayV2(raw)
+	} else if raw, found, err = getMeta(ctx, s, path, ".zgroup"); err != nil {
+		return nil, nil, err
+	} else if found {
+		gm, err = metadata.DecodeGroupV2(raw)
+	} else {
+		return nil, nil, fmt.Errorf("no v2 or v3 metadata found at %q", path)
+	}
+	if err != nil {
+		return nil, nil, wrapCorrupt(err)
+	}
+	attrs, err := loadAttrs(ctx, s, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if am != nil {
+		am.Attributes = attrs
+	} else {
+		gm.Attributes = attrs
+	}
+	return am, gm, nil
+}
+
+// decodeV3 decodes a zarr.json document into array or group metadata.
+func decodeV3(raw []byte) (*metadata.ArrayMeta, *metadata.GroupMeta, error) {
+	nt, err := metadata.PeekNodeType(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	switch nt {
+	case metadata.NodeArray:
+		am, err := metadata.DecodeArray(raw)
+		return am, nil, err
+	case metadata.NodeGroup:
+		gm, err := metadata.DecodeGroup(raw)
+		return nil, gm, err
+	}
+	return nil, nil, errors.New("unknown node type")
+}
+
+// getMeta reads the metadata document name at path. A missing key returns
+// found == false and no error; any other read error is surfaced with path
+// context.
+func getMeta(ctx context.Context, s store.Store, path, name string) (raw []byte, found bool, err error) {
+	raw, err = s.Get(ctx, joinKey(path, name))
+	if errors.Is(err, store.ErrKeyNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s at %q: %w", name, path, err)
+	}
+	return raw, true, nil
+}
+
+// loadAttrs fetches and parses the optional .zattrs sidecar at path. A
+// missing file returns (nil, nil); any other read or parse error is
+// surfaced with path context.
+func loadAttrs(ctx context.Context, s store.Store, path string) (map[string]any, error) {
+	raw, found, err := getMeta(ctx, s, path, ".zattrs")
+	if err != nil || !found {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("parse .zattrs at %q: %w", path, err)
+	}
+	return out, nil
+}
+
+// resolveArray parses am's dtype, builds its codec pipeline, and decodes its
+// fill value: everything an Array needs beyond the metadata itself.
+func resolveArray(am *metadata.ArrayMeta) (Dtype, *codec.Pipeline, []byte, error) {
 	dt, err := ParseDtype(am.DataType)
 	if err != nil {
-		return nil, err
-	}
-	want := DtypeOf[T]()
-	if want != dt {
-		return nil, fmt.Errorf("dtype mismatch: array is %s, T is %s", dt, want)
+		return DtypeInvalid, nil, nil, err
 	}
 	pipe, err := codec.BuildPipeline(am.Codecs)
 	if err != nil {
-		return nil, err
+		return DtypeInvalid, nil, nil, err
 	}
 	fill, err := parseFillValue(am.FillValue, dt)
 	if err != nil {
-		return nil, fmt.Errorf("parse fill_value: %w", err)
+		return DtypeInvalid, nil, nil, fmt.Errorf("parse fill_value: %w", err)
 	}
-	return newTypedArray[T](s, path, am, pipe, dt, fill, o), nil
+	return dt, pipe, fill, nil
 }
 
 // probeMmap returns a non-nil MmapStore if s implements it, else nil.
@@ -234,17 +233,9 @@ func newTypedArray[T Numeric](s store.Store, path string, am *metadata.ArrayMeta
 // openArrayDynamic returns a Node-typed array whose concrete T matches the
 // metadata dtype. Caller can type-switch.
 func openArrayDynamic(s store.Store, path string, am *metadata.ArrayMeta, o arrayOptions) (Node, error) {
-	dt, err := ParseDtype(am.DataType)
+	dt, pipe, fill, err := resolveArray(am)
 	if err != nil {
 		return nil, err
-	}
-	pipe, err := codec.BuildPipeline(am.Codecs)
-	if err != nil {
-		return nil, err
-	}
-	fill, err := parseFillValue(am.FillValue, dt)
-	if err != nil {
-		return nil, fmt.Errorf("parse fill_value: %w", err)
 	}
 	switch dt {
 	case DtypeBool:
