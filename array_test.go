@@ -320,8 +320,7 @@ func TestReadGzipCompressed(t *testing.T) {
 		{"name": "gzip", "configuration": map[string]any{"level": 5}},
 	}
 	s := writeArray(t, shape, chunks, "float32", raw, codecs)
-	// writeArray wrote raw chunk bytes; we need to overwrite with gzip-encoded chunks.
-	// Rewrite: open and re-encode each chunk through the pipeline.
+	// writeArray wrote raw chunk bytes; overwrite them gzip-encoded.
 	rewriteWithCodecs(t, s, shape, chunks, raw, "float32", codecs)
 	a, err := zarr.OpenArray[float32](context.Background(), s, "arr")
 	if err != nil {
@@ -338,16 +337,11 @@ func TestReadGzipCompressed(t *testing.T) {
 	}
 }
 
-// rewriteWithCodecs re-encodes chunk bytes through the array's pipeline so that
-// chunk keys hold properly-encoded payloads (writeArray writes raw bytes, which
-// only works for bytes-only pipelines).
+// rewriteWithCodecs overwrites every chunk key with its bytes+gzip encoding
+// (writeArray writes raw bytes, which only works for bytes-only pipelines).
+// The codecs argument is ignored: the encoding is always bytes+gzip.
 func rewriteWithCodecs(t *testing.T, s *mem.Store, shape, chunks []int64, raw []byte, dtype string, _ []map[string]any) {
 	t.Helper()
-	// We open the array via the library to use its pipeline for encoding.
-	// EncodeBB on the Pipeline isn't exposed, so we construct chunks and use
-	// the same pipeline by going through writeArray (raw) then compressing.
-	// Simplest: write each chunk pre-compressed via stdlib gzip.
-	// For tests, use a minimal helper.
 	for _, c := range chunkCoords(shape, chunks) {
 		buf := extractFullChunk(raw, shape, c, chunks, elemBytes(dtype))
 		gz := gzipBytes(t, buf)

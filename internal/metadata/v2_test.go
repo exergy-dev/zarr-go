@@ -354,10 +354,9 @@ func TestDecodeArrayV2_FillValueLeniency(t *testing.T) {
 	}
 }
 
-// TestDecodeArrayV2_RejectNegativeShape checks that v2's shared validation
-// (routed through validateArrayMeta, the same validator DecodeArray uses)
-// catches a negative shape dimension — a gap that existed when v2 had its
-// own, less thorough, inline checks.
+// TestDecodeArrayV2_RejectNegativeShape checks that v2 decoding (via
+// validateArrayMeta, shared with DecodeArray) rejects a negative shape
+// dimension.
 func TestDecodeArrayV2_RejectNegativeShape(t *testing.T) {
 	raw := []byte(`{
 		"zarr_format": 2,

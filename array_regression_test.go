@@ -14,8 +14,8 @@ import (
 
 // shortDecodeCodec is a deliberately buggy array->bytes codec whose EncodeAB
 // is a correct identity passthrough but whose DecodeAB truncates the output.
-// Used to prove decodeAndCopy rejects a mismatched decode length with a
-// DecodeError instead of panicking inside copyChunkRegion's slicing.
+// Used to check that decodeAndCopy rejects a mismatched decode length with a
+// DecodeError instead of panicking in the copy.
 type shortDecodeCodec struct{}
 
 func (*shortDecodeCodec) Name() string { return "test_short_decode" }
@@ -127,9 +127,9 @@ func TestWriteEmptySelectionNoPanic(t *testing.T) {
 	}
 }
 
-// TestDecodeShortChunkReturnsError guards against a codec that decodes to
-// fewer bytes than the chunk's declared shape*dtype size causing a
-// slice-bounds panic in copyChunkRegion instead of a clean DecodeError.
+// TestDecodeShortChunkReturnsError checks that a codec decoding to fewer
+// bytes than the chunk's shape*dtype size yields a DecodeError, not a
+// slice-bounds panic in the copy.
 func TestDecodeShortChunkReturnsError(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()

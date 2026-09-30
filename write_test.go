@@ -226,8 +226,7 @@ func TestReadErrorAmongManyChunks(t *testing.T) {
 // TestWriteReadHighRankStrided round-trips strided writes and reads through
 // a rank-9 array with hundreds of chunks, many edge-clipped, under tight
 // concurrency limits (more chunks than workers), and checks every element
-// against an in-memory reference. Rank 9 exceeds any small fixed-size
-// per-chunk scratch, so this pins the general-rank Read/Write path.
+// against an in-memory reference.
 func TestWriteReadHighRankStrided(t *testing.T) {
 	ctx := context.Background()
 	const rank = 9

@@ -61,8 +61,7 @@ func BenchmarkCacheWarmHit4K(b *testing.B) {
 }
 
 // BenchmarkCacheMiss measures the cost of a Get that always misses (key
-// absent in underlying). Singleflight + LRU bookkeeping overhead is what we
-// pay for each call.
+// absent in underlying): the flight and LRU bookkeeping overhead.
 func BenchmarkCacheMiss(b *testing.B) {
 	ctx := context.Background()
 	inner := mem.New()
@@ -73,10 +72,8 @@ func BenchmarkCacheMiss(b *testing.B) {
 	}
 }
 
-// BenchmarkRawMemHit is the baseline: same workload through raw mem store.
-// Compare against BenchmarkCacheWarmHit -- the cache should be at least as
-// fast (it skips a map lookup + slice copy in mem.Store on each call would
-// happen anyway, but the cache's defensive copy still applies).
+// BenchmarkRawMemHit is the baseline for BenchmarkCacheWarmHit: the same
+// workload through a raw mem store, which also copies on each Get.
 func BenchmarkRawMemHit(b *testing.B) {
 	ctx := context.Background()
 	inner := mem.New()

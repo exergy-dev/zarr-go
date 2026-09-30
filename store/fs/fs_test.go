@@ -189,9 +189,8 @@ func TestSetIfNotExists(t *testing.T) {
 	}
 }
 
-// TestSetDoesNotClobberSiblingTmpKey guards against the old fixed
-// key+".tmp" temp-file scheme: Set("a") must not disturb an unrelated,
-// legitimately-named key "a.tmp".
+// TestSetDoesNotClobberSiblingTmpKey checks that Set("a") does not disturb
+// an unrelated, legitimately-named key "a.tmp".
 func TestSetDoesNotClobberSiblingTmpKey(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
@@ -211,12 +210,10 @@ func TestSetDoesNotClobberSiblingTmpKey(t *testing.T) {
 	}
 }
 
-// TestConcurrentSetSameKeyNeverTorn guards against the old fixed-temp-path
-// scheme, where two concurrent Set calls to the same key could share one
-// temp file and interleave, producing a torn (neither-old-nor-new) value at
-// the final path. Each writer now gets its own unique temp file via
-// os.CreateTemp, so every observed value must be byte-identical to exactly
-// one writer's full payload.
+// TestConcurrentSetSameKeyNeverTorn checks that concurrent Set calls to the
+// same key never produce a torn value: each writer stages in its own temp
+// file, so every observed value must be byte-identical to exactly one
+// writer's full payload.
 func TestConcurrentSetSameKeyNeverTorn(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
@@ -307,8 +304,7 @@ func TestResolveRejectsReservedTempSegment(t *testing.T) {
 // TestSetIfNotExistsNoTornVisibility uses testHookBeforeCommit to pause
 // SetIfNotExists after the temp file is fully written but before the
 // publishing hard-link, and checks that a concurrent Exists/Get sees no
-// trace of the key — the old O_EXCL-in-place scheme could expose a
-// zero-byte or partially-written file at this point.
+// trace of the key (no zero-byte or partially-written file).
 func TestSetIfNotExistsNoTornVisibility(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
@@ -473,10 +469,8 @@ func TestResolveRejectsEscapingKeys(t *testing.T) {
 	}
 }
 
-// TestResolveLeadingSlashIsRootRelative pins the (deliberately kept)
-// behavior that leading slashes are ignored: "/abs" addresses the same
-// value as "abs", inside the root. Callers may pass such keys today (e.g.
-// chunk keys of a root-path array).
+// TestResolveLeadingSlashIsRootRelative pins that leading slashes are
+// ignored: "/abs" addresses the same value as "abs", inside the root.
 func TestResolveLeadingSlashIsRootRelative(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)

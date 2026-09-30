@@ -74,7 +74,7 @@ func fillBytes(n int64) []byte {
 }
 
 // TestCopyMatchesNaive_Basic covers a handful of hand-picked cases spanning
-// every original call site's shape (whole chunk, edge-clipped chunk,
+// every call site's shape (whole chunk, edge-clipped chunk,
 // sliced/strided selection, sharding inner<->outer regions, rank-0).
 func TestCopyMatchesNaive_Basic(t *testing.T) {
 	const esz = 4
