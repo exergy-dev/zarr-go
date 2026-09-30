@@ -12,7 +12,10 @@ import (
 	"github.com/exergy-dev/zarr-go/store"
 )
 
-// CreateOption customizes array/group creation.
+// CreateOption customizes CreateArray and CreateGroup. WithAttributes and
+// WithOverwrite apply to both; every other option only means something for
+// an array, and CreateGroup returns an error naming it rather than silently
+// ignoring it.
 type CreateOption func(*createOptions)
 
 type createOptions struct {
@@ -24,6 +27,9 @@ type createOptions struct {
 	keySep     string
 	openOpts   arrayOptions
 	overwrite  bool
+	// arrayOnly names the last array-only option applied, for CreateGroup
+	// to reject.
+	arrayOnly string
 }
 
 func defaultCreateOptions() createOptions {
@@ -42,6 +48,7 @@ func defaultCreateOptions() createOptions {
 // supply the bytes codec plus optional compression (e.g., gzip, zstd).
 func WithCodecs(specs ...codec.Spec) CreateOption {
 	return func(o *createOptions) {
+		o.arrayOnly = "WithCodecs"
 		if len(specs) > 0 {
 			o.codecs = append(o.codecs[:0], specs...)
 		}
@@ -52,6 +59,7 @@ func WithCodecs(specs ...codec.Spec) CreateOption {
 // "Infinity", "-Infinity", or a 2-element array for complex).
 func WithFillValue(raw json.RawMessage) CreateOption {
 	return func(o *createOptions) {
+		o.arrayOnly = "WithFillValue"
 		o.fillValue = append(json.RawMessage(nil), raw...)
 	}
 }
@@ -68,6 +76,7 @@ func WithAttributes(attrs map[string]any) CreateOption {
 // WithDimensionNames labels the array's dimensions.
 func WithDimensionNames(names []string) CreateOption {
 	return func(o *createOptions) {
+		o.arrayOnly = "WithDimensionNames"
 		o.dimNames = append([]string(nil), names...)
 	}
 }
@@ -93,6 +102,7 @@ func WithOverwrite() CreateOption {
 // options list to override that default.
 func WithChunkKeySeparator(sep string) CreateOption {
 	return func(o *createOptions) {
+		o.arrayOnly = "WithChunkKeySeparator"
 		o.keySep = sep
 	}
 }
@@ -103,6 +113,7 @@ func WithChunkKeySeparator(sep string) CreateOption {
 // Call WithChunkKeySeparator after this option to use a different separator.
 func WithV2ChunkKeys() CreateOption {
 	return func(o *createOptions) {
+		o.arrayOnly = "WithV2ChunkKeys"
 		o.keyEncName = "v2"
 		o.keySep = "."
 	}
@@ -220,18 +231,22 @@ func CreateArray[T Numeric](
 // CreateGroup creates a new v3 group under path. The store must implement
 // store.WritableStore. By default this is an atomic create: if a zarr.json
 // already exists at the target the call returns store.ErrAlreadyExists.
-// Pass WithOverwrite() to clobber an existing entry.
-func CreateGroup(ctx context.Context, s store.Store, path string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
+// Pass WithOverwrite() to clobber an existing entry, and WithAttributes to
+// attach user attributes. Any other (array-only) option is an error.
+func CreateGroup(ctx context.Context, s store.Store, path string, opts ...CreateOption) (*Group, error) {
 	ws, ok := s.(store.WritableStore)
 	if !ok {
 		return nil, ErrReadOnly
 	}
 	path = strings.Trim(path, "/")
-	co := defaultCreateOptions()
+	var co createOptions
 	for _, opt := range opts {
 		opt(&co)
 	}
-	gm := &metadata.GroupMeta{ZarrFormat: 3, NodeType: "group", Attributes: cloneAttrs(attrs)}
+	if co.arrayOnly != "" {
+		return nil, fmt.Errorf("create group at %q: %s is an array-only option", path, co.arrayOnly)
+	}
+	gm := &metadata.GroupMeta{ZarrFormat: 3, NodeType: "group", Attributes: co.attrs}
 	raw, err := metadata.MarshalGroup(gm)
 	if err != nil {
 		return nil, err
@@ -268,6 +283,6 @@ func deleteStaleChunks(ctx context.Context, ws store.WritableStore, path string)
 func cloneAttrs(attrs map[string]any) map[string]any { return maps.Clone(attrs) }
 
 // CreateGroup adds a sub-group named name under g.
-func (g *Group) CreateGroup(ctx context.Context, name string, attrs map[string]any, opts ...CreateOption) (*Group, error) {
-	return CreateGroup(ctx, g.store, joinKey(g.path, name), attrs, opts...)
+func (g *Group) CreateGroup(ctx context.Context, name string, opts ...CreateOption) (*Group, error) {
+	return CreateGroup(ctx, g.store, joinKey(g.path, name), opts...)
 }

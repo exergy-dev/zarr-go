@@ -145,11 +145,11 @@ func TestWriteEdgeChunkPadsWithFill(t *testing.T) {
 func TestCreateGroupAndChild(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
-	g, err := zarr.CreateGroup(ctx, s, "root", map[string]any{"name": "root"})
+	g, err := zarr.CreateGroup(ctx, s, "root", zarr.WithAttributes(map[string]any{"name": "root"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.CreateGroup(ctx, "child", nil); err != nil {
+	if _, err := g.CreateGroup(ctx, "child"); err != nil {
 		t.Fatal(err)
 	}
 	// Re-open as a node.

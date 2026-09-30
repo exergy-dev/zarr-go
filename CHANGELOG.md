@@ -42,6 +42,12 @@ Initial release.
 
 ### Changed
 
+- `CreateGroup` / `Group.CreateGroup` no longer take a positional `attrs`
+  map: pass `WithAttributes` instead. An array-only option (`WithCodecs`,
+  `WithFillValue`, `WithDimensionNames`, `WithChunkKeySeparator`,
+  `WithV2ChunkKeys`) passed to `CreateGroup` is now an error instead of
+  being silently ignored.
+
 - `codec.PartialDecoder.DecodePartial` takes a `*codec.PartialReadRequest`
   instead of seven positional parameters; `codec.SuffixRangeFetcher` moved
   from `codec/sharding` to `codec`. Only relevant to custom

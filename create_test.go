@@ -2,12 +2,15 @@ package zarr_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/mem"
 )
@@ -37,10 +40,10 @@ func TestCreateArrayAlreadyExists(t *testing.T) {
 func TestCreateGroupAlreadyExists(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
-	if _, err := zarr.CreateGroup(ctx, s, "g", nil); err != nil {
+	if _, err := zarr.CreateGroup(ctx, s, "g"); err != nil {
 		t.Fatalf("first CreateGroup: %v", err)
 	}
-	_, err := zarr.CreateGroup(ctx, s, "g", nil)
+	_, err := zarr.CreateGroup(ctx, s, "g")
 	if !errors.Is(err, store.ErrAlreadyExists) {
 		t.Fatalf("second CreateGroup: got %v, want ErrAlreadyExists", err)
 	}
@@ -179,7 +182,7 @@ func TestCreateArrayReadOnlyStore(t *testing.T) {
 	if _, err := zarr.CreateArray[int32](ctx, ro, "arr", []int64{4}, []int64{2}); !errors.Is(err, zarr.ErrReadOnly) {
 		t.Fatalf("CreateArray: got %v, want ErrReadOnly", err)
 	}
-	if _, err := zarr.CreateGroup(ctx, ro, "g", nil); !errors.Is(err, zarr.ErrReadOnly) {
+	if _, err := zarr.CreateGroup(ctx, ro, "g"); !errors.Is(err, zarr.ErrReadOnly) {
 		t.Fatalf("CreateGroup: got %v, want ErrReadOnly", err)
 	}
 }
@@ -209,8 +212,8 @@ type readOnlyStore struct {
 	store.Store
 }
 
-// TestGroupAttrsDoesNotAliasCaller checks that WithAttributes/CreateGroup's
-// attrs param and Group.Attrs()'s return value don't let a caller mutate the
+// TestGroupAttrsDoesNotAliasCaller checks that CreateGroup's WithAttributes
+// map and Group.Attrs()'s return value don't let a caller mutate the
 // group's in-memory metadata (which would silently diverge from the
 // already-persisted zarr.json) via the map they passed in or got back.
 func TestGroupAttrsDoesNotAliasCaller(t *testing.T) {
@@ -218,7 +221,7 @@ func TestGroupAttrsDoesNotAliasCaller(t *testing.T) {
 	s := mem.New()
 
 	in := map[string]any{"k": "v1"}
-	g, err := zarr.CreateGroup(ctx, s, "g", in)
+	g, err := zarr.CreateGroup(ctx, s, "g", zarr.WithAttributes(in))
 	if err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
@@ -332,7 +335,7 @@ func TestShapeAndCoordCopiesDoNotAlias(t *testing.T) {
 func TestGroupNilAttrsStayNil(t *testing.T) {
 	ctx := context.Background()
 	s := mem.New()
-	g, err := zarr.CreateGroup(ctx, s, "g", nil)
+	g, err := zarr.CreateGroup(ctx, s, "g")
 	if err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
@@ -345,6 +348,51 @@ func TestGroupNilAttrsStayNil(t *testing.T) {
 	}
 	if got := n.(*zarr.Group).Attrs(); got != nil {
 		t.Errorf("reopened: Attrs() = %#v, want nil", got)
+	}
+}
+
+// TestCreateGroupWithAttributes checks that WithAttributes attaches
+// attributes to a group, both in memory and in the persisted zarr.json.
+func TestCreateGroupWithAttributes(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	want := map[string]any{"k": "v"}
+	g, err := zarr.CreateGroup(ctx, s, "g", zarr.WithAttributes(want))
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if got := g.Attrs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("created: Attrs() = %#v, want %#v", got, want)
+	}
+	n, err := zarr.Open(ctx, s, "g")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := n.(*zarr.Group).Attrs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("reopened: Attrs() = %#v, want %#v", got, want)
+	}
+}
+
+// TestCreateGroupRejectsArrayOptions checks that CreateGroup fails loudly,
+// without writing anything, when handed an option that only means
+// something for an array, instead of silently ignoring it.
+func TestCreateGroupRejectsArrayOptions(t *testing.T) {
+	ctx := context.Background()
+	for name, opt := range map[string]zarr.CreateOption{
+		"WithCodecs":            zarr.WithCodecs(codec.Spec{Name: "bytes"}),
+		"WithFillValue":         zarr.WithFillValue(json.RawMessage("1")),
+		"WithDimensionNames":    zarr.WithDimensionNames([]string{"x"}),
+		"WithChunkKeySeparator": zarr.WithChunkKeySeparator("."),
+		"WithV2ChunkKeys":       zarr.WithV2ChunkKeys(),
+	} {
+		s := mem.New()
+		_, err := zarr.CreateGroup(ctx, s, "g", opt)
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("CreateGroup(%s): got %v, want an error naming the option", name, err)
+		}
+		if _, err := s.Get(ctx, "g/zarr.json"); !errors.Is(err, store.ErrKeyNotFound) {
+			t.Errorf("CreateGroup(%s): zarr.json written despite the error (Get: %v)", name, err)
+		}
 	}
 }
 
