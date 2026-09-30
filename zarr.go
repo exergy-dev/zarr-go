@@ -44,9 +44,10 @@ func (g *Group) Path() string { return g.path }
 func (g *Group) Attrs() map[string]any { return cloneAttrs(g.meta.Attributes) }
 
 // wrapCorrupt tags a metadata decode failure with ErrCorruptMetadata so
-// callers can errors.Is against it, while preserving the underlying message.
+// callers can errors.Is against it, while keeping the underlying error in
+// the chain for errors.Is/As.
 func wrapCorrupt(err error) error {
-	return fmt.Errorf("%w: %v", ErrCorruptMetadata, err)
+	return fmt.Errorf("%w: %w", ErrCorruptMetadata, err)
 }
 
 // Open returns the Node (Group or Array) at path. Detects v3 by reading
