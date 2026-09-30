@@ -3,6 +3,7 @@
 package scheduler
 
 import (
+	"math"
 	"sort"
 )
 
@@ -29,6 +30,11 @@ type RangeMember struct {
 // CoalesceRanges merges adjacent ranges whose gap is <= gapBytes into a single
 // MergedRange. Input is taken by value; output has stable mapping back to
 // the input via OriginalIndex.
+//
+// Off and N must be non-negative. Range ends saturate at math.MaxInt64
+// rather than wrapping, so an Off+N that overflows (e.g. from an unvalidated
+// shard index) can't masquerade as a range contained in an earlier one.
+// Callers must still bounds-check each member against the bytes fetched.
 func CoalesceRanges(in []Range, gapBytes int64) []MergedRange {
 	if len(in) == 0 {
 		return nil
@@ -50,11 +56,11 @@ func CoalesceRanges(in []Range, gapBytes int64) []MergedRange {
 	})
 	for k := 1; k < len(idx); k++ {
 		r := idx[k]
-		curEnd := cur.Off + cur.N
+		curEnd := rangeEnd(cur.Off, cur.N)
 		gap := r.Off - curEnd
 		if gap <= gapBytes {
 			// Extend cur to cover r.
-			extra := (r.Off + r.N) - curEnd
+			extra := rangeEnd(r.Off, r.N) - curEnd
 			if extra < 0 {
 				// Overlap; r is fully contained.
 				cur.Members = append(cur.Members, RangeMember{
@@ -75,4 +81,12 @@ func CoalesceRanges(in []Range, gapBytes int64) []MergedRange {
 	}
 	out = append(out, cur)
 	return out
+}
+
+// rangeEnd returns off+n, saturating at math.MaxInt64 instead of wrapping.
+func rangeEnd(off, n int64) int64 {
+	if n > math.MaxInt64-off {
+		return math.MaxInt64
+	}
+	return off + n
 }

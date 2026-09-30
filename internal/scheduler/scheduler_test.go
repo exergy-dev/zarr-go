@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"math"
 	"testing"
 )
 
@@ -52,6 +53,24 @@ func TestCoalesceRangesPreservesIndices(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		if !seen[i] {
 			t.Fatalf("OriginalIndex %d missing", i)
+		}
+	}
+}
+
+// TestCoalesceRangesOverflow: a range whose Off+N overflows int64 must not
+// wrap into a "fully contained" member that points past the merged span.
+func TestCoalesceRangesOverflow(t *testing.T) {
+	in := []Range{{0, 4}, {1000, math.MaxInt64}}
+	out := CoalesceRanges(in, 4<<20)
+	for _, m := range out {
+		if m.N < 0 || m.N > math.MaxInt64-m.Off {
+			t.Fatalf("merged range (%d,%d) wraps int64", m.Off, m.N)
+		}
+		for _, mem := range m.Members {
+			if mem.OffInMerged > m.N {
+				t.Fatalf("member %d starts at %d, past merged span of %d bytes",
+					mem.OriginalIndex, mem.OffInMerged, m.N)
+			}
 		}
 	}
 }
