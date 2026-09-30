@@ -18,7 +18,6 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
-	"github.com/exergy-dev/zarr-go/internal/cloudstore"
 	zstore "github.com/exergy-dev/zarr-go/store"
 )
 
@@ -100,7 +99,7 @@ func googleAPICode(err error) int {
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +126,11 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 // off-at/past-EOF (416) case, and clamping n so the SDK's unguarded
 // off+n-1 Range end cannot overflow need handling here.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	if err := cloudstore.ValidateRange("gcs", "GetRange", off, n); err != nil {
+	if err := checkRange(off, n); err != nil {
 		return nil, err
 	}
-	n = cloudstore.ClampLen(off, n)
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	n = clampLen(off, n)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return nil, err
 	}
@@ -159,10 +158,10 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 // trick can't express n==0 (there's no negative zero), so that case is
 // handled separately via Attrs.
 func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
-	if err := cloudstore.ValidateRange("gcs", "GetSuffix", 0, n); err != nil {
+	if err := checkSuffix(n); err != nil {
 		return nil, err
 	}
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +191,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 
 // Set implements store.Writer.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return err
 	}
@@ -211,7 +210,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // "x-goog-if-generation-match: 0" precondition (DoesNotExist) so concurrent
 // writers can race safely; the loser receives a 412 and we return (false, nil).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return false, err
 	}
@@ -235,7 +234,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Writer. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return err
 	}
@@ -250,7 +249,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	k, err := joinKey(s.prefix, key)
 	if err != nil {
 		return false, err
 	}
@@ -266,7 +265,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // List implements store.Store. The supplied prefix is joined with the store's
 // configured prefix; yielded keys have the configured prefix stripped.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
-	full := cloudstore.ListPrefix(s.prefix, prefix)
+	full := listPrefix(s.prefix, prefix)
 	return func(yield func(string, error) bool) {
 		it := s.bucket.Objects(ctx, &storage.Query{Prefix: full})
 		for {
@@ -285,7 +284,7 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 			if attrs == nil {
 				continue
 			}
-			k, ok := cloudstore.KeyFromObject(s.prefix, attrs.Name)
+			k, ok := keyFromObject(s.prefix, attrs.Name)
 			if !ok {
 				continue
 			}

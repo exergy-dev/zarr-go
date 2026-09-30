@@ -1,6 +1,4 @@
-// Package cloudstoretest provides a credential-free httptest fake for the
-// s3, gcs, and azblob backends' tests.
-package cloudstoretest
+package gcs
 
 import (
 	"encoding/json"
@@ -19,34 +17,28 @@ var (
 	suffixRangeRE = regexp.MustCompile(`^bytes=-(\d+)$`)
 )
 
-// Server is an in-memory fake of the read side of the S3, GCS and Azure
-// Blob object APIs, just deep enough for the backends' Get, GetRange,
-// GetSuffix and Exists: GET (whole object, a closed "bytes=start-end" or a
-// suffix "bytes=-n" range), HEAD, and GCS's JSON object-metadata GET.
+// fakeServer is an in-memory, credential-free fake of the read side of the
+// GCS APIs the storage client uses against STORAGE_EMULATOR_HOST, just deep
+// enough for Get, GetRange, GetSuffix and Exists: the object media GET
+// (whole object, a closed "bytes=start-end" or a suffix "bytes=-n" Range)
+// at /<bucket>/<name>, and the JSON object-metadata GET at
+// /storage/v1/b/<bucket>/o/<name>.
 //
-// An object's name is the request path minus its first segment (the bucket
-// or container); GCS metadata requests use /storage/v1/b/<bucket>/o/<name>.
-// Like a strict object store, a range header that is neither form is a
-// 400, and a closed range starting at or past the object's size, or a zero
-// suffix, is a 416; a suffix longer than the object serves all of it.
-// Errors carry Azure's x-ms-error-code (BlobNotFound for a 404, InvalidRange
-// for a 416).
-type Server struct {
+// Like a strict object store, a Range that is neither form is a 400, and a
+// closed range starting at or past the object's size, or a zero suffix, is
+// a 416; a suffix longer than the object serves all of it.
+type fakeServer struct {
 	URL string
-
-	rangeHeader string
 
 	mu      sync.Mutex
 	objects map[string][]byte
 	ranges  []string
 }
 
-// NewServer starts a Server that reads byte ranges from the header named
-// rangeHeader ("Range" for S3/GCS, "x-ms-range" for Azure). It is closed
-// via t.Cleanup.
-func NewServer(t testing.TB, rangeHeader string) *Server {
+// newFakeServer starts a fakeServer, closed via t.Cleanup.
+func newFakeServer(t testing.TB) *fakeServer {
 	t.Helper()
-	s := &Server{rangeHeader: rangeHeader, objects: map[string][]byte{}}
+	s := &fakeServer{objects: map[string][]byte{}}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL
@@ -54,24 +46,24 @@ func NewServer(t testing.TB, rangeHeader string) *Server {
 }
 
 // Put stores content under the object name.
-func (s *Server) Put(name string, content []byte) {
+func (s *fakeServer) Put(name string, content []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.objects[name] = append([]byte(nil), content...)
 }
 
-// Ranges returns the range header of every request received so far, in
+// Ranges returns the Range header of every request received so far, in
 // order ("" for a request without one).
-func (s *Server) Ranges() []string {
+func (s *fakeServer) Ranges() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.ranges...)
 }
 
-func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
-	rng := r.Header.Get(s.rangeHeader)
-	name, gcsMeta := strings.CutPrefix(r.URL.Path, "/storage/v1/b/")
-	if gcsMeta {
+func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
+	rng := r.Header.Get("Range")
+	name, meta := strings.CutPrefix(r.URL.Path, "/storage/v1/b/")
+	if meta {
 		_, name, _ = strings.Cut(name, "/o/")
 	} else {
 		_, name, _ = strings.Cut(strings.TrimPrefix(name, "/"), "/")
@@ -82,28 +74,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if !ok {
-		w.Header().Set("x-ms-error-code", "BlobNotFound")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	size := int64(len(content))
-	if gcsMeta {
+	if meta {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"bucket": "b", "name": name, "size": strconv.FormatInt(size, 10),
 		})
 		return
 	}
-	w.Header().Set("ETag", `"0x1"`)
-	w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("x-ms-blob-type", "BlockBlob")
-	if r.Method == http.MethodHead || rng == "" {
+	if rng == "" {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			_, _ = w.Write(content)
-		}
+		_, _ = w.Write(content)
 		return
 	}
 
@@ -117,7 +103,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if start >= size {
-			w.Header().Set("x-ms-error-code", "InvalidRange")
 			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 			return
 		}
@@ -129,7 +114,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if n == 0 || size == 0 {
-			w.Header().Set("x-ms-error-code", "InvalidRange")
 			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 			return
 		}

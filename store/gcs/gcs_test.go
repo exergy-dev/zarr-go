@@ -12,7 +12,6 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 
-	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
 )
@@ -55,7 +54,7 @@ func TestNew_RequiresBucket(t *testing.T) {
 	}
 }
 
-// fakeStore returns a Store for bucket "b" on a cloudstoretest.Server.
+// fakeStore returns a Store for bucket "b" on a fakeServer.
 func fakeStore(t *testing.T, url string) *Store {
 	t.Helper()
 	t.Setenv("STORAGE_EMULATOR_HOST", url)
@@ -70,7 +69,7 @@ func fakeStore(t *testing.T, url string) *Store {
 // TestFakeConformance runs the read side of the store contract (Basics,
 // GetRange, GetSuffix) against the credential-free fake.
 func TestFakeConformance(t *testing.T) {
-	srv := cloudstoretest.NewServer(t, "Range")
+	srv := newFakeServer(t)
 	storetest.RunConformance(t, func(t *testing.T) store.Store {
 		return fakeStore(t, srv.URL)
 	}, storetest.Options{
@@ -85,7 +84,7 @@ func TestFakeConformance(t *testing.T) {
 // GCS HTTP reader builds "bytes=off-(off+length-1)" itself, so an unclamped
 // length overflows inside the SDK.
 func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
-	srv := cloudstoretest.NewServer(t, "Range")
+	srv := newFakeServer(t)
 	srv.Put("k", []byte("0123456789"))
 	s := fakeStore(t, srv.URL)
 	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
@@ -243,9 +242,6 @@ func TestIntegration_SetIfNotExists(t *testing.T) {
 		t.Fatalf("Get got %q, want %q", got, "first")
 	}
 }
-
-// silence unused import when integration tests are skipped.
-var _ = storage.ErrObjectNotExist
 
 func TestIntegration_Conformance(t *testing.T) {
 	storetest.RunConformance(t, func(t *testing.T) store.Store {
