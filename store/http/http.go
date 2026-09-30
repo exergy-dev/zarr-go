@@ -17,13 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-
-	"iter"
 
 	"github.com/exergy-dev/zarr-go/store"
 )
