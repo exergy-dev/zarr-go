@@ -30,7 +30,8 @@ const maxSwapTestLen = 520
 // checkSwapBytes compares swapBytes against refSwap for every swap unit the
 // bytes codec uses (including the complex dtypes, which swap each component
 // separately) and every valid length from 0 to maxSwapTestLen. It checks the
-// output, that nothing past len(dst) is written, and that src is untouched.
+// output, that nothing past len(dst) is written, that src is untouched, and
+// the documented in-place (dst == src) mode.
 func checkSwapBytes(t *testing.T) {
 	t.Helper()
 	units := []struct {
@@ -61,6 +62,12 @@ func checkSwapBytes(t *testing.T) {
 				if b != guard {
 					t.Fatalf("%s (unit %d) n=%d: wrote past len(dst) at +%d", u.name, u.unit, n, i)
 				}
+			}
+
+			inPlace := stdbytes.Clone(src)
+			swapBytes(inPlace, inPlace, u.unit)
+			if !stdbytes.Equal(inPlace, want) {
+				t.Fatalf("%s (unit %d) n=%d: in-place mismatch", u.name, u.unit, n)
 			}
 			if !stdbytes.Equal(src, makePattern(n)) {
 				t.Fatalf("%s (unit %d) n=%d: src modified", u.name, u.unit, n)
