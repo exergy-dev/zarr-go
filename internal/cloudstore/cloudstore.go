@@ -5,29 +5,38 @@
 package cloudstore
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/exergy-dev/zarr-go/store"
 )
 
-// JoinKey joins the configured prefix with key, producing a clean object key
-// with no leading or duplicate slashes.
-func JoinKey(prefix, key string) string {
-	prefix = TrimSlashes(prefix)
-	key = strings.TrimLeft(key, "/")
-	if prefix == "" {
-		return key
-	}
-	if key == "" {
-		return prefix
-	}
-	return prefix + "/" + key
-}
+// ErrEmptyKey is returned (wrapped with the calling backend's name) by
+// JoinKey for a key that is empty after stripping leading slashes.
+var ErrEmptyKey = errors.New("empty key")
 
-// TrimSlashes strips leading and trailing slashes from s.
-func TrimSlashes(s string) string {
-	return strings.Trim(s, "/")
+// JoinKey joins the configured prefix with key, producing a clean object key
+// with no leading or duplicate slashes, for the single-key operations (Get,
+// GetRange, GetSuffix, Set, SetIfNotExists, Delete, Exists).
+//
+// A key that is empty after stripping leading slashes is rejected with
+// ErrEmptyKey: there is no object inside the store's namespace for it to
+// name. Joining it would address the object named exactly prefix (outside
+// prefix+"/") or, mapped to prefix+"/", the directory marker that
+// KeyFromObject hides from List; with no prefix, the empty object name the
+// SDKs reject anyway.
+func JoinKey(backend, prefix, key string) (string, error) {
+	prefix = strings.Trim(prefix, "/")
+	k := strings.TrimLeft(key, "/")
+	if k == "" {
+		return "", fmt.Errorf("%s: key %q: %w", backend, key, ErrEmptyKey)
+	}
+	if prefix == "" {
+		return k, nil
+	}
+	return prefix + "/" + k, nil
 }
 
 // ListPrefix returns the object-name prefix to list for a store-level List
@@ -35,7 +44,7 @@ func TrimSlashes(s string) string {
 // separating slash, so listing never matches sibling objects such as
 // storePrefix+"2/x" or an object named exactly storePrefix.
 func ListPrefix(storePrefix, prefix string) string {
-	storePrefix = TrimSlashes(storePrefix)
+	storePrefix = strings.Trim(storePrefix, "/")
 	prefix = strings.TrimLeft(prefix, "/")
 	if storePrefix == "" {
 		return prefix
@@ -47,7 +56,7 @@ func ListPrefix(storePrefix, prefix string) string {
 // for objects outside storePrefix+"/" and for the bare directory marker
 // storePrefix+"/", which has no store key.
 func KeyFromObject(storePrefix, objKey string) (key string, ok bool) {
-	storePrefix = TrimSlashes(storePrefix)
+	storePrefix = strings.Trim(storePrefix, "/")
 	if storePrefix == "" {
 		return objKey, objKey != ""
 	}
@@ -56,6 +65,18 @@ func KeyFromObject(storePrefix, objKey string) (key string, ok bool) {
 		return "", false
 	}
 	return key, true
+}
+
+// ClampLen returns n reduced so that off+n cannot overflow int64, for
+// non-negative off and n (call ValidateRange first). Range reads build a
+// closed "bytes=off-(off+n-1)" header, and every backend (S3 here, GCS and
+// Azure inside their SDKs) computes that end offset unguarded, so an
+// unclamped n near MaxInt64 wraps to a negative, malformed end. The clamp
+// only shrinks requests ending past MaxInt64, far beyond any real object, so
+// the GetRange contract's clamp-to-size result is unchanged. off == MaxInt64
+// clamps n to 0, which callers already treat as an existence check.
+func ClampLen(off, n int64) int64 {
+	return min(n, math.MaxInt64-off)
 }
 
 // ValidateRange returns store.ErrInvalidRange (wrapped with the calling

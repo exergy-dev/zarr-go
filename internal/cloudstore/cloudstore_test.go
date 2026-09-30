@@ -2,6 +2,7 @@ package cloudstore
 
 import (
 	"errors"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -20,14 +21,46 @@ func TestJoinKey(t *testing.T) {
 		{"/p/", "foo", "p/foo"},
 		{"/p/", "/foo", "p/foo"},
 		{"a/b", "c/d", "a/b/c/d"},
-		{"p", "", "p"},
-		{"", "", ""},
-		{"p", "/", "p"},
+		{"///a/b//", "//c", "a/b/c"},
+		{"/", "foo", "foo"},
+		{"p", "foo/", "p/foo/"},
 	}
 	for _, c := range cases {
-		got := JoinKey(c.prefix, c.key)
-		if got != c.want {
-			t.Errorf("JoinKey(%q, %q) = %q, want %q", c.prefix, c.key, got, c.want)
+		got, err := JoinKey("s3", c.prefix, c.key)
+		if err != nil || got != c.want {
+			t.Errorf("JoinKey(%q, %q) = %q, %v, want %q, nil", c.prefix, c.key, got, err, c.want)
+		}
+	}
+}
+
+func TestJoinKeyRejectsEmptyKey(t *testing.T) {
+	for _, prefix := range []string{"", "p", "/p/"} {
+		for _, key := range []string{"", "/", "//"} {
+			got, err := JoinKey("s3", prefix, key)
+			if !errors.Is(err, ErrEmptyKey) || got != "" {
+				t.Errorf("JoinKey(%q, %q) = %q, %v, want \"\", ErrEmptyKey", prefix, key, got, err)
+			}
+			if err != nil && !strings.HasPrefix(err.Error(), "s3: ") {
+				t.Errorf("JoinKey(%q, %q) error %q lacks the backend name", prefix, key, err)
+			}
+		}
+	}
+}
+
+// TestJoinKeyStaysInNamespace: every object a single-key operation addresses
+// must lie inside the store's namespace, i.e. List must be able to map it
+// back to the same key.
+func TestJoinKeyStaysInNamespace(t *testing.T) {
+	for _, prefix := range []string{"", "data", "/data/", "a/b"} {
+		for _, key := range []string{"", "/", "//", "k", "/k", "k/v"} {
+			obj, err := JoinKey("s3", prefix, key)
+			if err != nil {
+				continue // rejected keys address no object at all
+			}
+			got, ok := KeyFromObject(prefix, obj)
+			if want := strings.TrimLeft(key, "/"); !ok || got != want {
+				t.Errorf("JoinKey(%q, %q) = %q, outside the store namespace (KeyFromObject = %q, %v)", prefix, key, obj, got, ok)
+			}
 		}
 	}
 }
@@ -121,18 +154,26 @@ func TestListNamespace(t *testing.T) {
 	}
 }
 
-func TestTrimSlashes(t *testing.T) {
-	cases := map[string]string{
-		"":         "",
-		"/":        "",
-		"//a//":    "a",
-		"a/b":      "a/b",
-		"/a/b/":    "a/b",
-		"///a/b//": "a/b",
+func TestClampLen(t *testing.T) {
+	cases := []struct {
+		off, n, want int64
+	}{
+		{0, 0, 0},
+		{0, 10, 10},
+		{5, 10, 10},
+		{0, math.MaxInt64, math.MaxInt64},
+		{5, math.MaxInt64, math.MaxInt64 - 5},
+		{math.MaxInt64 - 1, 5, 1},
+		{math.MaxInt64, 1, 0},
+		{math.MaxInt64, math.MaxInt64, 0},
 	}
-	for in, want := range cases {
-		if got := TrimSlashes(in); got != want {
-			t.Errorf("TrimSlashes(%q) = %q, want %q", in, got, want)
+	for _, c := range cases {
+		got := ClampLen(c.off, c.n)
+		if got != c.want {
+			t.Errorf("ClampLen(%d, %d) = %d, want %d", c.off, c.n, got, c.want)
+		}
+		if end := c.off + got; end < c.off {
+			t.Errorf("ClampLen(%d, %d) = %d: off+n overflows to %d", c.off, c.n, got, end)
 		}
 	}
 }

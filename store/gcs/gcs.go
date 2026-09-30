@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
@@ -51,7 +52,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		client: client,
 		bucket: client.Bucket(cfg.Bucket),
 		name:   cfg.Bucket,
-		prefix: cloudstore.TrimSlashes(cfg.Prefix),
+		prefix: strings.Trim(cfg.Prefix, "/"),
 	}, nil
 }
 
@@ -99,7 +100,10 @@ func googleAPICode(err error) int {
 
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	r, err := s.bucket.Object(k).NewReader(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
@@ -117,15 +121,20 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 
 // GetRange implements store.Store, per the store.Store GetRange contract.
 //
-// off/n are passed straight through to NewRangeReader, which already
-// implements the n==0 (empty, existence-checked via a real request) and
-// clamp-past-EOF behavior the contract calls for; only the negative-off/n
-// rejection and the off-at/past-EOF (416) case need translating here.
+// off/n are passed through to NewRangeReader, which already implements the
+// n==0 (empty, existence-checked via a real request) and clamp-past-EOF
+// behavior the contract calls for; only the negative-off/n rejection, the
+// off-at/past-EOF (416) case, and clamping n so the SDK's unguarded
+// off+n-1 Range end cannot overflow need handling here.
 func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
 	if err := cloudstore.ValidateRange("gcs", "GetRange", off, n); err != nil {
 		return nil, err
 	}
-	k := cloudstore.JoinKey(s.prefix, key)
+	n = cloudstore.ClampLen(off, n)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	r, err := s.bucket.Object(k).NewRangeReader(ctx, off, n)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
@@ -153,7 +162,10 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	if err := cloudstore.ValidateRange("gcs", "GetSuffix", 0, n); err != nil {
 		return nil, err
 	}
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return nil, err
+	}
 	if n == 0 {
 		if _, err := s.bucket.Object(k).Attrs(ctx); err != nil {
 			if errors.Is(err, storage.ErrObjectNotExist) {
@@ -180,7 +192,10 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 
 // Set implements store.Store.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return err
+	}
 	w := s.bucket.Object(k).NewWriter(ctx)
 	if _, err := w.Write(value); err != nil {
 		_ = w.Close()
@@ -196,7 +211,10 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 // "x-goog-if-generation-match: 0" precondition (DoesNotExist) so concurrent
 // writers can race safely; the loser receives a 412 and we return (false, nil).
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
 	obj := s.bucket.Object(k).If(storage.Conditions{DoesNotExist: true})
 	w := obj.NewWriter(ctx)
 	if _, err := w.Write(value); err != nil {
@@ -217,7 +235,10 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Delete implements store.Store. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return err
+	}
 	if err := s.bucket.Object(k).Delete(ctx); err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return nil
@@ -229,7 +250,10 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 
 // Exists implements store.Store.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
-	k := cloudstore.JoinKey(s.prefix, key)
+	k, err := cloudstore.JoinKey("gcs", s.prefix, key)
+	if err != nil {
+		return false, err
+	}
 	if _, err := s.bucket.Object(k).Attrs(ctx); err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
 			return false, nil

@@ -2,14 +2,17 @@ package azblob
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
-	"fmt"
+	"math"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 
+	"github.com/exergy-dev/zarr-go/internal/cloudstore/cloudstoretest"
 	"github.com/exergy-dev/zarr-go/store"
 	"github.com/exergy-dev/zarr-go/store/storetest"
 )
@@ -24,7 +27,7 @@ func TestIsNotFound(t *testing.T) {
 }
 
 func TestNotFoundErrIsErrKeyNotFound(t *testing.T) {
-	err := notFoundErr("k", fmt.Errorf("orig: %w", errors.New("BlobNotFound")))
+	err := notFoundErr("k")
 	if !errors.Is(err, store.ErrKeyNotFound) {
 		t.Errorf("expected errors.Is(err, store.ErrKeyNotFound), got %v", err)
 	}
@@ -50,10 +53,18 @@ func TestNew_RequiresContainer(t *testing.T) {
 	}
 }
 
-func TestNew_RequiresAccountNameOrServiceURL(t *testing.T) {
-	_, err := New(context.Background(), Config{Container: "c", AccountKey: "k"})
-	if err == nil {
-		t.Fatal("expected error when AccountName and ServiceURL are both empty")
+// TestNew_RequiresAccountName: shared-key auth signs every request with the
+// account name, so it is required even when ServiceURL gives the endpoint.
+func TestNew_RequiresAccountName(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("key"))
+	for _, cfg := range []Config{
+		{Container: "c", AccountKey: key},
+		{Container: "c", AccountKey: key, ServiceURL: "https://acct.blob.core.windows.net/"},
+	} {
+		_, err := New(context.Background(), cfg)
+		if err == nil || !strings.Contains(err.Error(), "AccountName is required") {
+			t.Errorf("New(ServiceURL=%q, no AccountName) error = %v, want \"AccountName is required\"", cfg.ServiceURL, err)
+		}
 	}
 }
 
@@ -61,6 +72,33 @@ func TestNew_RequiresAccountKey(t *testing.T) {
 	_, err := New(context.Background(), Config{AccountName: "x", Container: "c"})
 	if err == nil {
 		t.Fatal("expected error when AccountKey is empty (azidentity not supported)")
+	}
+}
+
+// TestGetRange_HugeLengthRangeHeader: off+n past the end must clamp to the
+// blob size, including when off+n-1 overflows int64 (n = MaxInt64). The SDK
+// formats x-ms-range as "bytes=Offset-(Offset+Count-1)" itself, so an
+// unclamped Count overflows inside the SDK.
+func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
+	url, ranges := cloudstoretest.RangeServer(t, "x-ms-range", []byte("0123456789"))
+	s, err := New(context.Background(), Config{
+		AccountName: "acct",
+		AccountKey:  base64.StdEncoding.EncodeToString([]byte("key")),
+		Container:   "c",
+		ServiceURL:  url,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := s.GetRange(context.Background(), "k", 5, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("GetRange(5, MaxInt64): %v (x-ms-range headers sent: %q)", err, ranges())
+	}
+	if string(got) != "56789" {
+		t.Fatalf("GetRange(5, MaxInt64) = %q, want %q", got, "56789")
+	}
+	if r, want := ranges(), "bytes=5-9223372036854775806"; len(r) != 1 || r[0] != want {
+		t.Fatalf("range headers sent = %q, want [%q]", r, want)
 	}
 }
 
