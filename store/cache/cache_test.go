@@ -14,10 +14,10 @@ import (
 	"github.com/exergy-dev/zarr-go/store/storetest"
 )
 
-// countingStore wraps a store.Store and records call counts per method for
+// countingStore wraps a store.Writer and records call counts per method for
 // assertions.
 type countingStore struct {
-	inner store.Store
+	inner store.Writer
 
 	getCalls    atomic.Int64
 	rangeCalls  atomic.Int64
@@ -27,7 +27,7 @@ type countingStore struct {
 	listCalls   atomic.Int64
 }
 
-func newCounting(inner store.Store) *countingStore {
+func newCounting(inner store.Writer) *countingStore {
 	return &countingStore{inner: inner}
 }
 
@@ -51,6 +51,11 @@ func (c *countingStore) Delete(ctx context.Context, key string) error {
 	return c.inner.Delete(ctx, key)
 }
 
+func (c *countingStore) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
+	c.setCalls.Add(1)
+	return c.inner.SetIfNotExists(ctx, key, value)
+}
+
 func (c *countingStore) Exists(ctx context.Context, key string) (bool, error) {
 	c.existsCalls.Add(1)
 	return c.inner.Exists(ctx, key)
@@ -68,7 +73,7 @@ func TestCacheHitReturnsCachedBytes(t *testing.T) {
 	if err := inner.inner.Set(ctx, "k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	v1, err := c.Get(ctx, "k")
 	if err != nil {
@@ -98,7 +103,7 @@ func TestCacheEvictionByCount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := cache.New(cache.Config{Underlying: inner, MaxEntries: 2})
+	c := cache.NewWriter(inner, cache.Config{MaxEntries: 2})
 
 	for _, k := range []string{"a", "b", "c"} {
 		if _, err := c.Get(ctx, k); err != nil {
@@ -110,7 +115,7 @@ func TestCacheEvictionByCount(t *testing.T) {
 	}
 	// "a" is the oldest and should have been evicted.
 	counting := newCounting(inner)
-	c2 := cache.New(cache.Config{Underlying: counting, MaxEntries: 2})
+	c2 := cache.NewWriter(counting, cache.Config{MaxEntries: 2})
 	for _, k := range []string{"a", "b", "c"} {
 		if _, err := c2.Get(ctx, k); err != nil {
 			t.Fatal(err)
@@ -140,7 +145,7 @@ func TestCacheEvictionBySize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := cache.New(cache.Config{Underlying: inner, MaxBytes: 100})
+	c := cache.NewWriter(inner, cache.Config{MaxBytes: 100})
 	for i := 0; i < 8; i++ {
 		if _, err := c.Get(ctx, fmt.Sprintf("k%d", i)); err != nil {
 			t.Fatal(err)
@@ -172,7 +177,7 @@ func TestCacheOversizedValueNotAdmitted(t *testing.T) {
 	if err := inner.Set(ctx, "big", big); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner, MaxBytes: 100})
+	c := cache.NewWriter(inner, cache.Config{MaxBytes: 100})
 	for i := 0; i < 4; i++ {
 		if _, err := c.Get(ctx, fmt.Sprintf("k%d", i)); err != nil {
 			t.Fatal(err)
@@ -201,7 +206,7 @@ func TestCacheInvalidatesOnSet(t *testing.T) {
 	if err := inner.Set(ctx, "k", []byte("old")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	if v, err := c.Get(ctx, "k"); err != nil || string(v) != "old" {
 		t.Fatalf("Get: %q %v", v, err)
@@ -225,7 +230,7 @@ func TestCacheInvalidatesOnDelete(t *testing.T) {
 	if err := inner.Set(ctx, "k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	if _, err := c.Get(ctx, "k"); err != nil {
 		t.Fatal(err)
@@ -246,7 +251,7 @@ func TestCacheRangePassthrough(t *testing.T) {
 	if err := inner.inner.Set(ctx, "k", []byte("hello world")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	for i := 0; i < 3; i++ {
 		v, err := c.GetRange(ctx, "k", 0, 5)
@@ -272,7 +277,7 @@ func TestCacheReturnsDefensiveCopy(t *testing.T) {
 	if err := inner.Set(ctx, "k", []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	v1, err := c.Get(ctx, "k")
 	if err != nil {
@@ -293,7 +298,7 @@ func TestCacheReturnsDefensiveCopy(t *testing.T) {
 func TestCachePropagatesNotFound(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	c := cache.New(cache.Config{Underlying: mem.New()})
+	c := cache.NewWriter(mem.New(), cache.Config{})
 
 	_, err := c.Get(ctx, "missing")
 	if !errors.Is(err, store.ErrKeyNotFound) {
@@ -308,7 +313,7 @@ func TestCacheExistsAndListPassthrough(t *testing.T) {
 	if err := inner.inner.Set(ctx, "a/1", []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	ok, err := c.Exists(ctx, "a/1")
 	if err != nil || !ok {
@@ -342,7 +347,7 @@ func TestCacheZeroLimitsDisable(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 	for i := 0; i < 1000; i++ {
 		if _, err := c.Get(ctx, fmt.Sprintf("k%d", i)); err != nil {
 			t.Fatal(err)
@@ -362,7 +367,7 @@ func TestCacheLRUOrdering(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := cache.New(cache.Config{Underlying: inner, MaxEntries: 2})
+	c := cache.NewWriter(inner, cache.Config{MaxEntries: 2})
 
 	if _, err := c.Get(ctx, "a"); err != nil {
 		t.Fatal(err)
@@ -382,7 +387,7 @@ func TestCacheLRUOrdering(t *testing.T) {
 	// "b" should be the evicted one. Verify via a fresh counting wrapper
 	// over a brand-new cache that mirrors the same access pattern.
 	cnt := newCounting(inner)
-	c2 := cache.New(cache.Config{Underlying: cnt, MaxEntries: 2})
+	c2 := cache.NewWriter(cnt, cache.Config{MaxEntries: 2})
 	for _, k := range []string{"a", "b"} {
 		if _, err := c2.Get(ctx, k); err != nil {
 			t.Fatal(err)
@@ -418,7 +423,7 @@ func TestCacheGetRangeServesFromCachedValue(t *testing.T) {
 	if err := inner.inner.Set(ctx, "k", []byte("hello world")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	if _, err := c.Get(ctx, "k"); err != nil {
 		t.Fatal(err)
@@ -459,7 +464,7 @@ func TestCacheGetSuffixServesFromCachedValue(t *testing.T) {
 	if err := inner.inner.Set(ctx, "k", []byte("hello world")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	if _, err := c.Get(ctx, "k"); err != nil {
 		t.Fatal(err)
@@ -481,7 +486,7 @@ func TestCacheGetSuffixDelegatesToUnderlyingSuffixReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	inner := &suffixCountingStore{countingStore: base}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	// Nothing cached yet: must delegate to the underlying GetSuffix, not
 	// fall back to a whole-blob Get.
@@ -507,7 +512,7 @@ func TestCacheGetSuffixFallsBackToGetWhenUnderlyingLacksSuffixReader(t *testing.
 	if err := inner.inner.Set(ctx, "k", []byte("hello world")); err != nil {
 		t.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 
 	v, err := c.GetSuffix(ctx, "k", 5)
 	if err != nil {
@@ -532,7 +537,7 @@ func TestCacheGetSuffixFallsBackToGetWhenUnderlyingLacksSuffixReader(t *testing.
 func TestCacheSetIfNotExists(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	c := cache.New(cache.Config{Underlying: mem.New()})
+	c := cache.NewWriter(mem.New(), cache.Config{})
 
 	ok1, err := c.SetIfNotExists(ctx, "k", []byte("first"))
 	if err != nil || !ok1 {
@@ -554,23 +559,38 @@ func TestCacheSetIfNotExists(t *testing.T) {
 	}
 }
 
-func TestCacheSetIfNotExistsNotWritable(t *testing.T) {
+// TestNewIsReadOnly: New's cache has no mutators, even over a writable
+// store, so the zarr write paths see it as read-only (ErrReadOnly); only
+// NewWriter's cache is a store.Writer.
+func TestNewIsReadOnly(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	c := cache.New(cache.Config{Underlying: readOnlyStore{mem.New()}})
-	if _, err := c.SetIfNotExists(ctx, "k", []byte("v")); err == nil {
-		t.Fatal("expected error when underlying store isn't WritableStore")
+	if _, ok := any(cache.New(mem.New(), cache.Config{})).(store.Writer); ok {
+		t.Fatal("cache.New result implements store.Writer; want read-only")
 	}
-}
-
-// readOnlyStore wraps a store.Store but deliberately does NOT implement
-// store.WritableStore, so a type assertion for it fails as intended.
-type readOnlyStore struct {
-	store.Store
+	var _ store.Writer = cache.NewWriter(mem.New(), cache.Config{})
 }
 
 func TestConformance(t *testing.T) {
 	storetest.RunConformance(t, func(t *testing.T) store.Store {
-		return cache.New(cache.Config{Underlying: mem.New()})
+		return cache.NewWriter(mem.New(), cache.Config{})
 	}, storetest.Options{})
+}
+
+// TestConformanceReadOnly runs the read-side contract through New's
+// read-only cache, seeding the underlying store directly.
+func TestConformanceReadOnly(t *testing.T) {
+	type roCache struct {
+		*cache.Store
+		inner *mem.Store
+	}
+	storetest.RunConformance(t, func(t *testing.T) store.Store {
+		inner := mem.New()
+		return roCache{cache.New(inner, cache.Config{}), inner}
+	}, storetest.Options{
+		Seed: func(t *testing.T, s store.Store, key string, value []byte) {
+			if err := s.(roCache).inner.Set(context.Background(), key, value); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
 }

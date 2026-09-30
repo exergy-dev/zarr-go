@@ -3,8 +3,8 @@
 //
 // It is intended for serving zarr datasets from static web servers, object
 // stores fronted by HTTP (S3 website endpoints, GCS public buckets, etc.), or
-// any other URL-addressable origin. Set, Delete, and SetIfNotExists are not
-// supported and return ErrReadOnly.
+// any other URL-addressable origin. *Store is not a store.Writer, so the
+// zarr write paths reject it with store.ErrReadOnly.
 //
 // Listing is not supported because HTTP has no portable directory-listing
 // protocol; consumers that require listing should rely on consolidated zarr
@@ -26,10 +26,6 @@ import (
 
 	"github.com/exergy-dev/zarr-go/store"
 )
-
-// ErrReadOnly is returned by Set and Delete because the HTTP backend does not
-// support mutation.
-var ErrReadOnly = errors.New("http store is read-only")
 
 // ErrListUnsupported is returned (via the iterator) by List because HTTP
 // listing requires consolidated metadata.
@@ -329,21 +325,6 @@ func parseContentRangeStart(h string) (start int64, ok bool) {
 		return 0, false
 	}
 	return start, true
-}
-
-// Set is unsupported and always returns ErrReadOnly.
-func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	return ErrReadOnly
-}
-
-// Delete is unsupported and always returns ErrReadOnly.
-func (s *Store) Delete(ctx context.Context, key string) error {
-	return ErrReadOnly
-}
-
-// SetIfNotExists is unsupported and always returns (false, ErrReadOnly).
-func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	return false, ErrReadOnly
 }
 
 // Exists implements store.Store using HEAD.

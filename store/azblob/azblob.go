@@ -211,7 +211,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	return b, nil
 }
 
-// Set implements store.Store.
+// Set implements store.Writer.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
 	if err != nil {
@@ -224,7 +224,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	return nil
 }
 
-// SetIfNotExists implements store.WritableStore. It uses an If-None-Match: *
+// SetIfNotExists implements store.Writer. It uses an If-None-Match: *
 // access condition; on 412 PreconditionFailed (or BlobAlreadyExists) the
 // blob already exists and (false, nil) is returned.
 func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
@@ -250,7 +250,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 	return true, nil
 }
 
-// Delete implements store.Store. Missing keys are not an error.
+// Delete implements store.Writer. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	k, err := cloudstore.JoinKey("azblob", s.prefix, key)
 	if err != nil {
@@ -317,6 +317,5 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 
 // Compile-time checks that *Store satisfies the store interfaces.
 var (
-	_ zstore.Store         = (*Store)(nil)
-	_ zstore.WritableStore = (*Store)(nil)
+	_ zstore.Writer = (*Store)(nil)
 )

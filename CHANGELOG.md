@@ -57,6 +57,17 @@ Initial release.
   instead of seven positional parameters; `codec.SuffixRangeFetcher` moved
   from `codec/sharding` to `codec`. Only relevant to custom
   `codec.PartialDecoder` implementations, not typical `Array[T]` callers.
+- `store.Store` is now read-only (`Get`, `GetRange`, `Exists`, `List`);
+  the new `store.Writer` adds `Set`, `Delete` and `SetIfNotExists` and
+  replaces `store.WritableStore`. The HTTP store no longer has stub
+  mutators, and `http.ErrReadOnly` is gone: the single sentinel is
+  `store.ErrReadOnly`, which `zarr.ErrReadOnly` now aliases, so
+  `CreateArray`, `CreateGroup` and `Array.Write` on a read-only store
+  (previously failing with `http.ErrReadOnly` or a wrapped write error)
+  return an error matching `zarr.ErrReadOnly`.
+- `cache.New(underlying, cfg)` returns a read-only `*cache.Store`;
+  `cache.NewWriter(underlying, cfg)` wraps a `store.Writer` and returns a
+  `*cache.Writer`. `cache.Config` no longer has an `Underlying` field.
 - `zarr.Numeric` no longer permits defined/derived types (dropped `~` from
   the constraint): `DtypeOf` and the byte-level codecs switch on a type
   parameter's concrete type, so a derived type (e.g. `type MyFloat32

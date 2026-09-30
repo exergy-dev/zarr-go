@@ -18,7 +18,7 @@ func BenchmarkCacheWarmHit(b *testing.B) {
 	if err := inner.Set(ctx, "k", payload); err != nil {
 		b.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 	// Prime the cache.
 	if _, err := c.Get(ctx, "k"); err != nil {
 		b.Fatal(err)
@@ -44,7 +44,7 @@ func BenchmarkCacheWarmHit4K(b *testing.B) {
 	if err := inner.Set(ctx, "k", payload); err != nil {
 		b.Fatal(err)
 	}
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 	if _, err := c.Get(ctx, "k"); err != nil {
 		b.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func BenchmarkCacheWarmHit4K(b *testing.B) {
 func BenchmarkCacheMiss(b *testing.B) {
 	ctx := context.Background()
 	inner := mem.New()
-	c := cache.New(cache.Config{Underlying: inner})
+	c := cache.NewWriter(inner, cache.Config{})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = c.Get(ctx, "missing")
@@ -116,7 +116,7 @@ func BenchmarkCacheVsRaw(b *testing.B) {
 	})
 
 	b.Run("Cache", func(b *testing.B) {
-		c := cache.New(cache.Config{Underlying: inner})
+		c := cache.NewWriter(inner, cache.Config{})
 		if _, err := c.Get(ctx, "k"); err != nil {
 			b.Fatal(err)
 		}

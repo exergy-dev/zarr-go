@@ -117,9 +117,14 @@ func main() {
 | Azure Blob                       | `store/azblob`                       |                                         |
 | LRU cache decorator              | `store/cache`                        | Bytes + entry caps, coalesces concurrent misses |
 
-Stores all satisfy `store.Store`; writable backends additionally satisfy
-`store.WritableStore`. A backend that supports atomic creates implements
-`SetIfNotExists`; everything else falls back to `Set`.
+Every store satisfies `store.Store` (the read side). Writable backends
+also satisfy `store.Writer` (`Set`, `Delete`, `SetIfNotExists`);
+`CreateArray`, `CreateGroup` and `Array.Write` return `zarr.ErrReadOnly`
+(the same value as `store.ErrReadOnly`) for a store that isn't one, such
+as the HTTP store.
+
+`cache.New` returns a read-only cache; `cache.NewWriter` wraps a
+`store.Writer`, writes through, and invalidates the written keys.
 
 ```go
 import (
@@ -128,8 +133,7 @@ import (
 )
 
 base, _ := s3.New(ctx, s3.Config{Bucket: "my-bucket", Prefix: "datasets/"})
-st := cache.New(cache.Config{
-    Underlying: base,
+st := cache.NewWriter(base, cache.Config{
     MaxBytes:   512 << 20, // 512 MiB
     MaxEntries: 4096,
 })

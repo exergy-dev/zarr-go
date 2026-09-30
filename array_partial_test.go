@@ -43,14 +43,6 @@ func (c *countingStore) GetSuffix(ctx context.Context, key string, n int64) ([]b
 	return c.inner.(store.SuffixReader).GetSuffix(ctx, key, n)
 }
 
-func (c *countingStore) Set(ctx context.Context, key string, value []byte) error {
-	return c.inner.Set(ctx, key, value)
-}
-
-func (c *countingStore) Delete(ctx context.Context, key string) error {
-	return c.inner.Delete(ctx, key)
-}
-
 func (c *countingStore) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
 	return c.inner.List(ctx, prefix)
 }
@@ -59,14 +51,9 @@ func (c *countingStore) Exists(ctx context.Context, key string) (bool, error) {
 	return c.inner.Exists(ctx, key)
 }
 
-func (c *countingStore) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	return c.inner.(store.WritableStore).SetIfNotExists(ctx, key, value)
-}
-
 var (
-	_ store.Store         = (*countingStore)(nil)
-	_ store.SuffixReader  = (*countingStore)(nil)
-	_ store.WritableStore = (*countingStore)(nil)
+	_ store.Store        = (*countingStore)(nil)
+	_ store.SuffixReader = (*countingStore)(nil)
 )
 
 // TestPartialRead_EdgeShard proves the fullShape contract fix: a sharded
@@ -431,7 +418,7 @@ func TestWithRangeGap_AffectsFetchCount(t *testing.T) {
 // immediately. Used to deterministically prove WithIOConcurrency bounds the
 // number of concurrently in-flight chunk fetches.
 type gatedIOStore struct {
-	store.WritableStore
+	store.Writer
 	active  atomic.Bool
 	entered chan struct{}
 	release chan struct{}
@@ -442,7 +429,7 @@ func (g *gatedIOStore) Get(ctx context.Context, key string) ([]byte, error) {
 		g.entered <- struct{}{}
 		<-g.release
 	}
-	return g.WritableStore.Get(ctx, key)
+	return g.Writer.Get(ctx, key)
 }
 
 // TestWithIOConcurrency_BoundsInFlight proves WithIOConcurrency(N) bounds
@@ -465,7 +452,7 @@ func TestWithIOConcurrency_BoundsInFlight(t *testing.T) {
 			// chunk goroutine launched after the test stops draining it (i.e.
 			// once the bound has been proven) can still signal without
 			// blocking forever.
-			gated := &gatedIOStore{WritableStore: mem.New(), entered: make(chan struct{}, 32), release: make(chan struct{})}
+			gated := &gatedIOStore{Writer: mem.New(), entered: make(chan struct{}, 32), release: make(chan struct{})}
 			var createOpts []zarr.CreateOption
 			if via == "CreateArray" {
 				createOpts = append(createOpts, zarr.WithIOConcurrency(ioConc))

@@ -411,7 +411,7 @@ func (a *Array[T]) Write(ctx context.Context, sel Selection, src []T) error {
 		return fmt.Errorf("%w: src has %d elements, selection wants %d",
 			ErrShapeMismatch, len(src), want)
 	}
-	ws, ok := a.store.(store.WritableStore)
+	ws, ok := a.store.(store.Writer)
 	if !ok {
 		return ErrReadOnly
 	}
@@ -440,7 +440,7 @@ func (a *Array[T]) Write(ctx context.Context, sel Selection, src []T) error {
 
 func (a *Array[T]) writeOneChunk(
 	ctx context.Context,
-	ws store.WritableStore,
+	ws store.Writer,
 	coord ChunkCoord,
 	sel Selection,
 	chunkShape, srcShape []int64,

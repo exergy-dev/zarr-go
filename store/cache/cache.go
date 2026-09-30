@@ -4,6 +4,11 @@
 // chunks repeatedly. Wrapping a Store with cache.New eliminates the
 // network/disk round-trip on warm hits.
 //
+// New returns a read-only *Store (not a store.Writer, even over a writable
+// store), so the zarr write paths reject it with store.ErrReadOnly.
+// NewWriter wraps a store.Writer and returns a *Writer, which writes
+// through and invalidates.
+//
 // Concurrent misses on the same key are coalesced by a small hand-rolled
 // flight tracker (see flight below) so a single underlying Get is performed
 // and the result fans out to all waiters. Unlike golang.org/x/sync's
@@ -30,11 +35,9 @@ import (
 	"github.com/exergy-dev/zarr-go/store"
 )
 
-// Config configures the cache. Underlying is required; the size/count limits
-// are independent and may be set to 0 to disable.
+// Config configures the cache. The size/count limits are independent and
+// may be set to 0 to disable.
 type Config struct {
-	// Underlying is the wrapped store. Required.
-	Underlying store.Store
 	// MaxBytes caps total cached payload bytes. 0 disables the byte limit.
 	MaxBytes int64
 	// MaxEntries caps the number of cached entries. 0 disables the count limit.
@@ -90,15 +93,16 @@ var testHookWaiterJoined func()
 // value cached. Never set outside tests.
 var testHookFetchPublished func()
 
-// New constructs a cache wrapping cfg.Underlying.
+// New constructs a read-only cache wrapping underlying. The result is not a
+// store.Writer even when underlying is one; use NewWriter to keep writes.
 //
-// Panics if cfg.Underlying is nil.
-func New(cfg Config) *Store {
-	if cfg.Underlying == nil {
-		panic("cache.New: cfg.Underlying is nil")
+// Panics if underlying is nil.
+func New(underlying store.Store, cfg Config) *Store {
+	if underlying == nil {
+		panic("cache.New: underlying store is nil")
 	}
 	return &Store{
-		underlying: cfg.Underlying,
+		underlying: underlying,
 		maxBytes:   cfg.MaxBytes,
 		maxEntries: cfg.MaxEntries,
 		lru:        list.New(),
@@ -348,30 +352,6 @@ func sliceSuffix(v []byte, n int64) ([]byte, error) {
 	return cloneBytes(v[start:]), nil
 }
 
-// Set invalidates any cached entry for key and writes through. The
-// invalidate happens AFTER the underlying write completes (and also
-// poisons, rather than just invalidates, any fetch that raced with it) so a
-// concurrent miss-fill can't admit a value that's already stale by the time
-// it lands.
-func (s *Store) Set(ctx context.Context, key string, value []byte) error {
-	if err := s.underlying.Set(ctx, key, value); err != nil {
-		return err
-	}
-	s.invalidate(key)
-	return nil
-}
-
-// Delete invalidates/poisons any cached or in-flight entry for key (see
-// Set's doc for why this happens after the underlying call) and forwards to
-// the underlying store.
-func (s *Store) Delete(ctx context.Context, key string) error {
-	if err := s.underlying.Delete(ctx, key); err != nil {
-		return err
-	}
-	s.invalidate(key)
-	return nil
-}
-
 // Exists is a passthrough; existence is not cached.
 func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	return s.underlying.Exists(ctx, key)
@@ -380,26 +360,6 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 // List is a passthrough.
 func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
 	return s.underlying.List(ctx, prefix)
-}
-
-// SetIfNotExists forwards to the underlying store when it implements
-// store.WritableStore. Any cached/in-flight entry for key is
-// invalidated/poisoned regardless of whether the write succeeded, so a
-// subsequent Get re-fetches authoritative state.
-func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
-	w, ok := s.underlying.(store.WritableStore)
-	if !ok {
-		return false, errNotWritable{}
-	}
-	ok2, err := w.SetIfNotExists(ctx, key, value)
-	s.invalidate(key)
-	return ok2, err
-}
-
-type errNotWritable struct{}
-
-func (errNotWritable) Error() string {
-	return "cache: underlying store does not implement store.WritableStore"
 }
 
 // Len reports the current number of cached entries. Intended for tests and
@@ -417,8 +377,57 @@ func (s *Store) Bytes() int64 {
 	return s.bytes
 }
 
+// Writer is a Store over a store.Writer that also writes through. Every
+// write invalidates the key's cached entry and poisons any in-flight fetch
+// for it (see flight), so a later Get never returns pre-write bytes.
+type Writer struct {
+	*Store
+	w store.Writer
+}
+
+// NewWriter constructs a caching store.Writer wrapping underlying.
+//
+// Panics if underlying is nil.
+func NewWriter(underlying store.Writer, cfg Config) *Writer {
+	if underlying == nil {
+		panic("cache.NewWriter: underlying store is nil")
+	}
+	return &Writer{Store: New(underlying, cfg), w: underlying}
+}
+
+// Set writes through, then invalidates key. The invalidate happens AFTER
+// the underlying write completes (and also poisons, rather than just
+// invalidates, any fetch that raced with it) so a concurrent miss-fill
+// can't admit a value that's already stale by the time it lands.
+func (c *Writer) Set(ctx context.Context, key string, value []byte) error {
+	if err := c.w.Set(ctx, key, value); err != nil {
+		return err
+	}
+	c.invalidate(key)
+	return nil
+}
+
+// Delete forwards to the underlying store, then invalidates key (see Set's
+// doc for why this happens after the underlying call).
+func (c *Writer) Delete(ctx context.Context, key string) error {
+	if err := c.w.Delete(ctx, key); err != nil {
+		return err
+	}
+	c.invalidate(key)
+	return nil
+}
+
+// SetIfNotExists forwards to the underlying store. key is invalidated
+// whether or not the write succeeded, so a subsequent Get re-fetches
+// authoritative state.
+func (c *Writer) SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error) {
+	ok, err := c.w.SetIfNotExists(ctx, key, value)
+	c.invalidate(key)
+	return ok, err
+}
+
 // Compile-time interface assertions.
 var (
-	_ store.Store         = (*Store)(nil)
-	_ store.WritableStore = (*Store)(nil)
+	_ store.Store  = (*Store)(nil)
+	_ store.Writer = (*Writer)(nil)
 )

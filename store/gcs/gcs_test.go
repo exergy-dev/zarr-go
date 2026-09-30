@@ -82,9 +82,6 @@ func TestGetRange_HugeLengthRangeHeader(t *testing.T) {
 	}
 }
 
-// Compile-time assertion that *Store satisfies WritableStore.
-var _ store.WritableStore = (*Store)(nil)
-
 // integration tests --------------------------------------------------------
 
 const envBucket = "ZARRGO_GCS_TEST_BUCKET"

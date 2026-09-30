@@ -133,7 +133,7 @@ func WithV2ChunkKeys() CreateOption {
 // overwrite=false (the default for Create*) it goes through SetIfNotExists
 // so concurrent producers can race safely; the loser surfaces as
 // store.ErrAlreadyExists. kind/path are folded into the conflict error.
-func writeMetaAtomic(ctx context.Context, ws store.WritableStore, key string, raw []byte, overwrite bool, kind, path string) error {
+func writeMetaAtomic(ctx context.Context, ws store.Writer, key string, raw []byte, overwrite bool, kind, path string) error {
 	if overwrite {
 		if err := ws.Set(ctx, key, raw); err != nil {
 			return fmt.Errorf("write zarr.json: %w", err)
@@ -152,7 +152,7 @@ func writeMetaAtomic(ctx context.Context, ws store.WritableStore, key string, ra
 
 // CreateArray creates a new v3 array under path with the given shape and chunk
 // shape. shape/chunks may both be empty to create a rank-0 (scalar) array.
-// The store must implement store.WritableStore.
+// The store must implement store.Writer.
 func CreateArray[T Numeric](
 	ctx context.Context,
 	s store.Store,
@@ -160,7 +160,7 @@ func CreateArray[T Numeric](
 	shape, chunks []int64,
 	opts ...CreateOption,
 ) (*Array[T], error) {
-	ws, ok := s.(store.WritableStore)
+	ws, ok := s.(store.Writer)
 	if !ok {
 		return nil, ErrReadOnly
 	}
@@ -239,12 +239,12 @@ func CreateArray[T Numeric](
 }
 
 // CreateGroup creates a new v3 group under path. The store must implement
-// store.WritableStore. By default this is an atomic create: if a zarr.json
+// store.Writer. By default this is an atomic create: if a zarr.json
 // already exists at the target the call returns store.ErrAlreadyExists.
 // Pass WithOverwrite() to clobber an existing entry, and WithAttributes to
 // attach user attributes. Any other (array-only) option is an error.
 func CreateGroup(ctx context.Context, s store.Store, path string, opts ...CreateOption) (*Group, error) {
-	ws, ok := s.(store.WritableStore)
+	ws, ok := s.(store.Writer)
 	if !ok {
 		return nil, ErrReadOnly
 	}
@@ -272,7 +272,7 @@ func CreateGroup(ctx context.Context, s store.Store, path string, opts ...Create
 // Deleting before writing — rather than after — means a crash mid-cleanup
 // leaves the array simply absent (metadata not yet written) instead of
 // present with a mix of old and new chunk bytes.
-func deleteStaleChunks(ctx context.Context, ws store.WritableStore, path string) error {
+func deleteStaleChunks(ctx context.Context, ws store.Writer, path string) error {
 	prefix := path
 	if prefix != "" {
 		prefix += "/"

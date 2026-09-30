@@ -266,7 +266,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	return b, nil
 }
 
-// Set implements store.Store.
+// Set implements store.Writer.
 func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	k, err := cloudstore.JoinKey("s3", s.prefix, key)
 	if err != nil {
@@ -283,7 +283,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 	return nil
 }
 
-// SetIfNotExists implements store.WritableStore using S3's If-None-Match
+// SetIfNotExists implements store.Writer using S3's If-None-Match
 // conditional write (generally available since November 2024).
 //
 // If the object already exists S3 responds with 412 PreconditionFailed
@@ -314,7 +314,7 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 	return true, nil
 }
 
-// Delete implements store.Store. Missing keys are not an error.
+// Delete implements store.Writer. Missing keys are not an error.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	k, err := cloudstore.JoinKey("s3", s.prefix, key)
 	if err != nil {
@@ -380,7 +380,6 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 
 // Compile-time checks that *Store satisfies the store interfaces.
 var (
-	_ zstore.Store         = (*Store)(nil)
-	_ zstore.WritableStore = (*Store)(nil)
-	_ zstore.SuffixReader  = (*Store)(nil)
+	_ zstore.Writer       = (*Store)(nil)
+	_ zstore.SuffixReader = (*Store)(nil)
 )

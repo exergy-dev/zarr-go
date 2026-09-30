@@ -178,7 +178,6 @@ func (s *Store) SetIfNotExists(ctx context.Context, key string, value []byte) (b
 
 // Compile-time interface assertions.
 var (
-	_ store.Store         = (*Store)(nil)
-	_ store.WritableStore = (*Store)(nil)
-	_ store.SuffixReader  = (*Store)(nil)
+	_ store.Writer       = (*Store)(nil)
+	_ store.SuffixReader = (*Store)(nil)
 )

@@ -45,8 +45,7 @@ func newFileServerStore(t *testing.T) store.Store {
 
 func TestIntegration_Conformance(t *testing.T) {
 	storetest.RunConformance(t, newFileServerStore, storetest.Options{
-		ReadOnly: true,
-		NoList:   true, // the http store has no listing protocol (ErrListUnsupported)
+		NoList: true, // the http store has no listing protocol (ErrListUnsupported)
 		Seed: func(t *testing.T, s store.Store, key string, value []byte) {
 			t.Helper()
 			fs := s.(fileServerStore)
@@ -225,19 +224,14 @@ func TestExists(t *testing.T) {
 	}
 }
 
-func TestSetAndDeleteReturnReadOnly(t *testing.T) {
+// TestNotAWriter: the http store is read-only, so it must not satisfy
+// store.Writer — that type check is how the zarr write paths detect a
+// read-only store and return ErrReadOnly.
+func TestNotAWriter(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestStore(t, nil, nil, [2]string{})
-
-	if err := s.Set(context.Background(), "k", []byte("v")); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("Set: expected ErrReadOnly, got %v", err)
-	}
-	if err := s.Delete(context.Background(), "k"); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("Delete: expected ErrReadOnly, got %v", err)
-	}
-	ok, err := s.SetIfNotExists(context.Background(), "k", []byte("v"))
-	if ok || !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("SetIfNotExists: expected (false, ErrReadOnly), got (%v, %v)", ok, err)
+	if _, ok := any(s).(store.Writer); ok {
+		t.Fatal("*http.Store implements store.Writer; want read-only")
 	}
 }
 

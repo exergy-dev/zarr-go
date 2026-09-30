@@ -30,7 +30,7 @@ import (
 const tempPrefix = ".zarr-tmp-"
 
 // Store is a local-filesystem implementation of store.Store and
-// store.WritableStore. All keys are resolved relative to a fixed root.
+// store.Writer. All keys are resolved relative to a fixed root.
 type Store struct {
 	root        string
 	mmapEnabled bool
@@ -440,7 +440,6 @@ func (s *Store) List(ctx context.Context, prefix string) iter.Seq2[string, error
 
 // Compile-time interface assertions.
 var (
-	_ store.Store         = (*Store)(nil)
-	_ store.WritableStore = (*Store)(nil)
-	_ store.SuffixReader  = (*Store)(nil)
+	_ store.Writer       = (*Store)(nil)
+	_ store.SuffixReader = (*Store)(nil)
 )

@@ -24,13 +24,14 @@ import (
 // semantics.
 type Options struct {
 	// Seed writes a key/value pair into the store out-of-band. If nil,
-	// RunConformance seeds via s.(store.WritableStore).Set — which requires
-	// the store to actually persist writes (not a read-only stub).
+	// RunConformance seeds via store.Writer.Set, so Seed is required for a
+	// store that isn't a store.Writer (e.g. the http store) or is ReadOnly.
 	Seed func(t *testing.T, s store.Store, key string, value []byte)
 
-	// ReadOnly marks the backend as not supporting Set/Delete/SetIfNotExists
-	// (e.g. the http store). Mutation-focused subtests are skipped; Seed
-	// must be non-nil when ReadOnly is true.
+	// ReadOnly treats a store.Writer as read-only (e.g. a cloud backend
+	// pointed at a fake server that only serves reads): Seed is required
+	// and the Writer subtests are skipped. A store that isn't a
+	// store.Writer is always treated as read-only.
 	ReadOnly bool
 
 	// NoList marks the backend as not supporting List at all (e.g. the http
@@ -45,17 +46,25 @@ type Options struct {
 // across "fresh" instances (e.g. a real bucket reused between calls) must
 // use collision-free key names, which RunConformance ensures by namespacing
 // every key it writes under t.Name(). Every seeded key is deleted via
-// t.Cleanup after use (best-effort, ignoring errors — some ReadOnly
-// backends can't delete), so repeated runs against a persistent real
-// backend (e.g. a shared test bucket) don't collide with leftover state
-// from a prior run.
+// t.Cleanup after use (best-effort, ignoring errors) when the store is
+// writable, so repeated runs against a persistent real backend (e.g. a
+// shared test bucket) don't collide with leftover state from a prior run.
 func RunConformance(t *testing.T, newStore func(t *testing.T) store.Store, opts Options) {
 	t.Helper()
+	// writer returns s as a store.Writer the suite may write through.
+	writer := func(s store.Store) (store.Writer, bool) {
+		w, ok := s.(store.Writer)
+		return w, ok && !opts.ReadOnly
+	}
 	baseSeed := opts.Seed
 	if baseSeed == nil {
 		baseSeed = func(t *testing.T, s store.Store, key string, value []byte) {
 			t.Helper()
-			if err := s.Set(context.Background(), key, value); err != nil {
+			w, ok := writer(s)
+			if !ok {
+				t.Fatalf("seed %q: store is read-only; set Options.Seed", key)
+			}
+			if err := w.Set(context.Background(), key, value); err != nil {
 				t.Fatalf("seed Set(%q): %v", key, err)
 			}
 		}
@@ -63,9 +72,17 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) store.Store, opts 
 	seed := func(t *testing.T, s store.Store, key string, value []byte) {
 		t.Helper()
 		baseSeed(t, s, key, value)
-		if !opts.ReadOnly {
-			t.Cleanup(func() { _ = s.Delete(context.Background(), key) })
+		if w, ok := writer(s); ok {
+			t.Cleanup(func() { _ = w.Delete(context.Background(), key) })
 		}
+	}
+	newWriter := func(t *testing.T) store.Writer {
+		t.Helper()
+		w, ok := writer(newStore(t))
+		if !ok {
+			t.Skip("store is read-only")
+		}
+		return w
 	}
 
 	t.Run("Basics", func(t *testing.T) { testBasics(t, newStore, seed) })
@@ -74,10 +91,8 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) store.Store, opts 
 	if !opts.NoList {
 		t.Run("List", func(t *testing.T) { testList(t, newStore, seed) })
 	}
-	if !opts.ReadOnly {
-		t.Run("SetIfNotExists", func(t *testing.T) { testSetIfNotExists(t, newStore) })
-		t.Run("DeleteMissing", func(t *testing.T) { testDeleteMissing(t, newStore) })
-	}
+	t.Run("SetIfNotExists", func(t *testing.T) { testSetIfNotExists(t, newWriter(t)) })
+	t.Run("DeleteMissing", func(t *testing.T) { testDeleteMissing(t, newWriter(t)) })
 }
 
 func testBasics(t *testing.T, newStore func(t *testing.T) store.Store, seed func(*testing.T, store.Store, string, []byte)) {
@@ -110,8 +125,7 @@ func testBasics(t *testing.T, newStore func(t *testing.T) store.Store, seed func
 	}
 }
 
-func testDeleteMissing(t *testing.T, newStore func(t *testing.T) store.Store) {
-	s := newStore(t)
+func testDeleteMissing(t *testing.T, s store.Writer) {
 	ctx := context.Background()
 	if err := s.Delete(ctx, t.Name()+"/does/not/exist"); err != nil {
 		t.Fatalf("Delete(missing) = %v, want nil", err)
@@ -339,21 +353,16 @@ func testList(t *testing.T, newStore func(t *testing.T) store.Store, seed func(*
 	}
 }
 
-func testSetIfNotExists(t *testing.T, newStore func(t *testing.T) store.Store) {
-	s := newStore(t)
-	ws, ok := s.(store.WritableStore)
-	if !ok {
-		t.Skip("store does not implement store.WritableStore")
-	}
+func testSetIfNotExists(t *testing.T, s store.Writer) {
 	ctx := context.Background()
 	key := t.Name() + "/key"
 	t.Cleanup(func() { _ = s.Delete(context.Background(), key) })
 
-	ok1, err := ws.SetIfNotExists(ctx, key, []byte("first"))
+	ok1, err := s.SetIfNotExists(ctx, key, []byte("first"))
 	if err != nil || !ok1 {
 		t.Fatalf("first SetIfNotExists: ok=%v err=%v, want true,nil", ok1, err)
 	}
-	ok2, err := ws.SetIfNotExists(ctx, key, []byte("second"))
+	ok2, err := s.SetIfNotExists(ctx, key, []byte("second"))
 	if err != nil || ok2 {
 		t.Fatalf("second SetIfNotExists: ok=%v err=%v, want false,nil", ok2, err)
 	}

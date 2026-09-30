@@ -49,6 +49,11 @@ func (errKeyNotFound) Is(target error) bool {
 // the whole object instead of erroring).
 var ErrInvalidRange = errors.New("store: invalid range")
 
+// ErrReadOnly reports a write attempted through a Store that is not a
+// Writer. The zarr write paths return it; zarr.ErrReadOnly is the same
+// value.
+var ErrReadOnly = errors.New("store is read-only")
+
 // ClampRange returns the sub-slice of v covering [off, off+n), clamped to
 // len(v) per the GetRange contract: off >= len(v) or n == 0 returns an empty
 // slice; off+n > len(v) (including int64 overflow) clamps to len(v). Callers
@@ -66,8 +71,11 @@ func ClampRange(v []byte, off, n int64) []byte {
 	return v[off:end]
 }
 
-// Store is the read/write key-value abstraction over the underlying object/file
-// store. Keys are forward-slash separated; backends translate as needed.
+// Store is the read side of the key-value abstraction over the underlying
+// object/file store. Keys are forward-slash separated; backends translate as
+// needed. A Store that can also be written implements Writer; one that
+// can't (e.g. the http store) is read-only, and the zarr write paths reject
+// it with ErrReadOnly.
 //
 // # GetRange contract
 //
@@ -94,12 +102,6 @@ type Store interface {
 	// the Store-level "GetRange contract" doc for the full behavior matrix.
 	GetRange(ctx context.Context, key string, off, n int64) ([]byte, error)
 
-	// Set writes value at key, replacing any existing value.
-	Set(ctx context.Context, key string, value []byte) error
-
-	// Delete removes the value at key. Missing keys are not an error.
-	Delete(ctx context.Context, key string) error
-
 	// List yields all keys under prefix. See the Store-level "List contract"
 	// doc. Errors during pagination are surfaced via the second tuple value.
 	List(ctx context.Context, prefix string) iter.Seq2[string, error]
@@ -122,11 +124,18 @@ type SuffixReader interface {
 	GetSuffix(ctx context.Context, key string, n int64) ([]byte, error)
 }
 
-// WritableStore extends Store with operations needed for safe concurrent
-// creation. Not all backends support these (e.g., HTTP read-only). The M2
-// write path will require this.
-type WritableStore interface {
+// Writer is a Store that can also be written. The zarr write paths
+// (CreateArray, CreateGroup, Array.Write) require one and return
+// ErrReadOnly for a Store that isn't.
+type Writer interface {
 	Store
+
+	// Set writes value at key, replacing any existing value.
+	Set(ctx context.Context, key string, value []byte) error
+
+	// Delete removes the value at key. Missing keys are not an error.
+	Delete(ctx context.Context, key string) error
+
 	// SetIfNotExists writes value at key only if the key does not already
 	// exist. Returns false (without error) if the key was already present.
 	SetIfNotExists(ctx context.Context, key string, value []byte) (bool, error)
