@@ -226,7 +226,6 @@ func newTypedArray[T Numeric](s store.Store, path string, am *metadata.ArrayMeta
 		opts:           o,
 		rawCopyFast:    isRawCopyFastPipeline(pipe),
 		partialDecoder: pipelinePartialDecoder(pipe),
-		fetcher:        newChunkFetcher(s),
 	}
 }
 

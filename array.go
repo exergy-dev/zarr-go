@@ -83,10 +83,6 @@ type Array[T Numeric] struct {
 	// codec.PartialDecoder AND no BB codecs sit on top of it. Cached here
 	// (computed once at open) so per-chunk reads avoid a type assertion.
 	partialDecoder codec.PartialDecoder
-	// fetcher adapts store to codec.RangeFetcher (and codec.SuffixRangeFetcher
-	// when store implements store.SuffixReader) for the partial-decode path.
-	// Constructed once at open so per-chunk reads don't pay adapter-alloc cost.
-	fetcher codec.RangeFetcher
 	// rawCopyFast is set when the codec pipeline is exactly [bytes(<host endian>)]
 	// with no AA or BB codecs, so the on-wire chunk bytes can be consumed
 	// directly without invoking Pipeline.Decode.
@@ -426,7 +422,7 @@ func (a *Array[T]) partialDecodeAndCopy(
 		Fill:      a.fill,
 		GapBytes:  a.opts.rangeGap,
 	}
-	if err := pd.DecodePartial(ctx, a.fetcher, &req); err != nil {
+	if err := pd.DecodePartial(ctx, a.store, &req); err != nil {
 		// Translate "key not found" to the same sentinel as the full path
 		// so the caller skips the chunk and leaves the fill value in place.
 		if errors.Is(err, store.ErrKeyNotFound) {
@@ -450,42 +446,6 @@ func (a *Array[T]) partialDecodeAndCopy(
 	}
 	ndcopy.Copy(dstBytes, outShape, dstRegion, out, regionShape, srcRegion, elemSize, &ndSc)
 	return nil
-}
-
-// rangeOnlyFetcher adapts a store.Store to codec.RangeFetcher, nothing more.
-// Used when the store doesn't implement store.SuffixReader; the sharding
-// codec falls back to its own whole-blob-fetch strategy for the index
-// trailer in that case.
-type rangeOnlyFetcher struct {
-	s store.Store
-}
-
-// GetRange forwards to the underlying store's GetRange.
-func (f rangeOnlyFetcher) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
-	return f.s.GetRange(ctx, key, off, n)
-}
-
-// suffixFetcher extends rangeOnlyFetcher with a native GetSuffix, used when
-// the underlying store implements store.SuffixReader — the dominant
-// codepath for cloud backends (a single `Range: bytes=-N` request for the
-// index trailer instead of a whole-blob fetch).
-type suffixFetcher struct {
-	rangeOnlyFetcher
-	sr store.SuffixReader
-}
-
-func (f suffixFetcher) GetSuffix(ctx context.Context, key string, n int64) ([]byte, error) {
-	return f.sr.GetSuffix(ctx, key, n)
-}
-
-// newChunkFetcher builds the codec.RangeFetcher used for partial chunk
-// decodes, chosen once at array open based on what s implements.
-func newChunkFetcher(s store.Store) codec.RangeFetcher {
-	rf := rangeOnlyFetcher{s: s}
-	if sr, ok := s.(store.SuffixReader); ok {
-		return suffixFetcher{rangeOnlyFetcher: rf, sr: sr}
-	}
-	return rf
 }
 
 // decodeAndCopy decodes one already-fetched chunk and copies its sub-region
