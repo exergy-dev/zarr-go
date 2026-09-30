@@ -15,9 +15,9 @@ import (
 
 func newConfigured(t *testing.T, raw string) *Codec {
 	t.Helper()
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(raw)); err != nil {
-		t.Fatalf("Configure(%q): %v", raw, err)
+	c, err := New(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("New(%q): %v", raw, err)
 	}
 	return c
 }
@@ -57,9 +57,9 @@ func TestCLevels(t *testing.T) {
 	in := makeFloat32MiB()
 	for _, lvl := range []int{1, 3, 5, 9} {
 		raw := []byte(`{"cname":"lz4","clevel":` + itoa(lvl) + `,"shuffle":"shuffle","typesize":4}`)
-		c := &Codec{}
-		if err := c.Configure(raw); err != nil {
-			t.Fatalf("Configure clevel=%d: %v", lvl, err)
+		c, err := New(raw)
+		if err != nil {
+			t.Fatalf("New clevel=%d: %v", lvl, err)
 		}
 		enc, err := c.EncodeBB(in)
 		if err != nil {
@@ -94,10 +94,7 @@ func TestRoundTripEmpty(t *testing.T) {
 }
 
 func TestRoundTripSnappyNoshuffle(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{"cname":"blosclz","clevel":3,"shuffle":"noshuffle","typesize":1}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
+	c := newConfigured(t, `{"cname":"blosclz","clevel":3,"shuffle":"noshuffle","typesize":1}`)
 	in := bytes.Repeat([]byte("zarr-go blosc roundtrip "), 4096)
 	enc, err := c.EncodeBB(in)
 	if err != nil {
@@ -121,22 +118,30 @@ func TestNameAndRegistration(t *testing.T) {
 	if f == nil {
 		t.Fatal("blosc codec not registered")
 	}
-	if _, ok := f().(codec.BytesToBytesCodec); !ok {
+	inst, err := f(nil)
+	if err != nil {
+		t.Fatalf("factory(nil): %v", err)
+	}
+	if _, ok := inst.(codec.BytesToBytesCodec); !ok {
 		t.Fatal("registered blosc codec does not implement BytesToBytesCodec")
 	}
 }
 
-func TestConfigureRejectsBadShuffle(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{"cname":"lz4","shuffle":"sideways"}`)); err == nil {
+func TestNewRejectsBadShuffle(t *testing.T) {
+	if _, err := New(json.RawMessage(`{"cname":"lz4","shuffle":"sideways"}`)); err == nil {
 		t.Fatal("expected error for unknown shuffle")
 	}
 }
 
-func TestConfigureRejectsOutOfRangeCLevel(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{"cname":"lz4","clevel":15}`)); err == nil {
+func TestNewRejectsOutOfRangeCLevel(t *testing.T) {
+	if _, err := New(json.RawMessage(`{"cname":"lz4","clevel":15}`)); err == nil {
 		t.Fatal("expected error for clevel out of range")
+	}
+}
+
+func TestNewRejectsUnknownCompressor(t *testing.T) {
+	if _, err := New(json.RawMessage(`{"cname":"no-such-compressor"}`)); err == nil {
+		t.Fatal("expected error for a compressor libblosc lacks")
 	}
 }
 

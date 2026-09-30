@@ -16,7 +16,6 @@ import (
 // equal the array's fill_value is stored as the empty-marker sentinel and
 // reads back as fill_value.
 func TestEncodeDecodeFillNonZero(t *testing.T) {
-	c := &Codec{}
 	// 4x4 outer shard, 2x2 inner chunks → 4 inner chunks. fill = NaN.
 	cfg, _ := json.Marshal(map[string]any{
 		"chunk_shape": []int{2, 2},
@@ -24,8 +23,9 @@ func TestEncodeDecodeFillNonZero(t *testing.T) {
 			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
 		},
 	})
-	if err := c.Configure(cfg); err != nil {
-		t.Fatalf("Configure: %v", err)
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
 
 	// Build a 4x4 float32 buffer where one inner chunk is all-NaN (fill),
@@ -110,7 +110,6 @@ func TestEncodeDecodeFillNonZero(t *testing.T) {
 // TestEncodeDecodeIndexStart exercises the index_location=start shard
 // layout end-to-end.
 func TestEncodeDecodeIndexStart(t *testing.T) {
-	c := &Codec{}
 	cfg, _ := json.Marshal(map[string]any{
 		"chunk_shape":    []int{2, 2},
 		"index_location": "start",
@@ -118,11 +117,12 @@ func TestEncodeDecodeIndexStart(t *testing.T) {
 			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
 		},
 	})
-	if err := c.Configure(cfg); err != nil {
-		t.Fatalf("Configure: %v", err)
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	if c.IndexLocation != IndexStart {
-		t.Fatalf("IndexLocation = %v, want IndexStart", c.IndexLocation)
+	if c.indexLocation != indexStart {
+		t.Fatalf("indexLocation = %v, want indexStart", c.indexLocation)
 	}
 
 	// 4x4 int32 with all-distinct values so any miscopy shows up.
@@ -159,15 +159,15 @@ func TestEncodeDecodeIndexStart(t *testing.T) {
 // non-zero fill and an absent inner chunk; the corresponding outBuf region
 // must come back as fill, not zero.
 func TestDecodePartialRespectsFill(t *testing.T) {
-	c := &Codec{}
 	cfg, _ := json.Marshal(map[string]any{
 		"chunk_shape": []int{2, 2},
 		"codecs": []map[string]any{
 			{"name": "bytes", "configuration": map[string]any{"endian": "little"}},
 		},
 	})
-	if err := c.Configure(cfg); err != nil {
-		t.Fatalf("Configure: %v", err)
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
 
 	// Build a 4x4 shard with the top-left inner chunk all-fill (sentinel)

@@ -9,8 +9,8 @@ import (
 )
 
 func TestZlibRoundTrip(t *testing.T) {
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{"level":5}`)); err != nil {
+	c, err := New(json.RawMessage(`{"level":5}`))
+	if err != nil {
 		t.Fatal(err)
 	}
 	cases := [][]byte{
@@ -34,23 +34,24 @@ func TestZlibRoundTrip(t *testing.T) {
 	}
 }
 
-func TestZlibConfigureLevels(t *testing.T) {
-	c := &Codec{}
+func TestZlibNewLevels(t *testing.T) {
 	for _, raw := range []string{`{}`, `{"level":-1}`, `{"level":0}`, `{"level":9}`} {
-		if err := c.Configure(json.RawMessage(raw)); err != nil {
+		if _, err := New(json.RawMessage(raw)); err != nil {
 			t.Fatalf("config %q: %v", raw, err)
 		}
 	}
 	for _, raw := range []string{`{"level":10}`, `{"level":-2}`, `{`} {
-		if err := c.Configure(json.RawMessage(raw)); err == nil {
+		if _, err := New(json.RawMessage(raw)); err == nil {
 			t.Fatalf("config %q: expected error", raw)
 		}
 	}
 }
 
 func TestZlibDecodeGarbage(t *testing.T) {
-	c := &Codec{}
-	_ = c.Configure(nil)
+	c, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := c.DecodeBB([]byte("not zlib")); err == nil {
 		t.Fatal("expected error decoding garbage")
 	}
@@ -63,8 +64,8 @@ func TestDecodeBombBoundedByDeclimit(t *testing.T) {
 	orig := declimit.Max()
 	defer declimit.SetMax(orig)
 
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{"level":5}`)); err != nil {
+	c, err := New(json.RawMessage(`{"level":5}`))
+	if err != nil {
 		t.Fatal(err)
 	}
 	huge := make([]byte, 8<<20) // 8 MiB of zeros compresses to a tiny stream

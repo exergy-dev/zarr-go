@@ -26,48 +26,49 @@ import (
 	kpgzip "github.com/klauspost/compress/gzip"
 )
 
-// Codec is the v3 "gzip" bytes→bytes codec.
+// Codec is the v3 "gzip" bytes→bytes codec. Construct it with New; its
+// configuration is fixed at construction and it is safe for concurrent use.
 type Codec struct {
-	// Level is the compression level passed to compress/gzip. It is set by
-	// Configure and read by EncodeBB. Valid values are -1 (default) and 0..9.
-	Level int
+	// level is the compression level passed to compress/gzip: -1 (default)
+	// or 0..9.
+	level int
 }
 
 type configJSON struct {
 	Level *int `json:"level,omitempty"`
 }
 
-// Name returns the codec's v3 spec name.
-func (c *Codec) Name() string { return "gzip" }
-
-// Configure parses the v3 codec configuration object.
+// New builds a gzip codec from its v3 configuration object.
 //
 // Accepted shape: {"level": <int>} where <int> is in [0,9] or -1 for the
 // gzip default. If the field is absent the default level (5) is used.
-func (c *Codec) Configure(raw json.RawMessage) error {
+func New(raw json.RawMessage) (*Codec, error) {
 	const defaultLevel = 5
-	c.Level = defaultLevel
+	c := &Codec{level: defaultLevel}
 	if len(raw) == 0 {
-		return nil
+		return c, nil
 	}
 	var cfg configJSON
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("gzip codec: invalid configuration: %w", err)
+		return nil, fmt.Errorf("gzip codec: invalid configuration: %w", err)
 	}
 	if cfg.Level == nil {
-		return nil
+		return c, nil
 	}
 	lvl := *cfg.Level
 	switch {
 	case lvl == -1:
-		c.Level = kpgzip.DefaultCompression
+		c.level = kpgzip.DefaultCompression
 	case lvl >= 0 && lvl <= 9:
-		c.Level = lvl
+		c.level = lvl
 	default:
-		return fmt.Errorf("gzip codec: invalid level %d (want -1 or 0..9)", lvl)
+		return nil, fmt.Errorf("gzip codec: invalid level %d (want -1 or 0..9)", lvl)
 	}
-	return nil
+	return c, nil
 }
+
+// Name returns the codec's v3 spec name.
+func (c *Codec) Name() string { return "gzip" }
 
 // Pools, each kept because benchmarks show it pays for itself:
 //
@@ -98,15 +99,15 @@ func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
 	}()
 	var pool *sync.Pool
 	var gw *kpgzip.Writer
-	if c.Level >= -1 && c.Level <= 9 {
-		pool = &writerPools[c.Level+1]
+	if c.level >= -1 && c.level <= 9 {
+		pool = &writerPools[c.level+1]
 		gw, _ = pool.Get().(*kpgzip.Writer)
 	}
 	if gw != nil {
 		gw.Reset(buf)
 	} else {
 		var err error
-		if gw, err = kpgzip.NewWriterLevel(buf, c.Level); err != nil {
+		if gw, err = kpgzip.NewWriterLevel(buf, c.level); err != nil {
 			return nil, fmt.Errorf("gzip codec: new writer: %w", err)
 		}
 	}
@@ -178,5 +179,11 @@ func sizeHint(in []byte, maxDec int64) int {
 }
 
 func init() {
-	codec.Register("gzip", func() codec.Codec { return &Codec{} })
+	codec.Register("gzip", func(raw json.RawMessage) (codec.Codec, error) {
+		c, err := New(raw)
+		if err != nil {
+			return nil, err // not a typed-nil codec.Codec
+		}
+		return c, nil
+	})
 }

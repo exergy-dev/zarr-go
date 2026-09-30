@@ -18,37 +18,45 @@ import (
 	"github.com/exergy-dev/zarr-go/internal/declimit"
 )
 
+// Codec is the "zlib" bytes→bytes codec. Construct it with New; its
+// configuration is fixed at construction and it is safe for concurrent use.
 type Codec struct {
-	Level int
+	// level is the compression level: -1 (default) or 0..9.
+	level int
 }
 
 type configJSON struct {
 	Level *int `json:"level,omitempty"`
 }
 
-func (c *Codec) Name() string { return "zlib" }
-
-func (c *Codec) Configure(raw json.RawMessage) error {
-	c.Level = stdzlib.DefaultCompression
+// New builds a zlib codec from its configuration object.
+//
+// Accepted shape: {"level": <int>} where <int> is in [0,9] or -1 for the
+// zlib default. If the field is absent the zlib default is used.
+func New(raw json.RawMessage) (*Codec, error) {
+	c := &Codec{level: stdzlib.DefaultCompression}
 	if len(raw) == 0 {
-		return nil
+		return c, nil
 	}
 	var cfg configJSON
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("zlib codec: invalid configuration: %w", err)
+		return nil, fmt.Errorf("zlib codec: invalid configuration: %w", err)
 	}
 	if cfg.Level != nil {
 		l := *cfg.Level
 		if l == -1 {
-			c.Level = stdzlib.DefaultCompression
+			c.level = stdzlib.DefaultCompression
 		} else if l < 0 || l > 9 {
-			return fmt.Errorf("zlib codec: level must be 0-9 or -1, got %d", l)
+			return nil, fmt.Errorf("zlib codec: level must be 0-9 or -1, got %d", l)
 		} else {
-			c.Level = l
+			c.level = l
 		}
 	}
-	return nil
+	return c, nil
 }
+
+// Name returns the codec's spec name.
+func (c *Codec) Name() string { return "zlib" }
 
 // Pools, each kept because benchmarks show it pays for itself (same scheme
 // as the gzip codec):
@@ -78,15 +86,15 @@ func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
 	}()
 	var pool *sync.Pool
 	var w *stdzlib.Writer
-	if c.Level >= -1 && c.Level <= 9 {
-		pool = &writerPools[c.Level+1]
+	if c.level >= -1 && c.level <= 9 {
+		pool = &writerPools[c.level+1]
 		w, _ = pool.Get().(*stdzlib.Writer)
 	}
 	if w != nil {
 		w.Reset(buf)
 	} else {
 		var err error
-		if w, err = stdzlib.NewWriterLevel(buf, c.Level); err != nil {
+		if w, err = stdzlib.NewWriterLevel(buf, c.level); err != nil {
 			return nil, fmt.Errorf("zlib codec: writer init: %w", err)
 		}
 	}
@@ -139,5 +147,11 @@ func (c *Codec) DecodeBB(in []byte) ([]byte, error) {
 }
 
 func init() {
-	codec.Register("zlib", func() codec.Codec { return &Codec{} })
+	codec.Register("zlib", func(raw json.RawMessage) (codec.Codec, error) {
+		c, err := New(raw)
+		if err != nil {
+			return nil, err // not a typed-nil codec.Codec
+		}
+		return c, nil
+	})
 }

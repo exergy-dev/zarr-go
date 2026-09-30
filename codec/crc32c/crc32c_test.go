@@ -121,8 +121,7 @@ func TestDecodeReturnsFreshSlice(t *testing.T) {
 	}
 }
 
-func TestConfigure(t *testing.T) {
-	c := &Codec{}
+func TestNew(t *testing.T) {
 	cases := [][]byte{
 		nil,
 		[]byte(""),
@@ -130,11 +129,11 @@ func TestConfigure(t *testing.T) {
 		[]byte(`{"unused":true}`),
 	}
 	for _, raw := range cases {
-		if err := c.Configure(raw); err != nil {
-			t.Fatalf("Configure(%q): %v", raw, err)
+		if c, err := New(raw); err != nil || c == nil {
+			t.Fatalf("New(%q) = %v, %v", raw, c, err)
 		}
 	}
-	if err := c.Configure([]byte("not json")); err == nil {
+	if _, err := New([]byte("not json")); err == nil {
 		t.Fatal("expected error on malformed JSON")
 	}
 }

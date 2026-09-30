@@ -20,9 +20,9 @@ func newCodec(t *testing.T, cfg string) codec.ArrayToBytesCodec {
 	if f == nil {
 		t.Fatal("sharding_indexed not registered")
 	}
-	c := f()
-	if err := c.Configure(json.RawMessage(cfg)); err != nil {
-		t.Fatalf("Configure: %v", err)
+	c, err := f(json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
 	}
 	ab, ok := c.(codec.ArrayToBytesCodec)
 	if !ok {

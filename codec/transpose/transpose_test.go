@@ -13,13 +13,13 @@ import (
 // newCodec returns a configured transpose codec or fails the test.
 func newCodec(t *testing.T, order []int) *Codec {
 	t.Helper()
-	c := &Codec{}
 	raw, err := json.Marshal(map[string]any{"order": order})
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
-	if err := c.Configure(raw); err != nil {
-		t.Fatalf("configure: %v", err)
+	c, err := New(raw)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
 	return c
 }
@@ -36,7 +36,11 @@ func TestRegistered(t *testing.T) {
 	if f == nil {
 		t.Fatal("transpose codec not registered")
 	}
-	if _, ok := f().(codec.ArrayToArrayCodec); !ok {
+	c, err := f(json.RawMessage(`{"order":[1,0]}`))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if _, ok := c.(codec.ArrayToArrayCodec); !ok {
 		t.Fatal("registered transpose codec does not implement ArrayToArrayCodec")
 	}
 }
@@ -229,7 +233,7 @@ func TestReuseOutputBuffer(t *testing.T) {
 	}
 }
 
-func TestConfigureRejectsBadOrders(t *testing.T) {
+func TestNewRejectsBadOrders(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  string
@@ -244,16 +248,18 @@ func TestConfigureRejectsBadOrders(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Codec{}
-			err := c.Configure(json.RawMessage(tc.raw))
+			c, err := New(json.RawMessage(tc.raw))
 			if err == nil {
 				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+			if c != nil {
+				t.Fatalf("New returned a codec alongside the error")
 			}
 		})
 	}
 }
 
-func TestConfigureAcceptsValid(t *testing.T) {
+func TestNewAcceptsValid(t *testing.T) {
 	cases := [][]int{
 		{0},
 		{0, 1},
@@ -263,10 +269,9 @@ func TestConfigureAcceptsValid(t *testing.T) {
 		{3, 1, 0, 2},
 	}
 	for _, order := range cases {
-		c := &Codec{}
 		raw, _ := json.Marshal(map[string]any{"order": order})
-		if err := c.Configure(raw); err != nil {
-			t.Fatalf("Configure(%v): %v", order, err)
+		if _, err := New(raw); err != nil {
+			t.Fatalf("New(%v): %v", order, err)
 		}
 	}
 }

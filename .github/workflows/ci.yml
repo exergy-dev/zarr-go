@@ -21,10 +21,9 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
-  # cgo exercises the zarrcgo build tag (cgo-backed zstd, blosc codecs),
-  # which the default `test` matrix above never compiles at all since the
-  # tag is opt-in. Linux-only: libzstd-dev/libblosc-dev are readily
-  # apt-installable there.
+  # cgo exercises the zarrcgo build tag (the cgo-backed blosc codec), which
+  # the default `test` matrix above never compiles at all since the tag is
+  # opt-in. Linux-only: libblosc-dev is readily apt-installable there.
   cgo:
     runs-on: ubuntu-latest
     steps:
@@ -32,7 +31,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-      - run: sudo apt-get update && sudo apt-get install -y libzstd-dev libblosc-dev
+      - run: sudo apt-get update && sudo apt-get install -y libblosc-dev
       - run: CGO_ENABLED=1 go build -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go vet -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go test -tags zarrcgo -race ./...

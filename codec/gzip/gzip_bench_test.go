@@ -31,8 +31,8 @@ func benchPayload(n int) []byte {
 
 func newBenchCodec(b *testing.B) *Codec {
 	b.Helper()
-	c := &Codec{}
-	if err := c.Configure(json.RawMessage(`{"level":5}`)); err != nil {
+	c, err := New(json.RawMessage(`{"level":5}`))
+	if err != nil {
 		b.Fatal(err)
 	}
 	return c

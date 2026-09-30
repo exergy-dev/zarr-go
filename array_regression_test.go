@@ -17,8 +17,7 @@ import (
 // DecodeError instead of panicking inside copyChunkRegion's slicing.
 type shortDecodeCodec struct{}
 
-func (*shortDecodeCodec) Name() string                    { return "test_short_decode" }
-func (*shortDecodeCodec) Configure(json.RawMessage) error { return nil }
+func (*shortDecodeCodec) Name() string { return "test_short_decode" }
 func (*shortDecodeCodec) EncodeAB(in codec.ArrayChunk) ([]byte, error) {
 	return append([]byte(nil), in.Data...), nil
 }
@@ -28,7 +27,9 @@ func (*shortDecodeCodec) DecodeAB(in []byte, out *codec.ArrayChunk) error {
 }
 
 func init() {
-	codec.Register("test_short_decode", func() codec.Codec { return &shortDecodeCodec{} })
+	codec.Register("test_short_decode", func(json.RawMessage) (codec.Codec, error) {
+		return &shortDecodeCodec{}, nil
+	})
 }
 
 // TestStreamEdgeChunkShapeMatchesData guards against Stream yielding a Chunk

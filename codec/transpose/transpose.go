@@ -18,12 +18,20 @@ import (
 )
 
 func init() {
-	codec.Register("transpose", func() codec.Codec { return &Codec{} })
+	codec.Register("transpose", func(raw json.RawMessage) (codec.Codec, error) {
+		c, err := New(raw)
+		if err != nil {
+			return nil, err // not a typed-nil codec.Codec
+		}
+		return c, nil
+	})
 }
 
-// Codec is the transpose array→array codec.
+// Codec is the transpose array→array codec. Construct it with New; its
+// configuration is fixed at construction and it is safe for concurrent use.
 type Codec struct {
-	order []int
+	order   []int
+	inverse []int
 }
 
 // Name returns the v3 codec name.
@@ -33,24 +41,24 @@ type config struct {
 	Order []int `json:"order"`
 }
 
-// Configure parses the codec's configuration JSON. The "order" field must be
-// a permutation of [0, rank). Configure validates that order contains each
-// index in [0, len(order)) exactly once.
-func (c *Codec) Configure(raw json.RawMessage) error {
+// New builds a transpose codec from its v3 configuration object. The
+// required "order" field must be a permutation of [0, rank): each index in
+// [0, len(order)) exactly once.
+func New(raw json.RawMessage) (*Codec, error) {
 	var cfg config
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return fmt.Errorf("transpose: parse configuration: %w", err)
+			return nil, fmt.Errorf("transpose: parse configuration: %w", err)
 		}
 	}
 	if cfg.Order == nil {
-		return fmt.Errorf("transpose: configuration missing required field \"order\"")
+		return nil, fmt.Errorf("transpose: configuration missing required field \"order\"")
 	}
 	if err := validatePermutation(cfg.Order); err != nil {
-		return err
+		return nil, err
 	}
-	c.order = append([]int(nil), cfg.Order...)
-	return nil
+	order := append([]int(nil), cfg.Order...)
+	return &Codec{order: order, inverse: invert(order)}, nil
 }
 
 // validatePermutation returns an error if order is not a permutation of
@@ -82,8 +90,7 @@ func (c *Codec) EncodeAA(in codec.ArrayChunk, out *codec.ArrayChunk) error {
 
 // DecodeAA applies the inverse of the configured permutation to in.
 func (c *Codec) DecodeAA(in codec.ArrayChunk, out *codec.ArrayChunk) error {
-	inv := invert(c.order)
-	return c.transpose(in, out, inv)
+	return c.transpose(in, out, c.inverse)
 }
 
 // invert returns the inverse permutation of p: inv[p[i]] = i.
