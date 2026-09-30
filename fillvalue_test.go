@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/rkm/zarr-go"
@@ -104,5 +105,54 @@ func TestErrUnknownCodecSentinel(t *testing.T) {
 	}
 	if !errors.Is(err, codec.ErrUnknownCodec) {
 		t.Fatalf("got %v, want codec.ErrUnknownCodec", err)
+	}
+}
+
+// TestV2LargeIntegerFillValueExact checks v2 integer fill values beyond
+// float64's exact range (2^53) read back exactly rather than being
+// round-tripped through float64.
+func TestV2LargeIntegerFillValueExact(t *testing.T) {
+	ctx := context.Background()
+	zarray := func(dtype, fill string) []byte {
+		return []byte(`{"zarr_format": 2, "shape": [3], "chunks": [2], "dtype": "` + dtype +
+			`", "compressor": null, "filters": null, "fill_value": ` + fill + `, "order": "C"}`)
+	}
+
+	for _, want := range []int64{math.MaxInt64, math.MinInt64, 1<<53 + 1} {
+		s := mem.New()
+		if err := s.Set(ctx, "arr/.zarray", zarray("<i8", strconv.FormatInt(want, 10))); err != nil {
+			t.Fatal(err)
+		}
+		a, err := zarr.OpenArray[int64](ctx, s, "arr")
+		if err != nil {
+			t.Fatalf("OpenArray(fill=%d): %v", want, err)
+		}
+		dst := make([]int64, 3)
+		if err := a.Read(ctx, zarr.All([]int64{3}), dst); err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for i, got := range dst {
+			if got != want {
+				t.Fatalf("int64 fill: dst[%d] = %d, want %d", i, got, want)
+			}
+		}
+	}
+
+	s := mem.New()
+	if err := s.Set(ctx, "arr/.zarray", zarray("<u8", "18446744073709551615")); err != nil {
+		t.Fatal(err)
+	}
+	a, err := zarr.OpenArray[uint64](ctx, s, "arr")
+	if err != nil {
+		t.Fatalf("OpenArray(uint64): %v", err)
+	}
+	dst := make([]uint64, 3)
+	if err := a.Read(ctx, zarr.All([]int64{3}), dst); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for i, got := range dst {
+		if got != math.MaxUint64 {
+			t.Fatalf("uint64 fill: dst[%d] = %d, want %d", i, got, uint64(math.MaxUint64))
+		}
 	}
 }

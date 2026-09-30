@@ -199,9 +199,11 @@ func DecodeArrayV2(raw []byte) (*ArrayMeta, error) {
 // normalizeV2FillValue rewrites lenient v2-style fill_value encodings into
 // the strict v3 form zarr.parseFillValue expects, matching real-world v2
 // writers: some emit integer fill values as float literals (e.g. "0.0" for
-// an int32 array) or bool fill values as 0/1 rather than false/true. null
-// and anything that doesn't match one of these lenient shapes passes through
-// unchanged (float/complex dtypes already use the v3-compatible encoding).
+// an int32 array) or bool fill values as 0/1 rather than false/true. null,
+// plain integer literals, and anything that doesn't match one of these
+// lenient shapes (or isn't an integral value representable in 64 bits) pass
+// through unchanged (float/complex dtypes already use the v3-compatible
+// encoding).
 func normalizeV2FillValue(raw json.RawMessage, v3Dtype string) json.RawMessage {
 	if isJSONNull(raw) {
 		return raw
@@ -217,13 +219,31 @@ func normalizeV2FillValue(raw json.RawMessage, v3Dtype string) json.RawMessage {
 				return json.RawMessage("true")
 			}
 		}
-	case "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64":
-		var f float64
-		if err := json.Unmarshal(raw, &f); err == nil && f == math.Trunc(f) {
+	case "int8", "int16", "int32", "int64":
+		// Plain integer literals pass through byte-for-byte: a float64
+		// round-trip would corrupt values beyond 2^53.
+		if f, ok := integralFloatLiteral(raw); ok && f >= math.MinInt64 && f < math.MaxInt64 {
 			return json.RawMessage(strconv.FormatInt(int64(f), 10))
+		}
+	case "uint8", "uint16", "uint32", "uint64":
+		if f, ok := integralFloatLiteral(raw); ok && f >= 0 && f < math.MaxUint64 {
+			return json.RawMessage(strconv.FormatUint(uint64(f), 10))
 		}
 	}
 	return raw
+}
+
+// integralFloatLiteral reports whether raw is a float-formatted JSON number
+// (containing '.', 'e' or 'E') with an integral value, and returns it.
+func integralFloatLiteral(raw json.RawMessage) (float64, bool) {
+	if !bytes.ContainsAny(raw, ".eE") {
+		return 0, false
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil || f != math.Trunc(f) {
+		return 0, false
+	}
+	return f, true
 }
 
 // DecodeGroupV2 parses a .zgroup document and returns a v3-shaped GroupMeta.

@@ -10,8 +10,8 @@ import (
 )
 
 // parseFillValue decodes the JSON fill_value field into typed value bytes
-// matching dt. The output is always elementSize bytes in native (little)
-// encoding suitable for memcpy into a result buffer.
+// matching dt. The output is always elementSize bytes in native byte order,
+// suitable for memcpy into a result buffer.
 func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 	size := dt.Size()
 	out := make([]byte, size)
@@ -32,49 +32,55 @@ func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, err
 		}
+		if bits := uint(size * 8); bits < 64 && (n < -1<<(bits-1) || n >= 1<<(bits-1)) {
+			return nil, fmt.Errorf("fill value %d out of range for dtype %s", n, dt)
+		}
 		switch size {
 		case 1:
 			out[0] = byte(int8(n))
 		case 2:
-			binary.LittleEndian.PutUint16(out, uint16(int16(n)))
+			binary.NativeEndian.PutUint16(out, uint16(int16(n)))
 		case 4:
-			binary.LittleEndian.PutUint32(out, uint32(int32(n)))
+			binary.NativeEndian.PutUint32(out, uint32(int32(n)))
 		case 8:
-			binary.LittleEndian.PutUint64(out, uint64(n))
+			binary.NativeEndian.PutUint64(out, uint64(n))
 		}
 	case DtypeUint8, DtypeUint16, DtypeUint32, DtypeUint64:
 		var n uint64
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, err
 		}
+		if bits := uint(size * 8); bits < 64 && n>>bits != 0 {
+			return nil, fmt.Errorf("fill value %d out of range for dtype %s", n, dt)
+		}
 		switch size {
 		case 1:
 			out[0] = byte(n)
 		case 2:
-			binary.LittleEndian.PutUint16(out, uint16(n))
+			binary.NativeEndian.PutUint16(out, uint16(n))
 		case 4:
-			binary.LittleEndian.PutUint32(out, uint32(n))
+			binary.NativeEndian.PutUint32(out, uint32(n))
 		case 8:
-			binary.LittleEndian.PutUint64(out, n)
+			binary.NativeEndian.PutUint64(out, n)
 		}
 	case DtypeFloat16:
 		bits, err := parseFloatBits(raw, 16)
 		if err != nil {
 			return nil, err
 		}
-		binary.LittleEndian.PutUint16(out, uint16(bits))
+		binary.NativeEndian.PutUint16(out, uint16(bits))
 	case DtypeFloat32:
 		bits, err := parseFloatBits(raw, 32)
 		if err != nil {
 			return nil, err
 		}
-		binary.LittleEndian.PutUint32(out, uint32(bits))
+		binary.NativeEndian.PutUint32(out, uint32(bits))
 	case DtypeFloat64:
 		bits, err := parseFloatBits(raw, 64)
 		if err != nil {
 			return nil, err
 		}
-		binary.LittleEndian.PutUint64(out, bits)
+		binary.NativeEndian.PutUint64(out, bits)
 	case DtypeComplex64, DtypeComplex128:
 		var arr [2]json.RawMessage
 		if err := json.Unmarshal(raw, &arr); err != nil {
@@ -93,11 +99,11 @@ func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 			return nil, err
 		}
 		if dt == DtypeComplex64 {
-			binary.LittleEndian.PutUint32(out[0:4], uint32(reBits))
-			binary.LittleEndian.PutUint32(out[4:8], uint32(imBits))
+			binary.NativeEndian.PutUint32(out[0:4], uint32(reBits))
+			binary.NativeEndian.PutUint32(out[4:8], uint32(imBits))
 		} else {
-			binary.LittleEndian.PutUint64(out[0:8], reBits)
-			binary.LittleEndian.PutUint64(out[8:16], imBits)
+			binary.NativeEndian.PutUint64(out[0:8], reBits)
+			binary.NativeEndian.PutUint64(out[8:16], imBits)
 		}
 	default:
 		return nil, fmt.Errorf("fill value not supported for dtype %s", dt)
@@ -175,23 +181,36 @@ func parseSpecialFloat(raw json.RawMessage) (float64, error) {
 	return f, nil
 }
 
-// float32ToFloat16Bits is a minimal IEEE-754 binary32 → binary16 conversion.
-// Subnormals and overflow are clamped/flushed.
+// float32ToFloat16Bits is an IEEE-754 binary32 → binary16 conversion with
+// round-to-nearest-even, including subnormal results. Values too large for
+// binary16 become ±Inf; NaN stays NaN (quiet) and the sign is preserved.
 func float32ToFloat16Bits(f float32) uint16 {
 	bits := math.Float32bits(f)
-	sign := uint16((bits >> 16) & 0x8000)
-	exp := int32((bits>>23)&0xff) - 127 + 15
+	sign := uint16(bits>>16) & 0x8000
+	exp := int(bits>>23) & 0xff
 	mant := bits & 0x7fffff
-	if exp <= 0 {
-		// Underflow to zero (subnormals not handled exactly; M1 fill values
-		// are typically zero/NaN/Inf).
-		return sign
+	switch e := exp - 127 + 15; {
+	case exp == 0xff && mant != 0:
+		return sign | 0x7e00 // NaN
+	case e >= 0x1f:
+		return sign | 0x7c00 // Inf or overflow
+	case e > 0:
+		// Normal: rounding may carry into the exponent, up to Inf.
+		return sign | uint16(roundShiftRNE(uint32(e)<<23|mant, 13))
+	case e >= -10:
+		// Subnormal: shift the explicit leading bit into the mantissa.
+		// Rounding up to 0x0400 correctly yields the smallest normal.
+		return sign | uint16(roundShiftRNE(mant|0x800000, uint(14-e)))
+	default:
+		return sign // below half the smallest subnormal: ±0
 	}
-	if exp >= 0x1f {
-		if mant != 0 && (bits>>23)&0xff == 0xff {
-			return sign | 0x7e00 // NaN
-		}
-		return sign | 0x7c00 // Inf
+}
+
+// roundShiftRNE returns v >> shift rounded to nearest, ties to even.
+func roundShiftRNE(v uint32, shift uint) uint32 {
+	r, rem, half := v>>shift, v&(1<<shift-1), uint32(1)<<(shift-1)
+	if rem > half || (rem == half && r&1 == 1) {
+		r++
 	}
-	return sign | uint16(exp<<10) | uint16(mant>>13)
+	return r
 }
