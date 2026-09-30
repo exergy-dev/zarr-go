@@ -291,14 +291,12 @@ func (s *slicedFetcher) GetRange(_ context.Context, key string, off, n int64) ([
 	if key != s.key {
 		return nil, fmt.Errorf("sharding_indexed: unexpected key %q (want %q)", key, s.key)
 	}
-	if off < 0 || off > int64(len(s.base)) {
-		return nil, fmt.Errorf("sharding_indexed: offset %d out of range", off)
+	if off < 0 || n < 0 || off > int64(len(s.base)) {
+		return nil, fmt.Errorf("sharding_indexed: invalid range (off=%d n=%d len=%d)", off, n, len(s.base))
 	}
-	end := off + n
-	if end > int64(len(s.base)) {
-		end = int64(len(s.base))
-	}
-	return s.base[off:end], nil
+	// Clamp n to the bytes left rather than computing off+n, which can
+	// overflow int64.
+	return s.base[off : off+min(n, int64(len(s.base))-off)], nil
 }
 
 // innerRange describes the inner-chunk-local sub-range we want to extract from
