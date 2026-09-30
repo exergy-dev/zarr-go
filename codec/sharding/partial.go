@@ -259,6 +259,10 @@ func (c *Codec) DecodePartial(ctx context.Context, fetcher codec.RangeFetcher, r
 		if err := c.inner.Decode(raw, &innerChunk); err != nil {
 			return fmt.Errorf("sharding_indexed: decode inner chunk %v: %w", nd.coord, err)
 		}
+		if expected := elementCount(nd.innerShape) * int64(esz); int64(len(innerChunk.Data)) != expected {
+			return fmt.Errorf("sharding_indexed: inner chunk %v data size %d != expected %d",
+				nd.coord, len(innerChunk.Data), expected)
+		}
 		copySubregion(
 			outBuf, regionShape,
 			innerChunk.Data, nd.innerShape,

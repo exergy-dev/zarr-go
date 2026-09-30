@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"math"
 	"sync/atomic"
 	"testing"
@@ -360,6 +361,45 @@ func TestDecodePartialRejectsBadIndexEntries(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// shortAB is a test-only array->bytes codec whose DecodeAB ignores out.Shape
+// and returns half the input, so a sharding inner pipeline built on it yields
+// inner chunks of the wrong size. No in-tree AB codec does this.
+type shortAB struct{}
+
+func (shortAB) Name() string                                 { return "sharding_test_short_ab" }
+func (shortAB) Configure(json.RawMessage) error              { return nil }
+func (shortAB) EncodeAB(in codec.ArrayChunk) ([]byte, error) { return in.Data, nil }
+func (shortAB) DecodeAB(in []byte, out *codec.ArrayChunk) error {
+	out.Data = in[:len(in)/2]
+	return nil
+}
+
+func init() {
+	codec.Register("sharding_test_short_ab", func() codec.Codec { return shortAB{} })
+}
+
+// TestDecodePartialRejectsWrongInnerSize: an inner pipeline that decodes to
+// the wrong number of bytes must be reported as an error (as DecodeAB does),
+// not copied out of bounds.
+func TestDecodePartialRejectsWrongInnerSize(t *testing.T) {
+	const cfg = `{
+  "chunk_shape": [4],
+  "codecs": [{"name": "sharding_test_short_ab"}],
+  "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+}`
+	shard := rawShard([]byte{1, 2, 3, 4}, 0, 4)
+	pd := newCodec(t, cfg).(codec.PartialDecoder)
+	req := codec.PartialReadRequest{
+		Key: "shard", FullShape: []int64{4}, Dtype: "uint8",
+		Region: []codec.DimRange{{Start: 0, Stop: 4, Step: 1}},
+		Out:    make([]byte, 4), GapBytes: 4 << 20,
+	}
+	f := &countingFetcher{key: "shard", blob: shard}
+	if err := pd.DecodePartial(context.Background(), f, &req); err == nil {
+		t.Fatalf("DecodePartial accepted a 2-byte inner chunk for shape [4] uint8, out=%v", req.Out)
 	}
 }
 
