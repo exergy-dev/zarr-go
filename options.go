@@ -17,8 +17,14 @@ func defaultOptions() arrayOptions {
 	}
 }
 
-// OpenOption customizes Open / OpenArray.
+// OpenOption customizes Open / OpenArray. It is also a CreateOption, so the
+// same options configure the Array that CreateArray returns.
 type OpenOption func(*arrayOptions)
+
+func (f OpenOption) applyCreate(o *createOptions) {
+	o.arrayOnly = "OpenOption"
+	f(&o.openOpts)
+}
 
 // WithConcurrency caps the number of decode workers.
 func WithConcurrency(n int) OpenOption {

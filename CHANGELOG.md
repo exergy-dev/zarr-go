@@ -47,7 +47,9 @@ Initial release.
   `WithFillValue`, `WithDimensionNames`, `WithChunkKeySeparator`,
   `WithV2ChunkKeys`) passed to `CreateGroup` is now an error instead of
   being silently ignored.
-
+- `CreateOption` is now an interface, and every `OpenOption`
+  (`WithConcurrency`, `WithIOConcurrency`, `WithRangeGap`) is also a
+  `CreateOption`, so `CreateArray` can tune the array it returns.
 - `codec.PartialDecoder.DecodePartial` takes a `*codec.PartialReadRequest`
   instead of seven positional parameters; `codec.SuffixRangeFetcher` moved
   from `codec/sharding` to `codec`. Only relevant to custom

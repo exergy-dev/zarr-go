@@ -174,6 +174,10 @@ zarr.OpenArray[float32](ctx, st, "",
 )
 ```
 
+These are `OpenOption`s, and every `OpenOption` is also a `CreateOption`,
+so the same calls can be passed to `CreateArray` to tune the array it
+returns.
+
 ## Error sentinels
 
 | Sentinel                          | Meaning                                            |

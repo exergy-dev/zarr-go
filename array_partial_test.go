@@ -431,7 +431,7 @@ func TestWithRangeGap_AffectsFetchCount(t *testing.T) {
 // immediately. Used to deterministically prove WithIOConcurrency bounds the
 // number of concurrently in-flight chunk fetches.
 type gatedIOStore struct {
-	store.Store
+	store.WritableStore
 	active  atomic.Bool
 	entered chan struct{}
 	release chan struct{}
@@ -442,65 +442,74 @@ func (g *gatedIOStore) Get(ctx context.Context, key string) ([]byte, error) {
 		g.entered <- struct{}{}
 		<-g.release
 	}
-	return g.Store.Get(ctx, key)
+	return g.WritableStore.Get(ctx, key)
 }
 
 // TestWithIOConcurrency_BoundsInFlight proves WithIOConcurrency(N) bounds
 // the number of concurrently in-flight store fetches to N, using a store
 // that blocks until released so the bound can be observed deterministically
-// rather than inferred from timing.
+// rather than inferred from timing. The option must take effect whether it
+// is passed to OpenArray or directly to CreateArray.
 func TestWithIOConcurrency_BoundsInFlight(t *testing.T) {
-	ctx := context.Background()
-	inner := mem.New()
+	const ioConc = 3
 	shape := []int64{32}
 	chunks := []int64{2} // 16 chunks
-	a, err := zarr.CreateArray[int32](ctx, inner, "arr", shape, chunks)
-	if err != nil {
-		t.Fatalf("CreateArray: %v", err)
-	}
 	src := make([]int32, 32)
 	for i := range src {
 		src[i] = int32(i + 1)
 	}
-	if err := a.Write(ctx, zarr.All(shape), src); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	for _, via := range []string{"OpenArray", "CreateArray"} {
+		t.Run(via, func(t *testing.T) {
+			ctx := context.Background()
+			// entered is buffered comfortably past the chunk count so that a
+			// chunk goroutine launched after the test stops draining it (i.e.
+			// once the bound has been proven) can still signal without
+			// blocking forever.
+			gated := &gatedIOStore{WritableStore: mem.New(), entered: make(chan struct{}, 32), release: make(chan struct{})}
+			var createOpts []zarr.CreateOption
+			if via == "CreateArray" {
+				createOpts = append(createOpts, zarr.WithIOConcurrency(ioConc))
+			}
+			b, err := zarr.CreateArray[int32](ctx, gated, "arr", shape, chunks, createOpts...)
+			if err != nil {
+				t.Fatalf("CreateArray: %v", err)
+			}
+			if err := b.Write(ctx, zarr.All(shape), src); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if via == "OpenArray" {
+				if b, err = zarr.OpenArray[int32](ctx, gated, "arr", zarr.WithIOConcurrency(ioConc)); err != nil {
+					t.Fatalf("OpenArray: %v", err)
+				}
+			}
+			gated.active.Store(true)
 
-	const ioConc = 3
-	// entered is buffered comfortably past the chunk count so that a chunk
-	// goroutine launched after the test stops draining it (i.e. once the
-	// bound has been proven) can still signal without blocking forever.
-	gated := &gatedIOStore{Store: inner, entered: make(chan struct{}, 32), release: make(chan struct{})}
-	b, err := zarr.OpenArray[int32](ctx, gated, "arr", zarr.WithIOConcurrency(ioConc))
-	if err != nil {
-		t.Fatalf("OpenArray: %v", err)
-	}
-	gated.active.Store(true)
+			got := make([]int32, 32)
+			done := make(chan error, 1)
+			go func() { done <- b.Read(ctx, zarr.All(shape), got) }()
 
-	got := make([]int32, 32)
-	done := make(chan error, 1)
-	go func() { done <- b.Read(ctx, zarr.All(shape), got) }()
+			for i := 0; i < ioConc; i++ {
+				select {
+				case <-gated.entered:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("timed out waiting for in-flight fetch %d/%d", i+1, ioConc)
+				}
+			}
+			select {
+			case <-gated.entered:
+				t.Fatalf("more than %d concurrent Get calls in flight", ioConc)
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(gated.release)
 
-	for i := 0; i < ioConc; i++ {
-		select {
-		case <-gated.entered:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for in-flight fetch %d/%d", i+1, ioConc)
-		}
-	}
-	select {
-	case <-gated.entered:
-		t.Fatalf("more than %d concurrent Get calls in flight", ioConc)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(gated.release)
-
-	if err := <-done; err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	for i := range src {
-		if got[i] != src[i] {
-			t.Fatalf("got[%d]=%d want %d", i, got[i], src[i])
-		}
+			if err := <-done; err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			for i := range src {
+				if got[i] != src[i] {
+					t.Fatalf("got[%d]=%d want %d", i, got[i], src[i])
+				}
+			}
+		})
 	}
 }

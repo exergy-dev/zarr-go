@@ -16,7 +16,17 @@ import (
 // WithOverwrite apply to both; every other option only means something for
 // an array, and CreateGroup returns an error naming it rather than silently
 // ignoring it.
-type CreateOption func(*createOptions)
+//
+// Every OpenOption is also a CreateOption: passed to CreateArray, it
+// configures the returned Array exactly as it would for OpenArray.
+type CreateOption interface {
+	applyCreate(*createOptions)
+}
+
+// createOptionFunc adapts a plain function to CreateOption.
+type createOptionFunc func(*createOptions)
+
+func (f createOptionFunc) applyCreate(o *createOptions) { f(o) }
 
 type createOptions struct {
 	codecs     []codec.Spec
@@ -47,38 +57,38 @@ func defaultCreateOptions() createOptions {
 // WithCodecs sets the codec pipeline used at write time. Callers typically
 // supply the bytes codec plus optional compression (e.g., gzip, zstd).
 func WithCodecs(specs ...codec.Spec) CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithCodecs"
 		if len(specs) > 0 {
 			o.codecs = append(o.codecs[:0], specs...)
 		}
-	}
+	})
 }
 
 // WithFillValue sets the fill value (encoded as v3 JSON: a number, "NaN",
 // "Infinity", "-Infinity", or a 2-element array for complex).
 func WithFillValue(raw json.RawMessage) CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithFillValue"
 		o.fillValue = append(json.RawMessage(nil), raw...)
-	}
+	})
 }
 
 // WithAttributes attaches user attributes to the new node. The map is
 // shallow-copied so later mutations by the caller don't alter the node's
 // in-memory or already-persisted metadata.
 func WithAttributes(attrs map[string]any) CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.attrs = cloneAttrs(attrs)
-	}
+	})
 }
 
 // WithDimensionNames labels the array's dimensions.
 func WithDimensionNames(names []string) CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithDimensionNames"
 		o.dimNames = append([]string(nil), names...)
-	}
+	})
 }
 
 // WithOverwrite makes CreateArray / CreateGroup unconditionally overwrite
@@ -91,9 +101,9 @@ func WithDimensionNames(names []string) CreateOption {
 // stale chunk bytes that the new metadata's codec pipeline would decode as
 // garbage.
 func WithOverwrite() CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.overwrite = true
-	}
+	})
 }
 
 // WithChunkKeySeparator sets the separator used between chunk-coordinate
@@ -101,10 +111,10 @@ func WithOverwrite() CreateOption {
 // WithV2ChunkKeys defaults it to ".". Call this after WithV2ChunkKeys in the
 // options list to override that default.
 func WithChunkKeySeparator(sep string) CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithChunkKeySeparator"
 		o.keySep = sep
-	}
+	})
 }
 
 // WithV2ChunkKeys selects the v3 "v2"-compatible chunk_key_encoding (e.g.
@@ -112,11 +122,11 @@ func WithChunkKeySeparator(sep string) CreateOption {
 // Zarr v2 stores use, and defaults the separator to "." (v2's convention).
 // Call WithChunkKeySeparator after this option to use a different separator.
 func WithV2ChunkKeys() CreateOption {
-	return func(o *createOptions) {
+	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithV2ChunkKeys"
 		o.keyEncName = "v2"
 		o.keySep = "."
-	}
+	})
 }
 
 // writeMetaAtomic writes a freshly-marshaled zarr.json under key. With
@@ -168,7 +178,7 @@ func CreateArray[T Numeric](
 	}
 	co := defaultCreateOptions()
 	for _, opt := range opts {
-		opt(&co)
+		opt.applyCreate(&co)
 	}
 	if co.dimNames != nil && len(co.dimNames) != len(shape) {
 		return nil, fmt.Errorf("got %d dimension names for a rank-%d array", len(co.dimNames), len(shape))
@@ -241,7 +251,7 @@ func CreateGroup(ctx context.Context, s store.Store, path string, opts ...Create
 	path = strings.Trim(path, "/")
 	var co createOptions
 	for _, opt := range opts {
-		opt(&co)
+		opt.applyCreate(&co)
 	}
 	if co.arrayOnly != "" {
 		return nil, fmt.Errorf("create group at %q: %s is an array-only option", path, co.arrayOnly)

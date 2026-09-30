@@ -384,6 +384,7 @@ func TestCreateGroupRejectsArrayOptions(t *testing.T) {
 		"WithDimensionNames":    zarr.WithDimensionNames([]string{"x"}),
 		"WithChunkKeySeparator": zarr.WithChunkKeySeparator("."),
 		"WithV2ChunkKeys":       zarr.WithV2ChunkKeys(),
+		"OpenOption":            zarr.WithConcurrency(2),
 	} {
 		s := mem.New()
 		_, err := zarr.CreateGroup(ctx, s, "g", opt)
