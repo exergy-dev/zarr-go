@@ -159,6 +159,9 @@ func CreateArray[T Numeric](
 	for _, opt := range opts {
 		opt(&co)
 	}
+	if co.dimNames != nil && len(co.dimNames) != len(shape) {
+		return nil, fmt.Errorf("got %d dimension names for a rank-%d array", len(co.dimNames), len(shape))
+	}
 	dt := DtypeOf[T]()
 	if dt == DtypeInvalid {
 		return nil, fmt.Errorf("%w: T", ErrUnsupportedDtype)

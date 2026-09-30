@@ -110,6 +110,14 @@ func (a *Array[T]) Chunks() []int64 {
 // Dtype returns the array's element type.
 func (a *Array[T]) Dtype() Dtype { return a.dtype }
 
+// Attrs returns a copy of the array's user attributes (v3 "attributes", or
+// the v2 .zattrs sidecar), or nil if it has none.
+func (a *Array[T]) Attrs() map[string]any { return cloneAttrs(a.meta.Attributes) }
+
+// DimensionNames returns a copy of the array's v3 dimension_names, or nil
+// if it has none (always nil for v2 arrays).
+func (a *Array[T]) DimensionNames() []string { return slices.Clone(a.meta.Dimensions) }
+
 // maxStackRank is the maximum array rank for which per-chunk scratch buffers
 // are kept on the stack (as fixed-size arrays) instead of heap-allocated
 // per-chunk slices. Real-world Zarr arrays are almost always rank <= 8;

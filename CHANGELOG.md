@@ -33,6 +33,10 @@ Initial release.
   sharded-chunk ranges are coalesced into one fetch.
 - `zarr.WithOverwrite`, `zarr.WithChunkKeySeparator`,
   `zarr.WithV2ChunkKeys` array-creation options.
+- `Array.Attrs` and `Array.DimensionNames` expose (copies of) what
+  `WithAttributes` / `WithDimensionNames` persist, and a v2 array's
+  `.zattrs`. `CreateArray` rejects a dimension-name list whose length
+  differs from the array rank.
 - Fuzz targets for the N-d copy kernel (`internal/ndcopy`), sharded index
   trailer parsing, and v2/v3 metadata decoding.
 

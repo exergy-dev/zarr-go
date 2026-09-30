@@ -3,6 +3,8 @@ package zarr_test
 import (
 	"context"
 	"errors"
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/exergy-dev/zarr-go"
@@ -343,5 +345,74 @@ func TestGroupNilAttrsStayNil(t *testing.T) {
 	}
 	if got := n.(*zarr.Group).Attrs(); got != nil {
 		t.Errorf("reopened: Attrs() = %#v, want nil", got)
+	}
+}
+
+// TestArrayAttrsAndDimensionNamesRoundTrip checks that what WithAttributes
+// and WithDimensionNames persist is readable back through Array.Attrs /
+// Array.DimensionNames, both on the array CreateArray returns and after a
+// reopen, and that both accessors hand back copies.
+func TestArrayAttrsAndDimensionNamesRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	attrs := map[string]any{"units": "K"}
+	names := []string{"y", "x"}
+	created, err := zarr.CreateArray[float32](ctx, s, "a", []int64{4, 6}, []int64{2, 3},
+		zarr.WithAttributes(attrs), zarr.WithDimensionNames(names))
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	opened, err := zarr.OpenArray[float32](ctx, s, "a")
+	if err != nil {
+		t.Fatalf("OpenArray: %v", err)
+	}
+	for what, a := range map[string]*zarr.Array[float32]{"created": created, "opened": opened} {
+		if got := a.Attrs(); !reflect.DeepEqual(got, attrs) {
+			t.Errorf("%s: Attrs() = %#v, want %#v", what, got, attrs)
+		}
+		if got := a.DimensionNames(); !slices.Equal(got, names) {
+			t.Errorf("%s: DimensionNames() = %v, want %v", what, got, names)
+		}
+		a.Attrs()["units"] = "mutated"
+		a.DimensionNames()[0] = "mutated"
+		if got := a.Attrs()["units"]; got != "K" {
+			t.Errorf("%s: Attrs() returned an alias: units = %v", what, got)
+		}
+		if got := a.DimensionNames()[0]; got != "y" {
+			t.Errorf("%s: DimensionNames() returned an alias: [0] = %v", what, got)
+		}
+	}
+}
+
+// TestArrayWithoutAttrsOrDimensionNames checks both accessors report nil for
+// an array created without them.
+func TestArrayWithoutAttrsOrDimensionNames(t *testing.T) {
+	ctx := context.Background()
+	a, err := zarr.CreateArray[int32](ctx, mem.New(), "a", []int64{4}, []int64{2})
+	if err != nil {
+		t.Fatalf("CreateArray: %v", err)
+	}
+	if got := a.Attrs(); got != nil {
+		t.Errorf("Attrs() = %#v, want nil", got)
+	}
+	if got := a.DimensionNames(); got != nil {
+		t.Errorf("DimensionNames() = %#v, want nil", got)
+	}
+}
+
+// TestCreateArrayDimensionNamesRankMismatch checks CreateArray rejects a
+// WithDimensionNames list whose length differs from the array rank: such
+// metadata would be written successfully but could never be reopened
+// (DecodeArray rejects it).
+func TestCreateArrayDimensionNamesRankMismatch(t *testing.T) {
+	ctx := context.Background()
+	s := mem.New()
+	_, err := zarr.CreateArray[int32](ctx, s, "a", []int64{4, 4}, []int64{2, 2},
+		zarr.WithDimensionNames([]string{"x"}))
+	if err == nil {
+		t.Fatal("CreateArray with 1 dimension name for a rank-2 array: got nil error")
+	}
+	if _, err := s.Get(ctx, "a/zarr.json"); !errors.Is(err, store.ErrKeyNotFound) {
+		t.Fatalf("zarr.json written despite the error (Get: %v)", err)
 	}
 }
