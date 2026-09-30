@@ -123,6 +123,20 @@ func (s *Store) newRequest(ctx context.Context, method string, u *url.URL) (*htt
 	return req, nil
 }
 
+// maxDrain caps how much of an unread response body drainAndClose discards.
+// Small error bodies (404/500 pages, the tail of a chunked response) fit
+// easily; anything larger is cheaper to abandon along with its connection.
+const maxDrain = 4 << 10
+
+// drainAndClose discards up to maxDrain bytes of any unread body before
+// closing it. The transport only returns a connection to the keep-alive pool
+// once the body has been read to EOF, so closing an unread error body would
+// otherwise force a fresh connection (and TLS handshake) on the next request.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxDrain))
+	_ = body.Close()
+}
+
 // Get implements store.Store.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	u, err := s.resolve(key)
@@ -137,7 +151,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("http store: GET %s: %w", u.Redacted(), err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusOK:
 		body, err := io.ReadAll(resp.Body)
@@ -191,7 +205,7 @@ func (s *Store) GetRange(ctx context.Context, key string, off, n int64) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("http store: GET %s (range): %w", u.Redacted(), err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
 		// A server that honors Range is expected to report the actual
@@ -265,7 +279,7 @@ func (s *Store) GetSuffix(ctx context.Context, key string, n int64) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("http store: GET %s (suffix range): %w", u.Redacted(), err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
 		// Bound the read at n, as in GetRange: a compliant server sends
@@ -347,7 +361,7 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("http store: HEAD %s: %w", u.Redacted(), err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusNoContent:
 		return true, nil

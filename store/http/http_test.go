@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,4 +452,50 @@ func TestErrorsRedactBaseURLPassword(t *testing.T) {
 	checkRedacted("GetSuffix", err)
 	_, err = s.Exists(ctx, "k")
 	checkRedacted("Exists", err)
+}
+
+// TestErrorResponsesReuseConnection checks that non-2xx bodies are drained
+// before Close so the keep-alive connection goes back to the pool instead of
+// being torn down.
+func TestErrorResponsesReuseConnection(t *testing.T) {
+	t.Parallel()
+	var newConns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fail":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	s, err := New(Config{BaseURL: srv.URL + "/", Client: srv.Client()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := s.Get(ctx, "missing"); !errors.Is(err, store.ErrKeyNotFound) {
+			t.Fatalf("Get #%d: got %v, want ErrKeyNotFound", i, err)
+		}
+	}
+	if _, err := s.GetRange(ctx, "missing", 0, 4); !errors.Is(err, store.ErrKeyNotFound) {
+		t.Fatalf("GetRange: got %v, want ErrKeyNotFound", err)
+	}
+	if _, err := s.Get(ctx, "fail"); err == nil {
+		t.Fatal("Get fail: expected error for 500")
+	}
+	if _, err := s.GetSuffix(ctx, "fail", 4); err == nil {
+		t.Fatal("GetSuffix fail: expected error for 500")
+	}
+	if got := newConns.Load(); got != 1 {
+		t.Fatalf("server saw %d new connections, want 1 (keep-alive reuse)", got)
+	}
 }
