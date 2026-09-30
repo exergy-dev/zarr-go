@@ -528,3 +528,49 @@ func TestCacheStaleLeaderKeepsFreshFlight(t *testing.T) {
 		t.Fatalf("underlying Get calls = %d, want 2", got)
 	}
 }
+
+// TestCacheSetDuringFetchPublishNotStale lands a Set right after the fetch
+// leader has finished its flight bookkeeping (flight removed, poisoned flag
+// read) and checks the pre-write value it fetched does not end up cached:
+// the Set must either poison the flight before admission or invalidate the
+// entry after it.
+func TestCacheSetDuringFetchPublishNotStale(t *testing.T) {
+	ctx := context.Background()
+	inner := mem.New()
+	if err := inner.Set(ctx, "k", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	gated := newGatedStore(inner)
+	c := New(Config{Underlying: gated})
+
+	var once sync.Once
+	var setErr error
+	testHookFetchPublished = func() {
+		once.Do(func() { setErr = c.Set(ctx, "k", []byte("v2")) })
+	}
+	t.Cleanup(func() { testHookFetchPublished = nil })
+
+	got, err := c.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if setErr != nil {
+		t.Fatalf("Set: %v", setErr)
+	}
+	// The first Get overlapped the Set, so the old value is a legitimate
+	// result for it.
+	if string(got) != "v1" {
+		t.Fatalf("first Get: got %q want %q", got, "v1")
+	}
+
+	got, err = c.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if string(got) != "v2" {
+		t.Fatalf("cache serves stale value after Set: got %q, want %q", got, "v2")
+	}
+	if got := gated.Calls(); got != 2 {
+		t.Fatalf("underlying Get calls = %d, want 2 (re-fetch after Set)", got)
+	}
+}

@@ -83,6 +83,13 @@ type flight struct {
 // on goroutine scheduling. Never set outside tests.
 var testHookWaiterJoined func()
 
+// testHookFetchPublished, when non-nil, is called by a fetch leader right
+// after the locked section that retires its flight (removes it, reads
+// poisoned, admits the result), before fl.done is closed. Used by tests to
+// land a Set/Delete in that window and check that it can't leave a stale
+// value cached. Never set outside tests.
+var testHookFetchPublished func()
+
 // New constructs a cache wrapping cfg.Underlying.
 //
 // Panics if cfg.Underlying is nil.
@@ -115,18 +122,17 @@ func (s *Store) lookup(key string) ([]byte, bool) {
 	return el.Value.(*entry).val, true
 }
 
-// admit installs (key,val) into the cache, evicting older entries as needed
-// to satisfy MaxBytes / MaxEntries. The provided val is taken by reference
-// and MUST NOT be mutated by the caller after admission; callers should pass
-// freshly-allocated buffers. A value larger than MaxBytes is not admitted:
-// it could never fit, and admitting it would evict every other entry first.
-func (s *Store) admit(key string, val []byte) {
+// admitLocked installs (key,val) into the cache, evicting older entries as
+// needed to satisfy MaxBytes / MaxEntries. Caller must hold s.mu. The
+// provided val is taken by reference and MUST NOT be mutated by the caller
+// after admission; callers should pass freshly-allocated buffers. A value
+// larger than MaxBytes is not admitted: it could never fit, and admitting it
+// would evict every other entry first.
+func (s *Store) admitLocked(key string, val []byte) {
 	size := int64(len(val))
 	if s.maxBytes > 0 && size > s.maxBytes {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if el, ok := s.index[key]; ok {
 		// Replace existing.
@@ -260,16 +266,21 @@ func (s *Store) runFetch(ctx context.Context, key string, fl *flight) {
 	if s.flights[key] == fl { // invalidate may have already detached fl and a fresh flight replaced it
 		delete(s.flights, key)
 	}
-	poisoned := fl.poisoned
+	// Admit under the same lock as the poisoned check: a Set/Delete either
+	// poisons fl before this point or finds the entry and invalidates it
+	// after, so a stale value can't be admitted once the write has completed.
+	if err == nil && !fl.poisoned {
+		s.admitLocked(key, raw)
+	}
 	s.mu.Unlock()
+	if testHookFetchPublished != nil {
+		testHookFetchPublished()
+	}
 
 	if err != nil {
 		fl.err = err
 		close(fl.done)
 		return
-	}
-	if !poisoned {
-		s.admit(key, raw)
 	}
 	fl.val = raw
 	close(fl.done)
