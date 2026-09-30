@@ -112,23 +112,11 @@ func ChunksIntersecting(arrayShape, chunkShape []int64, sel Selection) iter.Seq[
 	}
 }
 
-// ChunkSelection returns the per-dim ranges of (a) the source region inside the
-// chunk and (b) the destination region inside the selection's output, both for
-// the chunk at coord. Both ranges have the same length per dim.
-//
-// chunkSrc[i].Start..Stop is in chunk-local coordinates with Step=Selection.Step.
-// outDst[i].Start..Stop is in output-element coordinates with Step=1.
-func ChunkSelection(arrayShape, chunkShape []int64, sel Selection, coord ChunkCoord) (chunkSrc, outDst []DimRange) {
-	rank := len(arrayShape)
-	chunkSrc = make([]DimRange, rank)
-	outDst = make([]DimRange, rank)
-	chunkSelectionInto(arrayShape, chunkShape, sel, coord, chunkSrc, outDst)
-	return chunkSrc, outDst
-}
-
 // chunkSelectionInto fills caller-supplied chunkSrc and outDst slices (each of
-// len rank) with the chunk-local source range and output destination range for
-// the chunk at coord. This avoids allocating new slices per chunk.
+// len rank) with, for the chunk at coord, (a) the source region inside the
+// chunk and (b) the destination region inside the selection's output. Both
+// have the same length per dim: chunkSrc is in chunk-local coordinates with
+// the selection's Step, outDst in output-element coordinates with Step=1.
 func chunkSelectionInto(arrayShape, chunkShape []int64, sel Selection, coord ChunkCoord, chunkSrc, outDst []DimRange) {
 	rank := len(arrayShape)
 	for i := 0; i < rank; i++ {
