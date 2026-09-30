@@ -94,7 +94,7 @@ func TestWriteSliceReadModifyWrite(t *testing.T) {
 	}
 	// Overwrite [3..6] with 99,99,99.
 	patch := []int32{99, 99, 99}
-	if err := a.Write(ctx, zarr.Selection{Ranges: []zarr.DimRange{{3, 6, 1}}}, patch); err != nil {
+	if err := a.Write(ctx, zarr.Selection{Ranges: []zarr.DimRange{{Start: 3, Stop: 6, Step: 1}}}, patch); err != nil {
 		t.Fatal(err)
 	}
 	b, err := zarr.OpenArray[int32](ctx, s, "arr")

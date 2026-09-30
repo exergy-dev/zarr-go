@@ -206,7 +206,7 @@ func TestReadSlice2D_Int32(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Slice [2:6, 1:7]
-	sel := zarr.Selection{Ranges: []zarr.DimRange{{2, 6, 1}, {1, 7, 1}}}
+	sel := zarr.Selection{Ranges: []zarr.DimRange{{Start: 2, Stop: 6, Step: 1}, {Start: 1, Stop: 7, Step: 1}}}
 	got := make([]int32, sel.NumElements())
 	if err := a.Read(context.Background(), sel, got); err != nil {
 		t.Fatal(err)

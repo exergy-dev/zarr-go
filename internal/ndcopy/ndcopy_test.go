@@ -29,7 +29,7 @@ func naiveCopy(dst []byte, dstShape []int64, dstRegion []Region, src []byte, src
 	}
 	regionLen := make([]int64, rank)
 	for i := range regionLen {
-		regionLen[i] = length(dstRegion[i])
+		regionLen[i] = dstRegion[i].Length()
 	}
 	total := int64(1)
 	for _, n := range regionLen {
@@ -179,7 +179,7 @@ func randomTrial(t testing.TB, r *rand.Rand, sc *Scratch, label string) {
 			sStop = srcShape[d]
 		}
 		srcRegion[d] = Region{Start: sStart, Stop: sStop, Step: sStep}
-		n := length(srcRegion[d])
+		n := srcRegion[d].Length()
 		if n == 0 {
 			n = 1
 			srcRegion[d] = Region{Start: 0, Stop: 1, Step: 1}

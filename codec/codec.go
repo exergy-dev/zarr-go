@@ -99,8 +99,9 @@ type SuffixRangeFetcher interface {
 }
 
 // DimRange describes a half-open range [Start, Stop) along one dimension,
-// optionally with a positive Step. It mirrors the engine's selection.DimRange
-// but is duplicated here so the codec package has no dependency on the engine.
+// with a positive Step. It is the one range type shared by the zarr
+// package's selections, the partial-decode API, and the internal copy
+// kernel.
 //
 // Within a PartialDecoder, the region is expressed in chunk-local coordinates
 // (i.e., relative to the outer chunk's origin, not the array origin) and the
@@ -109,6 +110,14 @@ type SuffixRangeFetcher interface {
 // caller before invoking PartialDecoder.
 type DimRange struct {
 	Start, Stop, Step int64
+}
+
+// Length returns the number of elements selected along this dim.
+func (r DimRange) Length() int64 {
+	if r.Step <= 0 || r.Stop <= r.Start {
+		return 0
+	}
+	return (r.Stop - r.Start + r.Step - 1) / r.Step
 }
 
 // PartialReadRequest bundles the arguments to PartialDecoder.DecodePartial.

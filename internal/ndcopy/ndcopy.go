@@ -15,14 +15,6 @@ import "github.com/exergy-dev/zarr-go/codec"
 // selections feed Copy without conversion.
 type Region = codec.DimRange
 
-// length returns the number of elements r selects.
-func length(r Region) int64 {
-	if r.Step <= 0 || r.Stop <= r.Start {
-		return 0
-	}
-	return (r.Stop - r.Start + r.Step - 1) / r.Step
-}
-
 // Scratch holds reusable buffers for Copy, so a hot loop calling Copy many
 // times (e.g. once per chunk) can avoid a per-call allocation by reusing one
 // Scratch sized for the max rank it will see. A nil Scratch makes Copy
@@ -112,7 +104,7 @@ func Copy(
 	rowMajorStridesInto(srcShape, srcStrides)
 	rowMajorStridesInto(dstShape, dstStrides)
 	for i := 0; i < rank; i++ {
-		regionLen[i] = length(dstRegion[i])
+		regionLen[i] = dstRegion[i].Length()
 		idx[i] = 0
 	}
 	total := int64(1)

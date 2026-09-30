@@ -5,6 +5,7 @@ import (
 	"iter"
 	"slices"
 
+	"github.com/exergy-dev/zarr-go/codec"
 	"github.com/exergy-dev/zarr-go/internal/ndcopy"
 )
 
@@ -16,15 +17,13 @@ type Selection struct {
 
 // DimRange is the [Start, Stop) range with Step along one dimension.
 // Step must be positive. Step=1 selects all elements in the range.
-type DimRange struct {
-	Start, Stop, Step int64
-}
+type DimRange = codec.DimRange
 
 // All returns a Selection that covers the entire array of the given shape.
 func All(shape []int64) Selection {
 	rs := make([]DimRange, len(shape))
 	for i, n := range shape {
-		rs[i] = DimRange{0, n, 1}
+		rs[i] = DimRange{Start: 0, Stop: n, Step: 1}
 	}
 	return Selection{Ranges: rs}
 }
@@ -38,14 +37,6 @@ func (s Selection) NumElements() int64 {
 		n *= r.Length()
 	}
 	return n
-}
-
-// Length returns the number of elements selected along this dim.
-func (r DimRange) Length() int64 {
-	if r.Step <= 0 || r.Stop <= r.Start {
-		return 0
-	}
-	return (r.Stop - r.Start + r.Step - 1) / r.Step
 }
 
 // Validate checks the selection against the given shape.
@@ -145,7 +136,7 @@ func chunkSelection(arrayShape, chunkShape []int64, sel Selection, coord ChunkCo
 		}
 		chunkSrc[i] = ndcopy.Region{Start: first - chunkOrigin, Stop: stop - chunkOrigin, Step: r.Step}
 		outStart := (first - r.Start) / r.Step
-		outStop := outStart + DimRange(chunkSrc[i]).Length()
+		outStop := outStart + chunkSrc[i].Length()
 		outDst[i] = ndcopy.Region{Start: outStart, Stop: outStop, Step: 1}
 	}
 	return chunkSrc, outDst
