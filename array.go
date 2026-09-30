@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
 	"sync"
 	"unsafe"
 
@@ -77,7 +78,7 @@ type Array[T Numeric] struct {
 	meta     *metadata.ArrayMeta
 	pipeline *codec.Pipeline
 	dtype    Dtype
-	fill     []byte // fill value bytes, native LE, sizeof(T)
+	fill     []byte // fill value bytes, native byte order, sizeof(T)
 	opts     arrayOptions
 	// partialDecoder is non-nil when the pipeline's AB codec implements
 	// codec.PartialDecoder AND no BB codecs sit on top of it. Cached here
@@ -99,18 +100,11 @@ type Chunk[T Numeric] struct {
 }
 
 // Shape returns the array's logical shape.
-func (a *Array[T]) Shape() []int64 {
-	out := make([]int64, len(a.meta.Shape))
-	copy(out, a.meta.Shape)
-	return out
-}
+func (a *Array[T]) Shape() []int64 { return metadata.CloneInt64(a.meta.Shape) }
 
 // Chunks returns the array's chunk shape.
 func (a *Array[T]) Chunks() []int64 {
-	cs := a.meta.ChunkGrid.Configuration.ChunkShape
-	out := make([]int64, len(cs))
-	copy(out, cs)
-	return out
+	return metadata.CloneInt64(a.meta.ChunkGrid.Configuration.ChunkShape)
 }
 
 // Dtype returns the array's element type.
@@ -731,7 +725,7 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 				return
 			}
 			var data []T
-			if clipped := !slicesEqual(actualChunk, chunkShape); clipped {
+			if clipped := !slices.Equal(actualChunk, chunkShape); clipped {
 				// Edge chunk: the stored chunk covers the full chunkShape, but
 				// the yielded Shape is clipped to the array bounds. Extract the
 				// in-bounds region into a dense buffer so Data's layout matches
@@ -759,19 +753,6 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 	}
 }
 
-// slicesEqual reports whether a and b have the same length and elements.
-func slicesEqual(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // hasNonZeroFill reports whether any byte in fill is non-zero.
 func hasNonZeroFill(fill []byte) bool {
 	for _, b := range fill {
@@ -782,8 +763,8 @@ func hasNonZeroFill(fill []byte) bool {
 	return false
 }
 
-// fillTyped writes the fill value (one element's worth of native-LE bytes)
-// across every element of dst.
+// fillTyped writes the fill value (one element's worth of bytes in native
+// byte order) across every element of dst.
 func fillTyped[T Numeric](dst []T, fill []byte) {
 	if len(dst) == 0 || len(fill) == 0 {
 		return
