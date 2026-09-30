@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rkm/zarr-go/codec"
 	"github.com/rkm/zarr-go/internal/metadata"
@@ -141,6 +142,7 @@ func CreateArray[T Numeric](
 	if !ok {
 		return nil, ErrReadOnly
 	}
+	path = strings.Trim(path, "/")
 	if len(chunks) != len(shape) {
 		return nil, fmt.Errorf("shape and chunks must have the same rank")
 	}
@@ -220,6 +222,7 @@ func CreateGroup(ctx context.Context, s store.Store, path string, attrs map[stri
 	if !ok {
 		return nil, ErrReadOnly
 	}
+	path = strings.Trim(path, "/")
 	co := defaultCreateOptions()
 	for _, opt := range opts {
 		opt(&co)

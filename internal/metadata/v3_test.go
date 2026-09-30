@@ -320,3 +320,36 @@ func FuzzDecodeArrayV2(f *testing.F) {
 		_, _ = DecodeArrayV2(data)
 	})
 }
+
+// TestChunkKeyPathNormalization checks ChunkKey never emits a leading "/"
+// for a root (empty) array path, and tolerates stray slashes around the
+// array path.
+func TestChunkKeyPathNormalization(t *testing.T) {
+	def := ChunkKeyEncoding{Name: "default", Configuration: ChunkKeyEncodingConfig{Separator: "/"}}
+	defDot := ChunkKeyEncoding{Name: "default", Configuration: ChunkKeyEncodingConfig{Separator: "."}}
+	v2 := ChunkKeyEncoding{Name: "v2", Configuration: ChunkKeyEncodingConfig{Separator: "."}}
+	cases := []struct {
+		path  string
+		enc   ChunkKeyEncoding
+		coord []int64
+		want  string
+	}{
+		{"", def, []int64{0, 1}, "c/0/1"},
+		{"/", def, []int64{0, 1}, "c/0/1"},
+		{"", defDot, []int64{0, 1}, "c.0.1"},
+		{"", v2, []int64{0, 1}, "0.1"},
+		{"", def, nil, "c"},
+		{"", v2, nil, "0"},
+		{"a", def, []int64{3}, "a/c/3"},
+		{"a/", def, []int64{3}, "a/c/3"},
+		{"/a", def, []int64{3}, "a/c/3"},
+		{"/a/", v2, []int64{3}, "a/3"},
+		{"/g/a/", def, nil, "g/a/c"},
+		{"g/a", v2, []int64{1, 2}, "g/a/1.2"},
+	}
+	for _, tc := range cases {
+		if got := ChunkKey(tc.path, tc.enc, tc.coord); got != tc.want {
+			t.Errorf("ChunkKey(%q, %s, %v) = %q, want %q", tc.path, tc.enc.Name, tc.coord, got, tc.want)
+		}
+	}
+}

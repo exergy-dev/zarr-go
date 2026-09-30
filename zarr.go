@@ -52,6 +52,7 @@ func wrapCorrupt(err error) error {
 // Open returns the Node (Group or Array) at path. Detects v3 by reading
 // zarr.json; falls back to v2 (.zarray / .zgroup) if zarr.json is absent.
 func Open(ctx context.Context, s store.Store, path string, opts ...OpenOption) (Node, error) {
+	path = strings.Trim(path, "/")
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)
@@ -173,6 +174,7 @@ func loadAttrs(ctx context.Context, s store.Store, path string) (map[string]any,
 // OpenArray opens the array at path and asserts its dtype matches T. Detects
 // v3 first; falls back to v2 if zarr.json is absent.
 func OpenArray[T Numeric](ctx context.Context, s store.Store, path string, opts ...OpenOption) (*Array[T], error) {
+	path = strings.Trim(path, "/")
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)

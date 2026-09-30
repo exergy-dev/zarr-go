@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/rkm/zarr-go/codec"
 )
@@ -568,21 +569,24 @@ func ChunkKey(arrayPath string, enc ChunkKeyEncoding, coord []int64) string {
 	// Rank-0 (scalar) arrays have no coordinate components at all: the
 	// default encoding's key is just ".../c" and the v2 encoding's is the
 	// single literal index "0", matching zarr-python's convention.
+	// The array path is slash-trimmed so a root array ("") yields "c/0"
+	// rather than "/c/0", and stray slashes can't produce "a//c/0".
+	dir := strings.Trim(arrayPath, "/")
+	out := make([]byte, 0, len(dir)+2+len(sep)+8*len(coord))
+	if dir != "" {
+		out = append(out, dir...)
+		out = append(out, '/')
+	}
 	if len(coord) == 0 {
 		if enc.Name == "v2" {
-			return arrayPath + "/0"
+			return string(append(out, '0'))
 		}
-		return arrayPath + "/c"
+		return string(append(out, 'c'))
 	}
-	var prefix string
-	switch enc.Name {
-	case "v2":
-		prefix = arrayPath + "/"
-	default: // "default" or empty
-		prefix = arrayPath + "/c" + sep
+	if enc.Name != "v2" { // "default" or empty
+		out = append(out, 'c')
+		out = append(out, sep...)
 	}
-	out := make([]byte, 0, len(prefix)+8*len(coord))
-	out = append(out, prefix...)
 	for i, c := range coord {
 		if i > 0 {
 			out = append(out, sep...)
