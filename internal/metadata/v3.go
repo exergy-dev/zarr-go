@@ -11,7 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/exergy-dev/zarr-go/codec"
@@ -325,8 +325,8 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 	if len(out.FillValue) == 0 {
 		out.FillValue = codec.DefaultFillValueJSON(out.DataType)
 	}
-	// Build the raw object as a sorted map[string]json.RawMessage so the
-	// final JSON is reproducible regardless of Go's map-iteration order.
+	// Build the raw object as a map[string]json.RawMessage; encoding/json
+	// emits map keys in sorted order, so the output is reproducible.
 	fields := map[string]json.RawMessage{}
 	if err := assignField(fields, "zarr_format", out.ZarrFormat); err != nil {
 		return nil, err
@@ -351,11 +351,9 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 		return nil, err
 	}
 	if len(out.Attributes) > 0 {
-		raw, err := marshalSorted(out.Attributes)
-		if err != nil {
-			return nil, fmt.Errorf("marshal attributes: %w", err)
+		if err := assignField(fields, "attributes", out.Attributes); err != nil {
+			return nil, err
 		}
-		fields["attributes"] = raw
 	}
 	if len(out.StorageTrans) > 0 {
 		fields["storage_transformers"] = out.StorageTrans
@@ -371,7 +369,7 @@ func MarshalArray(m *ArrayMeta) ([]byte, error) {
 		}
 		fields[k] = v
 	}
-	return marshalSortedRaw(fields)
+	return marshalFields(fields)
 }
 
 // MarshalGroup serializes a GroupMeta into the canonical v3 zarr.json form.
@@ -393,11 +391,9 @@ func MarshalGroup(m *GroupMeta) ([]byte, error) {
 		return nil, err
 	}
 	if len(out.Attributes) > 0 {
-		raw, err := marshalSorted(out.Attributes)
-		if err != nil {
-			return nil, fmt.Errorf("marshal attributes: %w", err)
+		if err := assignField(fields, "attributes", out.Attributes); err != nil {
+			return nil, err
 		}
-		fields["attributes"] = raw
 	}
 	for k, v := range out.Extra {
 		if _, ok := knownGroupFields[k]; ok {
@@ -405,7 +401,7 @@ func MarshalGroup(m *GroupMeta) ([]byte, error) {
 		}
 		fields[k] = v
 	}
-	return marshalSortedRaw(fields)
+	return marshalFields(fields)
 }
 
 // assignField marshals v as JSON and stores the result in fields[key].
@@ -418,115 +414,20 @@ func assignField(fields map[string]json.RawMessage, key string, v any) error {
 	return nil
 }
 
-// marshalSortedRaw emits a JSON object whose keys appear in sorted order, with
-// two-space indentation matching json.MarshalIndent's output. Atomic values
-// (numbers, strings, bools, null) skip the Compact+Indent round-trip since
-// json.Marshal already produces canonical bytes for them.
-func marshalSortedRaw(fields map[string]json.RawMessage) ([]byte, error) {
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+// marshalFields emits fields as a two-space-indented JSON object. The encoder
+// sorts map keys and compacts/re-indents each raw value. HTML escaping is off
+// so caller-supplied raw values (fill_value, Extra) keep '<', '>' and '&'
+// verbatim; values produced by assignField are already escaped by
+// json.Marshal. Invalid raw JSON is an error rather than written through.
+func marshalFields(fields map[string]json.RawMessage) ([]byte, error) {
 	var buf bytes.Buffer
-	buf.WriteString("{\n")
-	for i, k := range keys {
-		keyJSON, err := json.Marshal(k)
-		if err != nil {
-			return nil, err
-		}
-		buf.WriteString("  ")
-		buf.Write(keyJSON)
-		buf.WriteString(": ")
-		if err := writeIndented(&buf, fields[k]); err != nil {
-			return nil, err
-		}
-		if i < len(keys)-1 {
-			buf.WriteByte(',')
-		}
-		buf.WriteByte('\n')
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(fields); err != nil {
+		return nil, err
 	}
-	buf.WriteString("}")
-	return buf.Bytes(), nil
-}
-
-// writeIndented writes v into buf with two-space indentation. For atomic
-// JSON values (anything that doesn't open with '{' or '[') it writes the
-// trimmed bytes directly; for objects and arrays it does the
-// Compact-then-Indent round-trip so embedded whitespace is canonicalized.
-func writeIndented(buf *bytes.Buffer, v json.RawMessage) error {
-	trimmed := bytes.TrimSpace(v)
-	if len(trimmed) == 0 {
-		buf.Write(v)
-		return nil
-	}
-	switch trimmed[0] {
-	case '{', '[':
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, v); err != nil {
-			return err
-		}
-		var indented bytes.Buffer
-		if err := json.Indent(&indented, compact.Bytes(), "  ", "  "); err != nil {
-			return err
-		}
-		buf.Write(indented.Bytes())
-		return nil
-	default:
-		buf.Write(trimmed)
-		return nil
-	}
-}
-
-// marshalSorted serializes v deterministically. Maps with string keys (at any
-// nesting depth) emit keys in sorted order. Non-map values fall through to
-// the stdlib encoder.
-func marshalSorted(v any) ([]byte, error) {
-	switch t := v.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(t))
-		for k := range t {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var buf bytes.Buffer
-		buf.WriteByte('{')
-		for i, k := range keys {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			keyJSON, err := json.Marshal(k)
-			if err != nil {
-				return nil, err
-			}
-			buf.Write(keyJSON)
-			buf.WriteByte(':')
-			child, err := marshalSorted(t[k])
-			if err != nil {
-				return nil, err
-			}
-			buf.Write(child)
-		}
-		buf.WriteByte('}')
-		return buf.Bytes(), nil
-	case []any:
-		var buf bytes.Buffer
-		buf.WriteByte('[')
-		for i, el := range t {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			child, err := marshalSorted(el)
-			if err != nil {
-				return nil, err
-			}
-			buf.Write(child)
-		}
-		buf.WriteByte(']')
-		return buf.Bytes(), nil
-	default:
-		return json.Marshal(v)
-	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 // DecodeGroup parses a zarr.json group document.
@@ -591,30 +492,7 @@ func ChunkKey(arrayPath string, enc ChunkKeyEncoding, coord []int64) string {
 		if i > 0 {
 			out = append(out, sep...)
 		}
-		out = appendInt(out, c)
+		out = strconv.AppendInt(out, c, 10)
 	}
 	return string(out)
-}
-
-func appendInt(b []byte, n int64) []byte {
-	if n == 0 {
-		return append(b, '0')
-	}
-	var tmp [20]byte
-	i := len(tmp)
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	for n > 0 {
-		i--
-		tmp[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		tmp[i] = '-'
-	}
-	return append(b, tmp[i:]...)
 }
