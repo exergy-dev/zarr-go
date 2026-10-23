@@ -43,15 +43,11 @@ type Store struct {
 // outside tests.
 var testHookBeforeCommit func()
 
-// New constructs a Store rooted at the given directory. The directory must
-// already exist and be a directory.
+// New constructs a Store rooted at the given directory, creating it (and
+// any missing parents) if it does not exist.
 func New(root string, opts ...Option) (*Store, error) {
-	info, err := os.Stat(root)
-	if err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("fs.New: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("fs.New: root %q is not a directory", root)
 	}
 	s := &Store{root: root}
 	for _, opt := range opts {
