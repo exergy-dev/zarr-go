@@ -53,12 +53,16 @@ func putScratch(p *[]byte) {
 // Codec is the v3 "zstd" bytes→bytes codec. Construct it with New; the zero
 // value is not usable.
 //
-// Encoders and decoders from klauspost/compress/zstd are safe for concurrent
-// use via EncodeAll / DecodeAll, so the single pair New builds is shared by
-// every caller for the lifetime of the Codec.
+// Decoding uses a decoder owned by the Codec. Encoding uses an encoder
+// shared by every Codec in the process with the same level and checksum
+// setting (see encoder): a klauspost encoder preallocates its match tables
+// per concurrency slot, so one per open array would multiply that memory by
+// the number of arrays, for a resource that EncodeAll already shares safely
+// between goroutines.
 type Codec struct {
-	enc *kpzstd.Encoder
-	dec *kpzstd.Decoder
+	level    int
+	checksum bool
+	dec      *kpzstd.Decoder
 }
 
 type configJSON struct {
@@ -85,28 +89,12 @@ func New(raw json.RawMessage) (*Codec, error) {
 			return nil, fmt.Errorf("zstd codec: invalid configuration: %w", err)
 		}
 	}
-	level := 0
+	c := &Codec{}
 	if cfg.Level != nil {
-		level = *cfg.Level
+		c.level = *cfg.Level
 	}
-	checksum := cfg.Checksum != nil && *cfg.Checksum
+	c.checksum = cfg.Checksum != nil && *cfg.Checksum
 
-	encOpts := []kpzstd.EOption{
-		// Array.Write encodes chunks sequentially, so extra slots would sit
-		// idle yet each preallocates match tables (up to ~34 MiB at level >= 10).
-		kpzstd.WithEncoderConcurrency(min(4, runtime.GOMAXPROCS(0))),
-		kpzstd.WithEncoderCRC(checksum),
-		// Single-segment frames include Frame_Content_Size in the
-		// header, which numcodecs/zstandard.decompress requires.
-		kpzstd.WithSingleSegment(true),
-	}
-	if level != 0 {
-		encOpts = append(encOpts, kpzstd.WithEncoderLevel(kpzstd.EncoderLevelFromZstd(level)))
-	}
-	enc, err := kpzstd.NewWriter(nil, encOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("zstd codec: encoder init: %w", err)
-	}
 	// Concurrency 0 (GOMAXPROCS) so Array.Read's decode workers sharing this
 	// Codec don't serialize.
 	decOpts := []kpzstd.DOption{kpzstd.WithDecoderConcurrency(0)}
@@ -115,20 +103,64 @@ func New(raw json.RawMessage) (*Codec, error) {
 	}
 	dec, err := kpzstd.NewReader(nil, decOpts...)
 	if err != nil {
-		_ = enc.Close()
 		return nil, fmt.Errorf("zstd codec: decoder init: %w", err)
 	}
-	return &Codec{enc: enc, dec: dec}, nil
+	c.dec = dec
+	return c, nil
 }
 
-// Name returns the codec's v3 spec name.
+// encKey identifies a shared encoder: everything that varies between
+// encoders.
+type encKey struct {
+	level    int
+	checksum bool
+}
+
+var (
+	encMu    sync.Mutex
+	encoders = map[encKey]*kpzstd.Encoder{}
+)
+
+// encoder returns the process-wide encoder for c's level and checksum
+// setting, building it on first use. It is sized for GOMAXPROCS concurrent
+// EncodeAll calls, which is what a concurrent Array.Write issues; beyond
+// that, callers queue for a slot.
+func (c *Codec) encoder() (*kpzstd.Encoder, error) {
+	key := encKey{level: c.level, checksum: c.checksum}
+	encMu.Lock()
+	defer encMu.Unlock()
+	if enc, ok := encoders[key]; ok {
+		return enc, nil
+	}
+	opts := []kpzstd.EOption{
+		kpzstd.WithEncoderConcurrency(runtime.GOMAXPROCS(0)),
+		kpzstd.WithEncoderCRC(c.checksum),
+		// Single-segment frames include Frame_Content_Size in the
+		// header, which numcodecs/zstandard.decompress requires.
+		kpzstd.WithSingleSegment(true),
+	}
+	if c.level != 0 {
+		opts = append(opts, kpzstd.WithEncoderLevel(kpzstd.EncoderLevelFromZstd(c.level)))
+	}
+	enc, err := kpzstd.NewWriter(nil, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("zstd codec: encoder init: %w", err)
+	}
+	encoders[key] = enc
+	return enc, nil
+}
+
 func (c *Codec) Name() string { return "zstd" }
 
 // EncodeBB compresses in and returns a freshly allocated buffer of zstd
 // frame bytes.
 func (c *Codec) EncodeBB(in []byte) ([]byte, error) {
+	enc, err := c.encoder()
+	if err != nil {
+		return nil, err
+	}
 	scratchP := scratchPool.Get().(*[]byte)
-	*scratchP = c.enc.EncodeAll(in, (*scratchP)[:0])
+	*scratchP = enc.EncodeAll(in, (*scratchP)[:0])
 	out := bytes.Clone(*scratchP)
 	putScratch(scratchP)
 	return out, nil
