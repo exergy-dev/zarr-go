@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4
-	github.com/exergy-dev/zarr-go v0.0.0-00010101000000-000000000000
+	github.com/exergy-dev/zarr-go v0.1.0
 )
 
 require (
@@ -19,7 +19,3 @@ require (
 //
 // Consumers never see a replace directive (it applies only when this is the
 // main module), so a release cannot carry the placeholder require above.
-// Release order: tag the root module vX.Y.Z first; then set the require to
-// vX.Y.Z, delete this replace, run go mod tidy, commit, and tag this module
-// store/azblob/vX.Y.Z. See RELEASING.md.
-replace github.com/exergy-dev/zarr-go => ../..

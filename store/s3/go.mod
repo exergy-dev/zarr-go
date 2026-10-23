@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.1
 	github.com/aws/smithy-go v1.25.1
-	github.com/exergy-dev/zarr-go v0.0.0-00010101000000-000000000000
+	github.com/exergy-dev/zarr-go v0.1.0
 )
 
 require (
@@ -32,7 +32,3 @@ require (
 //
 // Consumers never see a replace directive (it applies only when this is the
 // main module), so a release cannot carry the placeholder require above.
-// Release order: tag the root module vX.Y.Z first; then set the require to
-// vX.Y.Z, delete this replace, run go mod tidy, commit, and tag this module
-// store/s3/vX.Y.Z. See RELEASING.md.
-replace github.com/exergy-dev/zarr-go => ../..
