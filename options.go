@@ -26,7 +26,8 @@ func (f OpenOption) applyCreate(o *createOptions) {
 	f(&o.openOpts)
 }
 
-// WithConcurrency caps the number of decode workers.
+// WithConcurrency caps the number of chunks being decoded (Read) or
+// encoded (Write) at once. The default is the number of CPUs.
 func WithConcurrency(n int) OpenOption {
 	return func(o *arrayOptions) {
 		if n > 0 {
@@ -35,7 +36,8 @@ func WithConcurrency(n int) OpenOption {
 	}
 }
 
-// WithIOConcurrency caps the number of in-flight store fetches.
+// WithIOConcurrency caps the number of in-flight store requests a Read or
+// Write issues. The default is four times the number of CPUs.
 func WithIOConcurrency(n int) OpenOption {
 	return func(o *arrayOptions) {
 		if n > 0 {

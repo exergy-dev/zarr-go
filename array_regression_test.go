@@ -121,7 +121,7 @@ func TestWriteEmptySelectionNoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := zarr.Selection{Ranges: []zarr.DimRange{{Start: 3, Stop: 3, Step: 1}}}
+	sel := zarr.Selection{{Start: 3, Stop: 3, Step: 1}}
 	if err := a.Write(ctx, sel, []float64{}); err != nil {
 		t.Fatalf("Write(empty selection) returned error: %v", err)
 	}
@@ -194,6 +194,6 @@ func TestDecodeErrorNamesFailingCodec(t *testing.T) {
 			break
 		}
 	}
-	partial := zarr.Selection{Ranges: []zarr.DimRange{{Start: 0, Stop: 1, Step: 1}}}
+	partial := zarr.Selection{{Start: 0, Stop: 1, Step: 1}}
 	check("Write", a.Write(ctx, partial, []int32{1}))
 }

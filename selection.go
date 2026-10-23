@@ -9,31 +9,34 @@ import (
 	"github.com/exergy-dev/zarr-go/internal/ndcopy"
 )
 
-// Selection identifies a contiguous (with stride) hyperrectangle of an array.
-// One DimRange per dimension; len(Ranges) must equal the array rank.
-type Selection struct {
-	Ranges []DimRange
-}
+// Selection identifies a strided hyperrectangle of an array: one DimRange
+// per dimension, so len(sel) must equal the array rank. A zero Step selects
+// every element in [Start, Stop), as does Step 1:
+//
+//	sel := zarr.Selection{{Start: 0, Stop: 1024}, {Start: 0, Stop: 1024}}
+//
+// All returns the selection covering a whole array.
+type Selection []DimRange
 
-// DimRange is the [Start, Stop) range with Step along one dimension.
-// Step must be positive. Step=1 selects all elements in the range.
+// DimRange is the half-open range [Start, Stop) along one dimension, with a
+// non-negative Step. Step 0 is equivalent to Step 1 (every element).
 type DimRange = codec.DimRange
 
 // All returns a Selection that covers the entire array of the given shape.
 func All(shape []int64) Selection {
-	rs := make([]DimRange, len(shape))
+	sel := make(Selection, len(shape))
 	for i, n := range shape {
-		rs[i] = DimRange{Start: 0, Stop: n, Step: 1}
+		sel[i] = DimRange{Start: 0, Stop: n, Step: 1}
 	}
-	return Selection{Ranges: rs}
+	return sel
 }
 
 // NumElements returns the count of elements covered by the selection. A
-// rank-0 selection (Ranges empty — only valid for a rank-0 array; Validate
-// enforces len(Ranges) == array rank) covers exactly the one scalar element.
+// rank-0 selection (nil or empty — only valid for a rank-0 array; Validate
+// enforces len(sel) == array rank) covers exactly the one scalar element.
 func (s Selection) NumElements() int64 {
 	n := int64(1)
-	for _, r := range s.Ranges {
+	for _, r := range s {
 		n *= r.Length()
 	}
 	return n
@@ -41,18 +44,30 @@ func (s Selection) NumElements() int64 {
 
 // Validate checks the selection against the given shape.
 func (s Selection) Validate(shape []int64) error {
-	if len(s.Ranges) != len(shape) {
-		return fmt.Errorf("selection rank %d != array rank %d", len(s.Ranges), len(shape))
+	if len(s) != len(shape) {
+		return fmt.Errorf("selection rank %d != array rank %d", len(s), len(shape))
 	}
-	for i, r := range s.Ranges {
-		if r.Step <= 0 {
-			return fmt.Errorf("dim %d: step must be positive, got %d", i, r.Step)
+	for i, r := range s {
+		if r.Step < 0 {
+			return fmt.Errorf("dim %d: step must be non-negative, got %d", i, r.Step)
 		}
 		if r.Start < 0 || r.Stop > shape[i] || r.Start > r.Stop {
 			return fmt.Errorf("dim %d: range [%d,%d) out of bounds for shape %d", i, r.Start, r.Stop, shape[i])
 		}
 	}
 	return nil
+}
+
+// normalized returns a copy of s with every zero Step replaced by 1, so the
+// engine's arithmetic never sees a zero step. Validate must have passed.
+func (s Selection) normalized() Selection {
+	out := slices.Clone(s)
+	for i := range out {
+		if out[i].Step == 0 {
+			out[i].Step = 1
+		}
+	}
+	return out
 }
 
 // ChunkCoord identifies one chunk in the chunk grid.
@@ -68,14 +83,14 @@ func (c ChunkCoord) Clone() ChunkCoord { return slices.Clone(c) }
 func ChunksIntersecting(arrayShape, chunkShape []int64, sel Selection) iter.Seq[ChunkCoord] {
 	return func(yield func(ChunkCoord) bool) {
 		rank := len(arrayShape)
-		if len(chunkShape) != rank || len(sel.Ranges) != rank {
+		if len(chunkShape) != rank || len(sel) != rank {
 			return
 		}
 		// Per-dim chunk index range: chunks that touch [Start, Stop).
 		lo := make([]int64, rank)
 		hi := make([]int64, rank)
 		for i := 0; i < rank; i++ {
-			r := sel.Ranges[i]
+			r := sel[i]
 			if r.Length() == 0 {
 				return
 			}
@@ -116,7 +131,7 @@ func chunkSelection(arrayShape, chunkShape []int64, sel Selection, coord ChunkCo
 	buf := make([]ndcopy.Region, 2*rank)
 	chunkSrc, outDst = buf[:rank:rank], buf[rank:]
 	for i := 0; i < rank; i++ {
-		r := sel.Ranges[i]
+		r := sel[i]
 		chunkOrigin := coord[i] * chunkShape[i]
 		chunkEnd := chunkOrigin + chunkShape[i]
 		if chunkEnd > arrayShape[i] {

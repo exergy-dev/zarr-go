@@ -114,10 +114,10 @@ func TestSharded_PartialReadEngine(t *testing.T) {
 
 	// Partial: rows [3,11) cols [4,12) — straddles chunk boundary at row 8 / col 8,
 	// and within each shard chunk only intersects a few inner chunks.
-	sel := zarr.Selection{Ranges: []zarr.DimRange{
+	sel := zarr.Selection{
 		{Start: 3, Stop: 11, Step: 1},
 		{Start: 4, Stop: 12, Step: 1},
-	}}
+	}
 	got := make([]int32, sel.NumElements())
 	if err := b.Read(ctx, sel, got); err != nil {
 		t.Fatalf("partial Read: %v", err)
@@ -166,10 +166,10 @@ func TestSharded_StridedReadEngine(t *testing.T) {
 	}
 
 	// Stride 2 along both dims.
-	sel := zarr.Selection{Ranges: []zarr.DimRange{
+	sel := zarr.Selection{
 		{Start: 0, Stop: 8, Step: 2},
 		{Start: 0, Stop: 8, Step: 2},
-	}}
+	}
 	got := make([]int32, sel.NumElements())
 	if err := b.Read(ctx, sel, got); err != nil {
 		t.Fatalf("strided Read: %v", err)

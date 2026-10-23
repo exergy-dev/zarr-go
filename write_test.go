@@ -94,7 +94,7 @@ func TestWriteSliceReadModifyWrite(t *testing.T) {
 	}
 	// Overwrite [3..6] with 99,99,99.
 	patch := []int32{99, 99, 99}
-	if err := a.Write(ctx, zarr.Selection{Ranges: []zarr.DimRange{{Start: 3, Stop: 6, Step: 1}}}, patch); err != nil {
+	if err := a.Write(ctx, zarr.Selection{{Start: 3, Stop: 6, Step: 1}}, patch); err != nil {
 		t.Fatal(err)
 	}
 	b, err := zarr.OpenArray[int32](ctx, s, "arr")
@@ -179,7 +179,7 @@ func TestCreateArrayRejectsBadShape(t *testing.T) {
 // sel covers: an independent reference for what Read/Write touch.
 func selFlatIndices(shape []int64, sel zarr.Selection) []int64 {
 	out := []int64{0}
-	for d, r := range sel.Ranges {
+	for d, r := range sel {
 		var next []int64
 		for _, base := range out {
 			for i := r.Start; i < r.Stop; i += r.Step {
@@ -253,7 +253,7 @@ func TestWriteReadHighRankStrided(t *testing.T) {
 	for i := range strided {
 		strided[i] = zarr.DimRange{Start: int64(i % 2), Stop: 3, Step: 2}
 	}
-	sel := zarr.Selection{Ranges: strided}
+	sel := zarr.Selection(strided)
 	patch := make([]int32, sel.NumElements())
 	for i, flat := range selFlatIndices(shape, sel) {
 		patch[i] = -int32(i + 1)
@@ -276,7 +276,7 @@ func TestWriteReadHighRankStrided(t *testing.T) {
 	for i := range strided {
 		strided[i] = zarr.DimRange{Start: int64(i % 3), Stop: 3, Step: 1 + int64(i%2)}
 	}
-	sel = zarr.Selection{Ranges: strided}
+	sel = zarr.Selection(strided)
 	got = make([]int32, sel.NumElements())
 	if err := a.Read(ctx, sel, got); err != nil {
 		t.Fatalf("Read(strided): %v", err)

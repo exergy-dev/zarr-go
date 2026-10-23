@@ -199,7 +199,7 @@ func drawSpec(t *rapid.T) genSpec {
 		stop := int64(rapid.IntRange(int(start)+1, int(shape[i])).Draw(t, fmt.Sprintf("stop[%d]", i)))
 		ranges[i] = zarr.DimRange{Start: start, Stop: stop, Step: 1}
 	}
-	return genSpec{rank: rank, shape: shape, chunks: chunks, sel: zarr.Selection{Ranges: ranges}}
+	return genSpec{rank: rank, shape: shape, chunks: chunks, sel: zarr.Selection(ranges)}
 }
 
 // totalElems returns product(shape).
@@ -365,21 +365,21 @@ func runReadEqualsSliceUint8(t *rapid.T) {
 func verifySelection[T comparable](t *rapid.T, spec genSpec, got, src []T) {
 	t.Helper()
 	outShape := make([]int64, spec.rank)
-	for i, r := range spec.sel.Ranges {
+	for i, r := range spec.sel {
 		outShape[i] = r.Length()
 	}
 	srcCoord := make([]int64, spec.rank)
 	k := 0
 	iterRowMajor(outShape, func(coord []int64) {
 		for d := 0; d < spec.rank; d++ {
-			r := spec.sel.Ranges[d]
+			r := spec.sel[d]
 			srcCoord[d] = r.Start + coord[d]*r.Step
 		}
 		srcIdx := rowMajorIndex(srcCoord, spec.shape)
 		want := src[srcIdx]
 		if got[k] != want {
 			t.Fatalf("mismatch at out=%v src=%v: want %v got %v (shape=%v chunks=%v sel=%+v)",
-				coord, srcCoord, want, got[k], spec.shape, spec.chunks, spec.sel.Ranges)
+				coord, srcCoord, want, got[k], spec.shape, spec.chunks, spec.sel)
 		}
 		k++
 	})

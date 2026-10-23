@@ -1,5 +1,3 @@
-// Package zarr is a pure-Go implementation of the Zarr v2 (read) and v3
-// (read/write) chunked, compressed, N-dimensional array format.
 package zarr
 
 import (

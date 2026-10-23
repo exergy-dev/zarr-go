@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	"github.com/exergy-dev/zarr-go"
+	"github.com/exergy-dev/zarr-go/codec"
+	gzipcodec "github.com/exergy-dev/zarr-go/codec/gzip"
+	"github.com/exergy-dev/zarr-go/codec/zstd"
 	"github.com/exergy-dev/zarr-go/store/mem"
 )
 
@@ -286,10 +289,10 @@ func BenchmarkReadFloat32_Slice_2D(b *testing.B) {
 		b.Fatal(err)
 	}
 	// Centered 100x100 sub-slice: rows [78,178), cols [78,178).
-	sel := zarr.Selection{Ranges: []zarr.DimRange{
+	sel := zarr.Selection{
 		{Start: 78, Stop: 178, Step: 1},
 		{Start: 78, Stop: 178, Step: 1},
-	}}
+	}
 	sliceN := int(sel.NumElements())
 	dst := make([]float32, sliceN)
 	b.SetBytes(int64(sliceN) * 4)
@@ -300,3 +303,32 @@ func BenchmarkReadFloat32_Slice_2D(b *testing.B) {
 		}
 	}
 }
+
+// benchmarkWrite measures Array.Write of a whole 256x256 float32 array in
+// 64x64 chunks (16 chunks per Write) into an in-memory store.
+func benchmarkWrite(b *testing.B, specs ...codec.Spec) {
+	shape := []int64{256, 256}
+	chunks := []int64{64, 64}
+	n := int(shape[0] * shape[1])
+	src := make([]float32, n)
+	for i := range src {
+		src[i] = float32(i) * 0.5
+	}
+	ctx := context.Background()
+	a, err := zarr.CreateArray[float32](ctx, mem.New(), "arr", shape, chunks, zarr.WithCodecs(specs...))
+	if err != nil {
+		b.Fatal(err)
+	}
+	sel := zarr.All(shape)
+	b.SetBytes(int64(n) * 4)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := a.Write(ctx, sel, src); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkWriteFloat32_Uncompressed_2D(b *testing.B) { benchmarkWrite(b) }
+func BenchmarkWriteFloat32_Gzip_2D(b *testing.B)         { benchmarkWrite(b, gzipcodec.Spec(5)) }
+func BenchmarkWriteFloat32_Zstd_2D(b *testing.B)         { benchmarkWrite(b, zstd.Spec(3)) }

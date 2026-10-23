@@ -92,6 +92,9 @@ type Chunk[T Numeric] struct {
 	Data  []T
 }
 
+// Path returns the array's store path ("" for an array at the store root).
+func (a *Array[T]) Path() string { return a.path }
+
 // Shape returns the array's logical shape.
 func (a *Array[T]) Shape() []int64 { return metadata.CloneInt64(a.meta.Shape) }
 
@@ -102,6 +105,13 @@ func (a *Array[T]) Chunks() []int64 {
 
 // Dtype returns the array's element type.
 func (a *Array[T]) Dtype() Dtype { return a.dtype }
+
+// FillValue returns the value an unwritten chunk reads as.
+func (a *Array[T]) FillValue() T {
+	var v T
+	fillTyped(unsafe.Slice(&v, 1), a.fill)
+	return v
+}
 
 // Attrs returns a copy of the array's user attributes (v3 "attributes", or
 // the v2 .zattrs sidecar), or nil if it has none.
@@ -117,6 +127,7 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 	if err := sel.Validate(a.meta.Shape); err != nil {
 		return err
 	}
+	sel = sel.normalized()
 	want := sel.NumElements()
 	if int64(len(dst)) != want {
 		return fmt.Errorf("%w: dst has %d elements, selection wants %d",
@@ -132,17 +143,23 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 
 	chunkShape := a.meta.ChunkGrid.Configuration.ChunkShape
 	outShape := make([]int64, len(a.meta.Shape))
-	for i, r := range sel.Ranges {
+	for i, r := range sel {
 		outShape[i] = r.Length()
 	}
 
-	// ioSem bounds in-flight store fetches (and, for the partial-decode path,
-	// the whole fetch+inner-decode operation, which is I/O-bound overall).
-	// decodeSem separately bounds the CPU-bound full-chunk decode step, so a
-	// high ioConcurrency (good for a network-bound store) doesn't also
-	// oversubscribe CPU decode workers.
+	return a.eachChunk(ctx, sel, func(ctx context.Context, coord ChunkCoord, cpuSem chan struct{}) error {
+		return a.readChunk(ctx, coord, sel, chunkShape, outShape, dst, cpuSem)
+	})
+}
+
+// eachChunk calls fn once per chunk intersecting sel, from goroutines bounded
+// by WithIOConcurrency (fn's store traffic) and, for the CPU-bound part fn
+// gates with cpuSem, WithConcurrency. The first error cancels the remaining
+// calls and is returned; a done ctx is reported as its cause, so a cancelled
+// Read or Write never passes for a complete one.
+func (a *Array[T]) eachChunk(ctx context.Context, sel Selection, fn func(ctx context.Context, coord ChunkCoord, cpuSem chan struct{}) error) error {
 	ioSem := make(chan struct{}, a.opts.ioConcurrency)
-	decodeSem := make(chan struct{}, a.opts.concurrency)
+	cpuSem := make(chan struct{}, a.opts.concurrency)
 	var wg sync.WaitGroup
 	var firstErrMu sync.Mutex
 	var firstErr error
@@ -150,7 +167,7 @@ func (a *Array[T]) Read(ctx context.Context, sel Selection, dst []T) error {
 	defer cancel()
 
 launch:
-	for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
+	for c := range ChunksIntersecting(a.meta.Shape, a.meta.ChunkGrid.Configuration.ChunkShape, sel) {
 		select {
 		case <-cctx.Done():
 			break launch
@@ -161,7 +178,7 @@ launch:
 		go func() {
 			defer wg.Done()
 			defer func() { <-ioSem }()
-			if err := a.readChunk(cctx, coord, sel, chunkShape, outShape, dst, decodeSem); err != nil {
+			if err := fn(cctx, coord, cpuSem); err != nil {
 				firstErrMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -173,9 +190,6 @@ launch:
 	}
 	wg.Wait()
 	if firstErr == nil {
-		// If ctx was cancelled, chunks may have been skipped without any
-		// goroutine recording an error; returning nil would silently hand
-		// back incomplete data.
 		firstErr = context.Cause(ctx)
 	}
 	return firstErr
@@ -183,14 +197,14 @@ launch:
 
 // readChunk fetches, decodes and copies into dst the part of one chunk that
 // sel covers. A missing chunk is not an error: dst already holds the fill
-// value there. decodeSem bounds the CPU-bound full-chunk decode step.
+// value there. cpuSem bounds the CPU-bound full-chunk decode step.
 func (a *Array[T]) readChunk(
 	ctx context.Context,
 	coord ChunkCoord,
 	sel Selection,
 	chunkShape, outShape []int64,
 	dst []T,
-	decodeSem chan struct{},
+	cpuSem chan struct{},
 ) error {
 	key := metadata.ChunkKey(a.path, a.meta.ChunkKeyEnc, []int64(coord))
 	if a.partialDecoder != nil {
@@ -224,9 +238,9 @@ func (a *Array[T]) readChunk(
 	select {
 	case <-ctx.Done():
 		return nil // Read reports the error or cancellation cause
-	case decodeSem <- struct{}{}:
+	case cpuSem <- struct{}{}:
 	}
-	defer func() { <-decodeSem }()
+	defer func() { <-cpuSem }()
 	return a.decodeAndCopy(coord, raw, sel, chunkShape, outShape, dst)
 }
 
@@ -384,14 +398,17 @@ func (a *Array[T]) decodeAndCopy(
 // Write encodes the elements in src and writes them to the chunks intersecting
 // sel. src must hold sel.NumElements() elements; layout is row-major.
 //
-// Each touched chunk is read-modify-written: if the existing chunk exists it is
-// fetched and merged with src in the intersecting region, otherwise a new
-// chunk filled with the array's fill value is created. Chunks that the
-// selection covers exactly (the whole chunk shape) skip the read.
+// Chunks are written concurrently, bounded like Read by WithConcurrency
+// (encode) and WithIOConcurrency (store traffic). Each touched chunk is
+// read-modify-written: if the existing chunk exists it is fetched and merged
+// with src in the intersecting region, otherwise a new chunk filled with the
+// array's fill value is created. Chunks that the selection covers exactly
+// (the whole chunk shape) skip the read.
 func (a *Array[T]) Write(ctx context.Context, sel Selection, src []T) error {
 	if err := sel.Validate(a.meta.Shape); err != nil {
 		return err
 	}
+	sel = sel.normalized()
 	want := sel.NumElements()
 	if int64(len(src)) != want {
 		return fmt.Errorf("%w: src has %d elements, selection wants %d",
@@ -408,23 +425,21 @@ func (a *Array[T]) Write(ctx context.Context, sel Selection, src []T) error {
 	chunkShape := a.meta.ChunkGrid.Configuration.ChunkShape
 	rank := len(a.meta.Shape)
 	srcShape := make([]int64, rank)
-	for i, r := range sel.Ranges {
+	for i, r := range sel {
 		srcShape[i] = r.Length()
 	}
 	elemSize := int(unsafe.Sizeof(*new(T)))
 
 	srcBytes := unsafe.Slice((*byte)(unsafe.Pointer(&src[0])), len(src)*elemSize)
 
-	for c := range ChunksIntersecting(a.meta.Shape, chunkShape, sel) {
-		coord := c.Clone()
-		if err := a.writeOneChunk(ctx, ws, coord, sel, chunkShape, srcShape, srcBytes, elemSize); err != nil {
-			return err
-		}
-	}
-	return nil
+	return a.eachChunk(ctx, sel, func(ctx context.Context, coord ChunkCoord, cpuSem chan struct{}) error {
+		return a.writeChunk(ctx, ws, coord, sel, chunkShape, srcShape, srcBytes, elemSize, cpuSem)
+	})
 }
 
-func (a *Array[T]) writeOneChunk(
+// writeChunk read-modify-writes the chunk at coord. cpuSem bounds the
+// CPU-bound decode, merge and encode steps.
+func (a *Array[T]) writeChunk(
 	ctx context.Context,
 	ws store.Writer,
 	coord ChunkCoord,
@@ -432,6 +447,7 @@ func (a *Array[T]) writeOneChunk(
 	chunkShape, srcShape []int64,
 	srcBytes []byte,
 	elemSize int,
+	cpuSem chan struct{},
 ) error {
 	rank := len(chunkShape)
 	// chunkSel is the chunk side (the write destination; may be stepped),
@@ -470,10 +486,28 @@ func (a *Array[T]) writeOneChunk(
 
 	key := metadata.ChunkKey(a.path, a.meta.ChunkKeyEnc, []int64(coord))
 
+	var existing []byte
+	found := false
 	if !fullCovered {
-		existing, err := a.store.Get(ctx, key)
+		var err error
+		existing, err = a.store.Get(ctx, key)
 		switch {
 		case err == nil:
+			found = true
+		case !errors.Is(err, store.ErrKeyNotFound):
+			return fmt.Errorf("fetch chunk %v: %w", []int64(coord), err)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return nil // Write reports the error or cancellation cause
+	case cpuSem <- struct{}{}:
+	}
+	defer func() { <-cpuSem }()
+
+	if !fullCovered {
+		switch {
+		case found:
 			ck := codec.ArrayChunk{Shape: append([]int64(nil), chunkShape...), Dtype: a.meta.DataType, Data: chunkBuf[:0], Fill: a.fill}
 			if err := a.pipeline.Decode(existing, &ck); err != nil {
 				return &DecodeError{Coord: []int64(coord), Err: err}
@@ -482,10 +516,8 @@ func (a *Array[T]) writeOneChunk(
 				return fmt.Errorf("decoded chunk size %d != expected %d", len(ck.Data), totalChunkBytes)
 			}
 			copy(chunkBuf, ck.Data)
-		case errors.Is(err, store.ErrKeyNotFound):
-			fillChunk(chunkBuf, a.fill, elemSize)
 		default:
-			return fmt.Errorf("fetch chunk %v: %w", []int64(coord), err)
+			fillChunk(chunkBuf, a.fill, elemSize)
 		}
 	} else if !noPadding || hasNonZeroFill(a.fill) {
 		// Either padded edge positions need fill, or every in-array byte is
@@ -537,6 +569,7 @@ func (a *Array[T]) Stream(ctx context.Context, sel Selection) iter.Seq2[Chunk[T]
 			yield(Chunk[T]{}, err)
 			return
 		}
+		sel = sel.normalized()
 		chunkShape := a.meta.ChunkGrid.Configuration.ChunkShape
 		elemSize := int(unsafe.Sizeof(*new(T)))
 		// Scratch for edge-chunk extraction, reused across chunks.

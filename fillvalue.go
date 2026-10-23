@@ -9,6 +9,67 @@ import (
 	"strings"
 )
 
+// encodeFillValue renders a WithFillValue argument in its v3 metadata form:
+// numbers as JSON numbers, non-finite floats as the strings "NaN",
+// "Infinity" and "-Infinity", complex values as a two-element [real, imag]
+// array, and a json.RawMessage unchanged.
+func encodeFillValue(v any) (json.RawMessage, error) {
+	switch x := v.(type) {
+	case json.RawMessage:
+		if len(x) == 0 {
+			return nil, fmt.Errorf("fill value: empty json.RawMessage")
+		}
+		return append(json.RawMessage(nil), x...), nil
+	case bool:
+		return json.RawMessage(strconv.FormatBool(x)), nil
+	case int:
+		return json.RawMessage(strconv.FormatInt(int64(x), 10)), nil
+	case int8:
+		return json.RawMessage(strconv.FormatInt(int64(x), 10)), nil
+	case int16:
+		return json.RawMessage(strconv.FormatInt(int64(x), 10)), nil
+	case int32:
+		return json.RawMessage(strconv.FormatInt(int64(x), 10)), nil
+	case int64:
+		return json.RawMessage(strconv.FormatInt(x, 10)), nil
+	case uint:
+		return json.RawMessage(strconv.FormatUint(uint64(x), 10)), nil
+	case uint8:
+		return json.RawMessage(strconv.FormatUint(uint64(x), 10)), nil
+	case uint16:
+		return json.RawMessage(strconv.FormatUint(uint64(x), 10)), nil
+	case uint32:
+		return json.RawMessage(strconv.FormatUint(uint64(x), 10)), nil
+	case uint64:
+		return json.RawMessage(strconv.FormatUint(x, 10)), nil
+	case Float16:
+		return json.RawMessage(formatFloat(float64(Float16ToFloat32(x)), 32)), nil
+	case float32:
+		return json.RawMessage(formatFloat(float64(x), 32)), nil
+	case float64:
+		return json.RawMessage(formatFloat(x, 64)), nil
+	case complex64:
+		return json.RawMessage("[" + formatFloat(float64(real(x)), 32) + "," + formatFloat(float64(imag(x)), 32) + "]"), nil
+	case complex128:
+		return json.RawMessage("[" + formatFloat(real(x), 64) + "," + formatFloat(imag(x), 64) + "]"), nil
+	}
+	return nil, fmt.Errorf("fill value: unsupported type %T", v)
+}
+
+// formatFloat renders f as a v3 fill value: a JSON number, or the quoted
+// string the spec uses for a non-finite value.
+func formatFloat(f float64, bitSize int) string {
+	switch {
+	case math.IsNaN(f):
+		return `"NaN"`
+	case math.IsInf(f, 1):
+		return `"Infinity"`
+	case math.IsInf(f, -1):
+		return `"-Infinity"`
+	}
+	return strconv.FormatFloat(f, 'g', -1, bitSize)
+}
+
 // parseFillValue decodes the JSON fill_value field into typed value bytes
 // matching dt. The output is always elementSize bytes in native byte order,
 // suitable for memcpy into a result buffer.
@@ -48,6 +109,9 @@ func parseFillValue(raw json.RawMessage, dt Dtype) ([]byte, error) {
 	case DtypeUint8, DtypeUint16, DtypeUint32, DtypeUint64:
 		var n uint64
 		if err := json.Unmarshal(raw, &n); err != nil {
+			if len(raw) > 0 && raw[0] == '-' {
+				return nil, fmt.Errorf("fill value %s out of range for dtype %s", raw, dt)
+			}
 			return nil, err
 		}
 		if bits := uint(size * 8); bits < 64 && n>>bits != 0 {

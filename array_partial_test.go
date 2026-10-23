@@ -90,10 +90,10 @@ func TestPartialRead_EdgeShard(t *testing.T) {
 	// Genuine partial sub-region of the edge chunk (1,1): only row 8, cols
 	// 8-9 out of its full clipped extent rows[8,10) cols[8,10) — isFull must
 	// be false so this actually goes through DecodePartial.
-	sel := zarr.Selection{Ranges: []zarr.DimRange{
+	sel := zarr.Selection{
 		{Start: 8, Stop: 9, Step: 1},
 		{Start: 8, Stop: 10, Step: 1},
-	}}
+	}
 	got := make([]int32, sel.NumElements())
 	if err := b.Read(ctx, sel, got); err != nil {
 		t.Fatalf("edge-shard partial Read: %v", err)
@@ -165,7 +165,7 @@ func TestPartialRead_Rank9(t *testing.T) {
 		ranges[i] = zarr.DimRange{Start: 0, Stop: shape[i], Step: 1}
 	}
 	ranges[rank-1] = zarr.DimRange{Start: 0, Stop: 1, Step: 1}
-	sel := zarr.Selection{Ranges: ranges}
+	sel := zarr.Selection(ranges)
 	got := make([]int32, sel.NumElements())
 	if err := b.Read(ctx, sel, got); err != nil {
 		t.Fatalf("rank-9 partial Read: %v", err)
@@ -207,7 +207,7 @@ func TestPartialRead_MissingShard(t *testing.T) {
 		t.Fatalf("CreateArray: %v", err)
 	}
 	// Write only the top-left shard; the bottom-right shard is never touched.
-	sub := zarr.Selection{Ranges: []zarr.DimRange{{Start: 0, Stop: 8, Step: 1}, {Start: 0, Stop: 8, Step: 1}}}
+	sub := zarr.Selection{{Start: 0, Stop: 8, Step: 1}, {Start: 0, Stop: 8, Step: 1}}
 	src := make([]int32, sub.NumElements())
 	for i := range src {
 		src[i] = int32(i + 1)
@@ -221,7 +221,7 @@ func TestPartialRead_MissingShard(t *testing.T) {
 		t.Fatalf("OpenArray: %v", err)
 	}
 	// Genuine partial sub-region entirely inside the never-written shard.
-	sel := zarr.Selection{Ranges: []zarr.DimRange{{Start: 10, Stop: 14, Step: 1}, {Start: 10, Stop: 14, Step: 1}}}
+	sel := zarr.Selection{{Start: 10, Stop: 14, Step: 1}, {Start: 10, Stop: 14, Step: 1}}
 	got := make([]int32, sel.NumElements())
 	if err := b.Read(ctx, sel, got); err != nil {
 		t.Fatalf("missing-shard partial Read: %v", err)
@@ -276,7 +276,7 @@ func TestPartialRead_FetchCounts(t *testing.T) {
 
 	// Rows/cols [2,6) — a small sub-region entirely inside the top-left
 	// shard, intersecting only a handful of its 16 inner (2x2) chunks.
-	sel := zarr.Selection{Ranges: []zarr.DimRange{{Start: 2, Stop: 6, Step: 1}, {Start: 2, Stop: 6, Step: 1}}}
+	sel := zarr.Selection{{Start: 2, Stop: 6, Step: 1}, {Start: 2, Stop: 6, Step: 1}}
 	got := make([]int32, sel.NumElements())
 	if err := b.Read(ctx, sel, got); err != nil {
 		t.Fatalf("partial Read: %v", err)
@@ -331,10 +331,10 @@ func TestWithRangeGap_AffectsFetchCount(t *testing.T) {
 	// Full-height, 2-of-8-column-wide selection: touches inner grid column 0
 	// across all 4 grid rows of the 4x4 inner grid — 4 needed 16-byte inner
 	// chunk spans, each separated by a 48-byte gap of unneeded inner chunks.
-	sel := zarr.Selection{Ranges: []zarr.DimRange{
+	sel := zarr.Selection{
 		{Start: 0, Stop: 8, Step: 1},
 		{Start: 0, Stop: 2, Step: 1},
-	}}
+	}
 
 	run := func(gap int64) int64 {
 		cs := &countingStore{inner: inner}

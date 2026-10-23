@@ -31,6 +31,7 @@ func (f createOptionFunc) applyCreate(o *createOptions) { f(o) }
 type createOptions struct {
 	codecs     []codec.Spec
 	fillValue  json.RawMessage
+	fillErr    error // a WithFillValue argument that could not be encoded
 	attrs      map[string]any
 	dimNames   []string
 	keyEncName string // "default" or "v2"
@@ -44,18 +45,24 @@ type createOptions struct {
 
 func defaultCreateOptions() createOptions {
 	return createOptions{
-		codecs: []codec.Spec{{
-			Name:          "bytes",
-			Configuration: json.RawMessage(`{"endian":"little"}`),
-		}},
+		codecs:     []codec.Spec{codec.DefaultArrayToBytes},
 		keyEncName: "default",
 		keySep:     "/",
 		openOpts:   defaultOptions(),
 	}
 }
 
-// WithCodecs sets the codec pipeline used at write time. Callers typically
-// supply the bytes codec plus optional compression (e.g., gzip, zstd).
+// WithCodecs sets the array's codec pipeline, in the order the v3 metadata
+// lists it: array→array codecs (transpose), then the array→bytes codec
+// (bytes or sharding_indexed), then bytes→bytes codecs (compression,
+// crc32c). Each codec package has a Spec constructor:
+//
+//	zarr.WithCodecs(zstd.Spec(3))
+//	zarr.WithCodecs(sharding.Spec([]int64{64, 64}, zstd.Spec(3), crc32c.Spec()))
+//
+// When the list has no array→bytes codec, a little-endian bytes codec is
+// inserted in front of the first bytes→bytes codec, so a bare compressor is
+// enough. The default pipeline is that bytes codec alone (no compression).
 func WithCodecs(specs ...codec.Spec) CreateOption {
 	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithCodecs"
@@ -65,12 +72,17 @@ func WithCodecs(specs ...codec.Spec) CreateOption {
 	})
 }
 
-// WithFillValue sets the fill value (encoded as v3 JSON: a number, "NaN",
-// "Infinity", "-Infinity", or a 2-element array for complex).
-func WithFillValue(raw json.RawMessage) CreateOption {
+// WithFillValue sets the value a chunk that was never written reads as. The
+// default is zero (false for bool). v is a Go value of the array's element
+// kind: a bool, any integer type, any float type (NaN and ±Inf included),
+// Float16, or a complex type; or a json.RawMessage holding the fill value in
+// its v3 metadata form, such as a hex bit pattern ("0x7fc00000") for a
+// specific NaN payload. The value must be representable in the array's
+// dtype: a fractional or out-of-range value is reported by CreateArray.
+func WithFillValue(v any) CreateOption {
 	return createOptionFunc(func(o *createOptions) {
 		o.arrayOnly = "WithFillValue"
-		o.fillValue = append(json.RawMessage(nil), raw...)
+		o.fillValue, o.fillErr = encodeFillValue(v)
 	})
 }
 
@@ -180,6 +192,9 @@ func CreateArray[T Numeric](
 	for _, opt := range opts {
 		opt.applyCreate(&co)
 	}
+	if co.fillErr != nil {
+		return nil, co.fillErr
+	}
 	if co.dimNames != nil && len(co.dimNames) != len(shape) {
 		return nil, fmt.Errorf("got %d dimension names for a rank-%d array", len(co.dimNames), len(shape))
 	}
@@ -188,6 +203,11 @@ func CreateArray[T Numeric](
 		return nil, fmt.Errorf("%w: T", ErrUnsupportedDtype)
 	}
 
+	codecs, err := codec.EnsureArrayToBytes(co.codecs)
+	if err != nil {
+		return nil, err
+	}
+	co.codecs = codecs
 	pipe, err := codec.BuildPipeline(co.codecs)
 	if err != nil {
 		return nil, err
