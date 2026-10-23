@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project is pre-1.0; the public API may change between minor versions
 without notice until v1.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- The `store/gcs` and `store/azblob` modules now require Go 1.26 or newer:
+  the patched `golang.org/x/net` releases their SDKs depend on need it. The
+  root module and `store/s3` still build with Go 1.25.
+
 ## [0.1.0] - 2026-10-23
 
 Initial release.

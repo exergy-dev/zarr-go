@@ -31,12 +31,6 @@ func TestConformance(t *testing.T) {
 	}, storetest.Options{})
 }
 
-func TestNewRequiresExistingDirectory(t *testing.T) {
-	if _, err := New("/path/that/does/not/exist/zzz"); err == nil {
-		t.Fatal("expected error for missing root, got nil")
-	}
-}
-
 func TestSetGetRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)

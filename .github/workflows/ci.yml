@@ -16,8 +16,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          # Match the version pinned in go.mod. Bump together with that.
-          go-version: '1.25'
+          # go.mod pins the minimum Go the library supports; CI runs on the
+          # oldest Go release line still receiving security fixes, so that
+          # govulncheck sees a patched stdlib (the fixes never land on an
+          # end-of-life line). Bump when a new Go release retires this one.
+          go-version: '1.26'
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
@@ -39,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - run: go build ./...
       - run: go vet ./...
@@ -53,7 +56,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
       - run: sudo apt-get update && sudo apt-get install -y libblosc-dev
       - run: CGO_ENABLED=1 go build -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go vet -tags zarrcgo ./...
@@ -67,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
       - run: GOARCH=386 go build ./...
   lint:
     strategy:
@@ -79,14 +82,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache-dependency-path: ${{ matrix.module }}/go.sum
-      - uses: golangci/golangci-lint-action@v6
+      # golangci-lint-action v8+ is required for golangci-lint v2 (v6 rejects
+      # any v2 version string outright).
+      - uses: golangci/golangci-lint-action@v9
         with:
           # golangci-lint refuses to load a module whose go directive is
           # newer than the Go it was built with, so the pin must be built
-          # with go1.25 or later; .golangci.yml uses the matching v2 config
-          # schema. The nested modules pick up the root .golangci.yml.
+          # with go1.26 or later (v2.12.2 is built with go1.26.2);
+          # .golangci.yml uses the matching v2 config schema. The nested
+          # modules pick up the root .golangci.yml.
           version: v2.12.2
           working-directory: ${{ matrix.module }}
   # Short-run fuzzing: 20s per target is enough to catch a regression
@@ -99,7 +105,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
       - run: go test ./internal/ndcopy/... -run '^$' -fuzz '^FuzzCopy$' -fuzztime 20s
       - run: go test ./codec/sharding/... -run '^$' -fuzz '^FuzzDecodeIndex$' -fuzztime 20s
       - run: go test ./codec/sharding/... -run '^$' -fuzz '^FuzzDecodePartial$' -fuzztime 20s
@@ -123,7 +129,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
+          # The stdlib fixes govulncheck checks for ship in the newest patch
+          # release, which the runner image's toolcache can lag behind.
+          check-latest: true
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
   bench:
@@ -133,7 +142,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
       - run: go install golang.org/x/perf/cmd/benchstat@latest
       - run: ./scripts/bench_compare.sh 15
         # 15% slack: GitHub-hosted runners have variable performance.

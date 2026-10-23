@@ -25,7 +25,9 @@ codecs and storage backends.
 go get github.com/exergy-dev/zarr-go
 ```
 
-Requires Go 1.25 or newer.
+Requires Go 1.25 or newer. The GCS and Azure Blob store modules require
+Go 1.26 or newer (their SDK dependency graphs pull in `golang.org/x/net`
+releases that need it).
 
 The S3, GCS and Azure Blob stores are separate modules, so their SDKs only
 enter your build if you use them. Add the ones you need:
