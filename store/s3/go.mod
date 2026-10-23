@@ -31,4 +31,8 @@ require (
 // change to the store interface and to this backend land in one commit.
 //
 // Consumers never see a replace directive (it applies only when this is the
-// main module), so a release cannot carry the placeholder require above.
+// main module), so a release cannot carry a replace directive.
+// Release order: tag the root module vX.Y.Z first; then set the require to
+// vX.Y.Z, delete this replace, run go mod tidy, commit, and tag this module
+// store/s3/vX.Y.Z. See RELEASING.md.
+replace github.com/exergy-dev/zarr-go => ../..
