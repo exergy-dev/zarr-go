@@ -21,5 +21,5 @@ require (
 // main module), so a release cannot carry the placeholder require above.
 // Release order: tag the root module vX.Y.Z first; then set the require to
 // vX.Y.Z, delete this replace, run go mod tidy, commit, and tag this module
-// store/azblob/vX.Y.Z. See "Releasing" in CHANGELOG.md.
+// store/azblob/vX.Y.Z. See RELEASING.md.
 replace github.com/exergy-dev/zarr-go => ../..

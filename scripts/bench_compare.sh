@@ -3,7 +3,7 @@
 # Fails (exit 1) if any geomean delta is worse than the threshold.
 #
 # Usage: ./scripts/bench_compare.sh [threshold_pct]
-# Default threshold: 10% slowdown allowed (M3 hardening leaves room for noise).
+# Default threshold: 10% slowdown allowed (room for noise).
 set -euo pipefail
 
 THRESHOLD=${1:-10}
@@ -16,7 +16,7 @@ fi
 
 NEW=$(mktemp)
 trap 'rm -f "$NEW"' EXIT
-go test -bench=. -benchmem -run=^$ -count=5 . | tail -25 > "$NEW"
+go test -bench=. -benchmem -run=^$ -count=5 . | grep -E "^(goos|goarch|pkg|cpu|Benchmark)" > "$NEW"
 
 echo "=== benchstat ==="
 benchstat "$BASELINE" "$NEW" | tee /tmp/benchstat.out

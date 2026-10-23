@@ -43,9 +43,42 @@ Initial release.
   non-local path on the filesystem and HTTP stores.
 - Fuzz targets for the N-d copy kernel (`internal/ndcopy`), sharded index
   trailer parsing, sharded partial decode, and v2/v3 metadata decoding.
+- A `Spec` constructor in every codec package (`gzip.Spec(level)`,
+  `zstd.Spec(level)`, `zlib.Spec(level)`, `crc32c.Spec()`,
+  `transpose.Spec(order...)`, `bytes.Spec(endian)` and
+  `sharding.Spec(chunkShape, codecs...)`) returning the `codec.Spec` for
+  `zarr.WithCodecs`, in place of hand-written configuration JSON.
+- `codec.EnsureArrayToBytes` and `codec.DefaultArrayToBytes`: the rule
+  `WithCodecs` and `sharding.Spec` use to complete a codec list that names
+  no array→bytes codec.
+- `Array.Path` and `Array.FillValue`.
+- Runnable examples (`example_test.go`) and `Write` benchmarks.
 
 ### Changed
 
+- `zarr.Selection` is a slice of `DimRange` (`zarr.Selection{{Start: 0,
+  Stop: 1024}, {Start: 0, Stop: 1024}}`) instead of a struct with a
+  `Ranges` field, and a `DimRange` with `Step` 0 selects every element,
+  like `Step` 1. `Validate` rejects a negative step.
+- `WithCodecs` inserts a little-endian `bytes` codec (in front of the first
+  bytes→bytes codec) when the list has no array→bytes codec, so
+  `WithCodecs(zstd.Spec(3))` is a complete pipeline.
+- `WithFillValue` takes `any`: a Go value of the array's element kind
+  (bool, integer, float including NaN and ±Inf, `Float16`, complex), or a
+  `json.RawMessage` in the v3 form as before. Encoding errors are reported
+  by `CreateArray`.
+- `Array.Write` encodes and stores the chunks a call touches concurrently,
+  bounded by `WithConcurrency` and `WithIOConcurrency` like `Read`
+  (previously one chunk at a time). Its documented caveat is unchanged:
+  concurrent `Write` calls that touch the same chunk are not coordinated.
+- The zstd codec's encoder is shared process-wide per (level, checksum)
+  configuration, built on first use and sized for GOMAXPROCS concurrent
+  encodes, instead of one four-slot encoder per open array (each slot
+  preallocates match tables, so the per-array encoders scaled memory with
+  the number of arrays open).
+- `fs.New` creates the root directory (and missing parents) instead of
+  requiring it to exist.
+- The release procedure moved from this file to `RELEASING.md`.
 - Codecs are constructed in one step: `codec.Factory` is
   `func(config json.RawMessage) (Codec, error)` and `Codec.Configure` is
   gone. Every codec package has a `New(config)` constructor, and codecs
@@ -138,31 +171,3 @@ Initial release.
 
 - Breaking changes are possible between 0.x releases as the API is refined
   toward v1.0.0.
-
-## Releasing
-
-The repository holds four modules: the root `github.com/exergy-dev/zarr-go`
-and the nested `store/s3`, `store/gcs` and `store/azblob`. Each nested
-module requires the root module; during development its `go.mod` points
-that requirement at the working tree with
-`replace github.com/exergy-dev/zarr-go => ../..` and a placeholder version.
-Replace directives are ignored when a module is a dependency, so a nested
-module must require a real, tagged root version before it is tagged
-itself. Release in this order:
-
-1. Tag the root module `vX.Y.Z` and push the tag.
-2. In each of `store/s3`, `store/gcs` and `store/azblob`: set the
-   `require github.com/exergy-dev/zarr-go` line to `vX.Y.Z`, delete the
-   `replace` directive, and run `go mod tidy` and `go test ./...`. The
-   tests now build against the tagged root, so a backend that depends on
-   unreleased root changes fails here rather than for users.
-3. Commit those `go.mod`/`go.sum` changes and tag each nested module with
-   its directory as the tag prefix: `store/s3/vX.Y.Z`, `store/gcs/vX.Y.Z`,
-   `store/azblob/vX.Y.Z`. Push the tags.
-4. Restore the `replace` directives on the development branch (keeping the
-   new `require` versions) so the nested modules build against the working
-   tree again.
-
-A nested module can be released on its own, for a backend-only fix, by
-repeating steps 2-4 against the latest root tag. It needs a new root tag
-only when it depends on root changes that are not yet released.
