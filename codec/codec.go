@@ -90,9 +90,9 @@ type RangeFetcher interface {
 }
 
 // DimRange describes a half-open range [Start, Stop) along one dimension,
-// with a positive Step. It is the one range type shared by the zarr
-// package's selections, the partial-decode API, and the internal copy
-// kernel.
+// with a non-negative Step; Step 0 is equivalent to Step 1. It is the one
+// range type shared by the zarr package's selections, the partial-decode
+// API, and the internal copy kernel.
 //
 // Within a PartialDecoder, the region is expressed in chunk-local coordinates
 // (i.e., relative to the outer chunk's origin, not the array origin) and the
@@ -105,8 +105,11 @@ type DimRange struct {
 
 // Length returns the number of elements selected along this dim.
 func (r DimRange) Length() int64 {
-	if r.Step <= 0 || r.Stop <= r.Start {
+	if r.Step < 0 || r.Stop <= r.Start {
 		return 0
+	}
+	if r.Step == 0 {
+		return r.Stop - r.Start
 	}
 	return (r.Stop - r.Start + r.Step - 1) / r.Step
 }
@@ -202,6 +205,52 @@ func Lookup(name string) Factory {
 	return reg[name]
 }
 
+// DefaultArrayToBytes is the little-endian bytes codec, the array→bytes
+// codec EnsureArrayToBytes inserts.
+var DefaultArrayToBytes = Spec{Name: "bytes", Configuration: json.RawMessage(`{"endian":"little"}`)}
+
+// EnsureArrayToBytes returns specs with DefaultArrayToBytes inserted, in
+// front of the first bytes→bytes codec (or at the end), when none of them is
+// an array→bytes codec, so a caller can list only the codecs it cares about
+// (typically just a compressor). Each spec is instantiated to classify it;
+// an unknown codec or an invalid configuration is returned as an error (the
+// same one BuildPipeline would report).
+func EnsureArrayToBytes(specs []Spec) ([]Spec, error) {
+	at := len(specs)
+	for i, s := range specs {
+		c, err := newCodec(s)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := c.(ArrayToBytesCodec); ok {
+			return specs, nil
+		}
+		if _, ok := c.(BytesToBytesCodec); ok && i < at {
+			at = i
+		}
+	}
+	out := make([]Spec, 0, len(specs)+1)
+	out = append(out, specs[:at]...)
+	out = append(out, DefaultArrayToBytes)
+	return append(out, specs[at:]...), nil
+}
+
+// newCodec instantiates the codec described by s from the registry.
+func newCodec(s Spec) (Codec, error) {
+	f := Lookup(s.Name)
+	if f == nil {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownCodec, s.Name)
+	}
+	c, err := f(s.Configuration)
+	if err != nil {
+		return nil, fmt.Errorf("configure codec %q: %w", s.Name, err)
+	}
+	if c == nil {
+		return nil, fmt.Errorf("configure codec %q: factory returned no codec", s.Name)
+	}
+	return c, nil
+}
+
 // BuildPipeline constructs a Pipeline from an ordered list of codec specs as
 // they appear in v3 metadata. Exactly one ArrayToBytesCodec must be present.
 // A configuration error is wrapped with the codec's name.
@@ -209,16 +258,9 @@ func BuildPipeline(specs []Spec) (*Pipeline, error) {
 	p := &Pipeline{}
 	seenAB := false
 	for _, s := range specs {
-		f := Lookup(s.Name)
-		if f == nil {
-			return nil, fmt.Errorf("%w: %q", ErrUnknownCodec, s.Name)
-		}
-		c, err := f(s.Configuration)
+		c, err := newCodec(s)
 		if err != nil {
-			return nil, fmt.Errorf("configure codec %q: %w", s.Name, err)
-		}
-		if c == nil {
-			return nil, fmt.Errorf("configure codec %q: factory returned no codec", s.Name)
+			return nil, err
 		}
 		switch v := c.(type) {
 		case ArrayToBytesCodec:
