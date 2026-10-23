@@ -127,8 +127,9 @@ type PartialReadRequest struct {
 	FullShape []int64
 	// Dtype is the array's canonical v3 dtype name.
 	Dtype string
-	// Region is the chunk-local sub-region to decode (Step must be 1 along
-	// every dim).
+	// Region is the chunk-local sub-region to decode. Step is 1 along
+	// every dim: the engine expands stepped and zero-step selections before
+	// issuing a partial read, and implementations may reject anything else.
 	Region []DimRange
 	// Out is the pre-sized output buffer: product(region lengths) *
 	// elementSize(Dtype) bytes, populated in row-major order matching the

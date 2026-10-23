@@ -458,8 +458,6 @@ func (a *Array[T]) writeChunk(
 	for _, d := range chunkShape {
 		totalChunkBytes *= d
 	}
-	chunkBuf := bufpool.Get(int(totalChunkBytes))
-	defer bufpool.Put(chunkBuf)
 
 	// fullCovered (in-array-extent based) gates whether the existing chunk
 	// needs to be read at all: if the write covers every in-array-visible
@@ -504,6 +502,10 @@ func (a *Array[T]) writeChunk(
 	case cpuSem <- struct{}{}:
 	}
 	defer func() { <-cpuSem }()
+	// Taken only now, under the CPU gate, so goroutines waiting on the store
+	// or on cpuSem don't each pin a chunk-sized buffer.
+	chunkBuf := bufpool.Get(int(totalChunkBytes))
+	defer bufpool.Put(chunkBuf)
 
 	if !fullCovered {
 		switch {
