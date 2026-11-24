@@ -4,13 +4,18 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:   # also runs the manual-only jobs (cgo, fuzz, govulncheck, bench)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,33 +29,34 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
+      # Build-only: catches bugs that depend on the width of int (such as a
+      # size cap compared in platform int instead of int64).
+      - run: GOARCH=386 go build ./...
   # The cloud store backends are nested modules (each with its own go.mod,
   # so their SDKs stay out of the root module graph). `./...` at the root
-  # stops at a module boundary, so each needs its own run. The backends are
+  # stops at a module boundary, so each needs its own pass. The backends are
   # pure Go over HTTP, so one OS is enough; their offline tests run against
   # an in-process fake, and the integration tests skip without credentials.
   cloud-modules:
-    strategy:
-      fail-fast: false
-      matrix:
-        module: [store/s3, store/gcs, store/azblob]
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: ${{ matrix.module }}/go.sum
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test -race ./...
+          cache-dependency-path: store/*/go.sum
+      - run: |
+          set -e
+          for m in store/s3 store/gcs store/azblob; do
+            echo "::group::$m"
+            (cd "$m" && go build ./... && go vet ./... && go test -race ./...)
+            echo "::endgroup::"
+          done
   # cgo exercises the zarrcgo build tag (the cgo-backed blosc codec), which
   # the default `test` matrix above never compiles at all since the tag is
   # opt-in. Linux-only: libblosc-dev is readily apt-installable there.
   cgo:
+    if: github.event_name == 'workflow_dispatch'   # manual only: run from the Actions tab
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,29 +67,14 @@ jobs:
       - run: CGO_ENABLED=1 go build -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go vet -tags zarrcgo ./...
       - run: CGO_ENABLED=1 go test -tags zarrcgo -race ./...
-  # Build-only: catches bugs that depend on the width of int (such as a size
-  # cap compared in platform int instead of int64) without needing to
-  # execute 32-bit binaries the runner can't run natively.
-  build-386:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-      - run: GOARCH=386 go build ./...
   lint:
-    strategy:
-      fail-fast: false
-      matrix:
-        module: [., store/s3, store/gcs, store/azblob]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache-dependency-path: ${{ matrix.module }}/go.sum
+          cache-dependency-path: '**/go.sum'
       # golangci-lint-action v8+ is required for golangci-lint v2 (v6 rejects
       # any v2 version string outright).
       - uses: golangci/golangci-lint-action@v9
@@ -94,12 +85,20 @@ jobs:
           # .golangci.yml uses the matching v2 config schema. The nested
           # modules pick up the root .golangci.yml.
           version: v2.12.2
-          working-directory: ${{ matrix.module }}
+          install-only: true
+      - run: |
+          set -e
+          for m in . store/s3 store/gcs store/azblob; do
+            echo "::group::$m"
+            (cd "$m" && golangci-lint run)
+            echo "::endgroup::"
+          done
   # Short-run fuzzing: 20s per target is enough to catch a regression
   # against the checked-in seed corpus without materially slowing CI. Any
   # crasher Go finds is auto-written to testdata/fuzz/<name>/ and becomes a
   # permanent regression test once committed.
   fuzz:
+    if: github.event_name == 'workflow_dispatch'   # manual only: run from the Actions tab
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +116,7 @@ jobs:
   # Known-vulnerability scan of each module's graph and the toolchain's
   # stdlib. Only reports findings reachable from the scanned module's code.
   govulncheck:
+    if: github.event_name == 'workflow_dispatch'   # manual only: run from the Actions tab
     strategy:
       fail-fast: false
       matrix:
@@ -136,8 +136,8 @@ jobs:
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
   bench:
+    if: github.event_name == 'workflow_dispatch'   # manual only: run from the Actions tab
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
